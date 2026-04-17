@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	json "github.com/goccy/go-json"
 	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/yeoul"

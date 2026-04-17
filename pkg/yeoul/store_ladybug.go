@@ -1,7 +1,6 @@
 package yeoul
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	lbug "github.com/LadybugDB/go-ladybug"
+	json "github.com/goccy/go-json"
 	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 )
 
