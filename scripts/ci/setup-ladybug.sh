@@ -11,6 +11,9 @@ target_os="$1"
 target_arch="$2"
 module_dir="$(go list -f '{{.Dir}}' -m github.com/LadybugDB/go-ladybug)"
 
+# The Go module cache is often read-only on CI runners.
+chmod -R u+w "${module_dir}" 2>/dev/null || true
+
 case "${target_os}/${target_arch}" in
   darwin/amd64)
     asset="liblbug-osx-x86_64.tar.gz"
