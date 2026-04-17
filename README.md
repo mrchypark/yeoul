@@ -15,6 +15,44 @@ Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written i
 - Core and product documentation lives under [`docs/`](./docs).
 - Agent usage guidance and starter policy pack live under [`agent-pack/`](./agent-pack).
 
+## Installation
+
+Release artifacts are published for macOS, Linux, and Windows.
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.sh | bash
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.sh | YEOUL_VERSION=v0.1.0 bash
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.ps1 | iex
+```
+
+Install a specific version:
+
+```powershell
+$env:YEOUL_VERSION = "v0.1.0"
+irm https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.ps1 | iex
+```
+
+Windows builds currently target `x64` and still require the Microsoft Visual C++ 2015-2022 Redistributable because Ladybug ships as a native shared library.
+
+Homebrew:
+
+```bash
+brew tap mrchypark/tap
+brew install yeoul
+```
+
 ## Separation Rule
 
 ```text

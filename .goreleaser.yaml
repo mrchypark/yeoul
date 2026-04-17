@@ -1,0 +1,211 @@
+version: 2
+
+project_name: yeoul
+
+release:
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
+  mode: keep-existing
+
+checksum:
+  name_template: "checksums_{{ .Env.RELEASE_TARGET }}.txt"
+
+builds:
+  - id: yeoul-linux-amd64
+    main: ./cmd/yeoul
+    binary: bin/yeoul
+    goos: [linux]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeould-linux-amd64
+    main: ./cmd/yeould
+    binary: bin/yeould
+    goos: [linux]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeoul-linux-arm64
+    main: ./cmd/yeoul
+    binary: bin/yeoul
+    goos: [linux]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeould-linux-arm64
+    main: ./cmd/yeould
+    binary: bin/yeould
+    goos: [linux]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeoul-darwin-amd64
+    main: ./cmd/yeoul
+    binary: bin/yeoul
+    goos: [darwin]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeould-darwin-amd64
+    main: ./cmd/yeould
+    binary: bin/yeould
+    goos: [darwin]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeoul-darwin-arm64
+    main: ./cmd/yeoul
+    binary: bin/yeoul
+    goos: [darwin]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeould-darwin-arm64
+    main: ./cmd/yeould
+    binary: bin/yeould
+    goos: [darwin]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeoul-windows-amd64
+    main: ./cmd/yeoul
+    binary: bin/yeoul.exe
+    goos: [windows]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"windows\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+  - id: yeould-windows-amd64
+    main: ./cmd/yeould
+    binary: bin/yeould.exe
+    goos: [windows]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    skip: "{{ if or (ne .Runtime.Goos \"windows\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    hooks:
+      post:
+        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+
+archives:
+  - id: archive-linux-amd64
+    ids:
+      - yeoul-linux-amd64
+      - yeould-linux-amd64
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    wrap_in_directory: true
+    files:
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
+        dst: lib
+        strip_parent: true
+  - id: archive-linux-arm64
+    ids:
+      - yeoul-linux-arm64
+      - yeould-linux-arm64
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    wrap_in_directory: true
+    files:
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
+        dst: lib
+        strip_parent: true
+  - id: archive-darwin-amd64
+    ids:
+      - yeoul-darwin-amd64
+      - yeould-darwin-amd64
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    wrap_in_directory: true
+    files:
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
+        dst: lib
+        strip_parent: true
+  - id: archive-darwin-arm64
+    ids:
+      - yeoul-darwin-arm64
+      - yeould-darwin-arm64
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    wrap_in_directory: true
+    files:
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
+        dst: lib
+        strip_parent: true
+  - id: archive-windows-amd64
+    ids:
+      - yeoul-windows-amd64
+      - yeould-windows-amd64
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [zip]
+    wrap_in_directory: true
+    files:
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/bin/*
+        dst: bin
+        strip_parent: true

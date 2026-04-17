@@ -1,0 +1,263 @@
+name: Release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  verify-unix:
+    name: Verify (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux packaging dependency
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          install-only: true
+
+      - name: Prepare Ladybug runtime
+        run: |
+          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
+          scripts/ci/setup-ladybug.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
+
+      - name: Validate GoReleaser config
+        run: goreleaser check
+
+      - name: Build current native target
+        env:
+          RELEASE_TARGET: "${{ matrix.goos }}-${{ matrix.goarch }}"
+        run: goreleaser build --snapshot --clean --single-target
+
+      - name: Run tests
+        run: go test ./...
+
+  verify-windows:
+    name: Verify (windows/amd64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      GOROOT: /ucrt64/lib/go
+      GOPATH: /ucrt64
+    steps:
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          msystem: UCRT64
+          install: >-
+            curl
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-go
+            unzip
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install GoReleaser
+        run: go install github.com/goreleaser/goreleaser/v2@v2.15.3
+
+      - name: Prepare Ladybug runtime
+        run: |
+          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
+          scripts/ci/setup-ladybug.sh windows amd64
+
+      - name: Validate GoReleaser config
+        run: goreleaser check
+
+      - name: Build current native target
+        env:
+          RELEASE_TARGET: windows-amd64
+        run: goreleaser build --snapshot --clean --single-target
+
+      - name: Run tests
+        run: |
+          export PATH="$(go list -f '{{.Dir}}' -m github.com/LadybugDB/go-ladybug)/lib/dynamic/windows:$PATH"
+          go test ./...
+
+  release-unix:
+    name: Release Asset (${{ matrix.goos }}/${{ matrix.goarch }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - verify-unix
+      - verify-windows
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-13
+            goos: darwin
+            goarch: amd64
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux packaging dependency
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+
+      - name: Prepare Ladybug runtime
+        run: |
+          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
+          scripts/ci/setup-ladybug.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TARGET: "${{ matrix.goos }}-${{ matrix.goarch }}"
+
+  release-windows:
+    name: Release Asset (windows/amd64)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - release-unix
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      GOROOT: /ucrt64/lib/go
+      GOPATH: /ucrt64
+    steps:
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          msystem: UCRT64
+          install: >-
+            curl
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-go
+            unzip
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install GoReleaser
+        run: go install github.com/goreleaser/goreleaser/v2@v2.15.3
+
+      - name: Prepare Ladybug runtime
+        run: |
+          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
+          scripts/ci/setup-ladybug.sh windows amd64
+
+      - name: Run GoReleaser
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TARGET: windows-amd64
+        run: goreleaser release --clean
+
+  publish-release:
+    name: Publish Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - release-unix
+      - release-windows
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Upload install scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" scripts/install.sh#install.sh scripts/install.ps1#install.ps1 --clobber
+
+      - name: Publish draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false
+
+  publish-homebrew:
+    name: Publish Homebrew Formula
+    if: startsWith(github.ref, 'refs/tags/v') && secrets.HOMEBREW_TAP_GITHUB_TOKEN != ''
+    needs:
+      - publish-release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish formula to tap repo
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          HOMEBREW_TAP_REPO: mrchypark/homebrew-tap
+          SOURCE_REPO: mrchypark/yeoul
+        run: |
+          chmod +x scripts/ci/publish-homebrew.sh
+          scripts/ci/publish-homebrew.sh "${{ github.ref_name }}"
