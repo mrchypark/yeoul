@@ -2,7 +2,10 @@
 
 Use the `yeoul-memory` skill when a task depends on prior decisions, constraints, ownership, status changes, tradeoffs, or provenance in this repository.
 
-When working with a local repository memory database, use `./yeoul.lbug` unless the user or task specifies another path.
+When working with repository memory in normal use, use a single user-level Yeoul database instead of a project-local database file.
+Default path: `$HOME/.local/share/yeoul/work-memory.lbug`
+
+Project-local `./yeoul.lbug` is only for quickstart examples, isolated tests, or temporary debugging.
 Prefer the workflows documented in `skills/yeoul-memory/SKILL.md` and `skills/yeoul-memory/references/cli-workflows.md`.
 Use `docs/10-examples/proactive-decision-support.md` as the default operating loop for proactive Yeoul usage in this repository.
 

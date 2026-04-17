@@ -9,6 +9,17 @@ Use Yeoul proactively so the agent can:
 - surface conflicts instead of repeating inconsistent decisions
 - preserve durable outcomes without requiring an explicit save request every time
 
+## Recommended database path
+
+For normal work, prefer a single user-level database rather than a project-local `./yeoul.lbug`.
+
+```bash
+export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
+mkdir -p "$(dirname "$YEOUL_DB")"
+```
+
+Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
+
 ## Default loop
 
 ### 1. Recall before advising
@@ -16,7 +27,7 @@ Use Yeoul proactively so the agent can:
 Before recommending a direction, interpreting status, or resolving a tradeoff:
 
 ```bash
-yeoul search --db ./yeoul.lbug \
+yeoul search --db "$YEOUL_DB" \
   --query "current context for this task" \
   --mode hybrid \
   --policy-path ./agent-pack \
@@ -27,7 +38,7 @@ yeoul search --db ./yeoul.lbug \
 Use narrower queries when the question is specific:
 
 ```bash
-yeoul fact lookup --db ./yeoul.lbug \
+yeoul fact lookup --db "$YEOUL_DB" \
   --predicate HAS_STATUS \
   --include-inactive
 ```
@@ -37,8 +48,8 @@ yeoul fact lookup --db ./yeoul.lbug \
 If prior memory appears inconsistent, incomplete, or time-sensitive:
 
 ```bash
-yeoul timeline --db ./yeoul.lbug --entity project:yeoul --descending
-yeoul provenance --db ./yeoul.lbug --fact fact_000001 --max-depth 2
+yeoul timeline --db "$YEOUL_DB" --entity project:yeoul --descending
+yeoul provenance --db "$YEOUL_DB" --fact fact_000001 --max-depth 2
 ```
 
 Prefer surfacing the active state, the conflicting prior state, and the supporting episode rather than silently choosing one.
@@ -54,7 +65,7 @@ During implementation, review, or debugging:
 When a decision, fix, status change, or correction becomes clear, store a source episode even if the user did not explicitly ask to save it.
 
 ```bash
-yeoul ingest episode --db ./yeoul.lbug \
+yeoul ingest episode --db "$YEOUL_DB" \
   --kind decision_note \
   --source-kind codex_thread \
   --source-external-ref local-thread \
@@ -70,7 +81,7 @@ Plain-text episode ingest does not automatically create entities or facts from f
 Use fact lifecycle commands only when the subject and supporting episode are clear.
 
 ```bash
-yeoul fact assert --db ./yeoul.lbug \
+yeoul fact assert --db "$YEOUL_DB" \
   --predicate HAS_STATUS \
   --subject-id project_yeoul \
   --value-text "active" \
@@ -80,7 +91,7 @@ yeoul fact assert --db ./yeoul.lbug \
 When a state changes, prefer superseding instead of overwriting:
 
 ```bash
-yeoul fact supersede --confirm --db ./yeoul.lbug \
+yeoul fact supersede --confirm --db "$YEOUL_DB" \
   --id fact_000001 \
   --predicate HAS_STATUS \
   --subject-id project_yeoul \
