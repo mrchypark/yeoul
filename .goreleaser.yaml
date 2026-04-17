@@ -25,7 +25,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeould-linux-amd64
     main: ./cmd/yeould
     binary: bin/yeould
@@ -39,7 +39,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeoul-linux-arm64
     main: ./cmd/yeoul
     binary: bin/yeoul
@@ -53,7 +53,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeould-linux-arm64
     main: ./cmd/yeould
     binary: bin/yeould
@@ -67,7 +67,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeoul-darwin-amd64
     main: ./cmd/yeoul
     binary: bin/yeoul
@@ -81,7 +81,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeould-darwin-amd64
     main: ./cmd/yeould
     binary: bin/yeould
@@ -95,7 +95,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeoul-darwin-arm64
     main: ./cmd/yeoul
     binary: bin/yeoul
@@ -109,7 +109,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeould-darwin-arm64
     main: ./cmd/yeould
     binary: bin/yeould
@@ -123,10 +123,10 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeoul-windows-amd64
     main: ./cmd/yeoul
-    binary: bin/yeoul.exe
+    binary: bin/yeoul
     goos: [windows]
     goarch: [amd64]
     env:
@@ -137,10 +137,10 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"windows\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
   - id: yeould-windows-amd64
     main: ./cmd/yeould
-    binary: bin/yeould.exe
+    binary: bin/yeould
     goos: [windows]
     goarch: [amd64]
     env:
@@ -151,7 +151,7 @@ builds:
     skip: "{{ if or (ne .Runtime.Goos \"windows\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
     hooks:
       post:
-        - cmd: ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
+        - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
 
 archives:
   - id: archive-linux-amd64
