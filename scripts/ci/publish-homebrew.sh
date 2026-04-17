@@ -156,7 +156,7 @@ EOF
 git -C "${tap_clone}" config user.name "github-actions[bot]"
 git -C "${tap_clone}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-if git -C "${tap_clone}" diff --quiet -- Formula/yeoul.rb; then
+if [[ -z "$(git -C "${tap_clone}" status --porcelain -- Formula/yeoul.rb)" ]]; then
   echo "Homebrew formula already up to date"
   exit 0
 fi
