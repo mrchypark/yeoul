@@ -194,6 +194,12 @@ func TestHistoricalFactReadBeforeSupersedeAndRetract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
 	}
+	rawEng := eng.(*engine)
+	current := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	rawEng.now = func() time.Time {
+		current = current.Add(time.Microsecond)
+		return current
+	}
 
 	episode, err := eng.IngestEpisode(ctx, EpisodeInput{
 		ID:      "ep-hist",
@@ -238,11 +244,11 @@ func TestHistoricalFactReadBeforeSupersedeAndRetract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("supersede fact: %v", err)
 	}
-	newFact, err := eng.GetFact(ctx, transition.NewFactID)
+	supersededFact, err := eng.GetFact(ctx, oldFact.ID)
 	if err != nil {
-		t.Fatalf("get new fact: %v", err)
+		t.Fatalf("get superseded fact: %v", err)
 	}
-	afterSupersede := newFact.CreatedAt.Add(time.Nanosecond)
+	afterSupersedeBeforeRetract := supersededFact.UpdatedAt.Add(time.Nanosecond)
 	if _, err := eng.RetractFact(ctx, transition.NewFactID, "bad source"); err != nil {
 		t.Fatalf("retract fact: %v", err)
 	}
@@ -262,7 +268,7 @@ func TestHistoricalFactReadBeforeSupersedeAndRetract(t *testing.T) {
 	mid, err := eng.LookupFacts(ctx, FactLookupRequest{
 		Meta:       QueryMeta{SpaceID: "default"},
 		SubjectIDs: []string{project.ID},
-		Temporal:   TemporalFilter{AsOf: &afterSupersede},
+		Temporal:   TemporalFilter{AsOf: &afterSupersedeBeforeRetract},
 	})
 	if err != nil {
 		t.Fatalf("historical lookup after supersede: %v", err)
