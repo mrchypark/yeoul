@@ -24,22 +24,22 @@ case "${target_os}/${target_arch}" in
   darwin/amd64)
     asset="liblbug-osx-x86_64.tar.gz"
     dest_dir="${module_dir}/lib/dynamic/darwin"
-    runtime_files=("liblbug.dylib")
+    runtime_files=("liblbug.dylib" "liblbug.0.dylib")
     ;;
   darwin/arm64)
     asset="liblbug-osx-arm64.tar.gz"
     dest_dir="${module_dir}/lib/dynamic/darwin"
-    runtime_files=("liblbug.dylib")
+    runtime_files=("liblbug.dylib" "liblbug.0.dylib")
     ;;
   linux/amd64)
     asset="liblbug-linux-x86_64.tar.gz"
     dest_dir="${module_dir}/lib/dynamic/linux-amd64"
-    runtime_files=("liblbug.so")
+    runtime_files=("liblbug.so" "liblbug.so.0")
     ;;
   linux/arm64)
     asset="liblbug-linux-aarch64.tar.gz"
     dest_dir="${module_dir}/lib/dynamic/linux-arm64"
-    runtime_files=("liblbug.so")
+    runtime_files=("liblbug.so" "liblbug.so.0")
     ;;
   windows/amd64)
     asset="liblbug-windows-x86_64.zip"
@@ -76,7 +76,17 @@ case "${asset}" in
 esac
 
 for runtime_file in "${runtime_files[@]}"; do
-  found_file="$(find "${temp_dir}" -type f -name "${runtime_file}" -print -quit)"
+  found_file="$(find "${temp_dir}" -type f -name "${runtime_file}" -print -quit || true)"
+  if [[ -z "${found_file}" ]]; then
+    case "${runtime_file}" in
+      liblbug.0.dylib)
+        found_file="$(find "${temp_dir}" -type f -name 'liblbug.dylib' -print -quit || true)"
+        ;;
+      liblbug.so.0)
+        found_file="$(find "${temp_dir}" -type f -name 'liblbug.so' -print -quit || true)"
+        ;;
+    esac
+  fi
   if [[ -z "${found_file}" ]]; then
     echo "missing runtime file ${runtime_file} in ${asset}" >&2
     exit 1
