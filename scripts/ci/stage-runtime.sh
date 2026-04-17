@@ -10,7 +10,13 @@ fi
 target_os="$1"
 target_arch="$2"
 binary_path="$3"
-module_dir="$(go list -f '{{.Dir}}' -m github.com/LadybugDB/go-ladybug)"
+go mod download github.com/LadybugDB/go-ladybug >/dev/null
+module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
+
+if [[ -z "${module_dir}" ]]; then
+  echo "failed to resolve go-ladybug module directory" >&2
+  exit 1
+fi
 runtime_root="dist/runtime/${target_os}_${target_arch}/lib"
 
 case "${target_os}/${target_arch}" in

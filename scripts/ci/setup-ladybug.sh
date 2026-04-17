@@ -9,7 +9,13 @@ fi
 
 target_os="$1"
 target_arch="$2"
-module_dir="$(go list -f '{{.Dir}}' -m github.com/LadybugDB/go-ladybug)"
+go mod download github.com/LadybugDB/go-ladybug >/dev/null
+module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
+
+if [[ -z "${module_dir}" ]]; then
+  echo "failed to resolve go-ladybug module directory" >&2
+  exit 1
+fi
 
 # The Go module cache is often read-only on CI runners.
 chmod -R u+w "${module_dir}" 2>/dev/null || true
