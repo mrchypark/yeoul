@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	json "github.com/goccy/go-json"
 )
 
 func TestCLIInitIngestEpisodeAndSearch(t *testing.T) {

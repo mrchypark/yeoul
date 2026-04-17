@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	json "github.com/goccy/go-json"
 	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
