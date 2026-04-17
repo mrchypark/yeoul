@@ -14,6 +14,7 @@ Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written i
 
 - Core and product documentation lives under [`docs/`](./docs).
 - Agent usage guidance and starter policy pack live under [`agent-pack/`](./agent-pack).
+- Product-specific registration guides for Codex, Gemini CLI, and Claude Code live under [`agent-pack/integrations/`](./agent-pack/integrations).
 
 ## Installation
 
@@ -67,6 +68,16 @@ Homebrew:
 brew tap mrchypark/tap
 brew install yeoul
 ```
+
+## Agent Setup
+
+Yeoul keeps agent behavior outside the core engine, so each coding assistant needs its own registration step.
+
+- Codex: use repository `AGENTS.md` and, optionally, install the reusable skill into `~/.codex/skills/yeoul-memory`
+- Gemini CLI: use repository `GEMINI.md` and optional `.gemini/commands/*.toml`
+- Claude Code: use repository `CLAUDE.md` and optional `.claude/commands/*.md`
+
+See the full product-specific guide in [`agent-pack/integrations/README.md`](./agent-pack/integrations/README.md).
 
 ## Separation Rule
 
