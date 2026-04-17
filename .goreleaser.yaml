@@ -22,7 +22,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"linux-amd64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -36,7 +36,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"linux-amd64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -50,7 +50,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"linux-arm64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -64,7 +64,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"linux\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"linux-arm64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -78,7 +78,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"darwin-amd64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -92,7 +92,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"darwin-amd64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -106,7 +106,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"darwin-arm64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -120,7 +120,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"darwin\") (ne .Runtime.Goarch \"arm64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"darwin-arm64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -134,7 +134,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"windows\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"windows-amd64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
@@ -148,7 +148,7 @@ builds:
     ldflags:
       - -s -w
     mod_timestamp: "{{ .CommitTimestamp }}"
-    skip: "{{ if or (ne .Runtime.Goos \"windows\") (ne .Runtime.Goarch \"amd64\") }}true{{ else }}false{{ end }}"
+    skip: "{{ if ne .Env.RELEASE_TARGET \"windows-amd64\" }}true{{ else }}false{{ end }}"
     hooks:
       post:
         - cmd: bash ./scripts/ci/stage-runtime.sh "{{ .Os }}" "{{ .Arch }}" "{{ .Path }}"
