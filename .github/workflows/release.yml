@@ -104,6 +104,12 @@ jobs:
             mingw-w64-ucrt-x86_64-go
             unzip
 
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - name: Check out code
         uses: actions/checkout@v4
         with:
@@ -210,6 +216,12 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-go
             unzip
+
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
 
       - name: Check out code
         uses: actions/checkout@v4
