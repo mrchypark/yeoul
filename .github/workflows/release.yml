@@ -67,7 +67,20 @@ jobs:
         run: goreleaser build --snapshot --clean --single-target
 
       - name: Run tests
-        run: go test ./...
+        run: |
+          module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
+          case "${{ matrix.goos }}/${{ matrix.goarch }}" in
+            darwin/*)
+              export DYLD_LIBRARY_PATH="${module_dir}/lib/dynamic/darwin${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+              ;;
+            linux/amd64)
+              export LD_LIBRARY_PATH="${module_dir}/lib/dynamic/linux-amd64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+              ;;
+            linux/arm64)
+              export LD_LIBRARY_PATH="${module_dir}/lib/dynamic/linux-arm64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+              ;;
+          esac
+          go test ./...
 
   verify-windows:
     name: Verify (windows/amd64)
