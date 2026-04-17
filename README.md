@@ -18,30 +18,45 @@ Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written i
 ## Installation
 
 Release artifacts are published for macOS, Linux, and Windows.
+`install.sh` and `install.ps1` are uploaded as GitHub Release assets, so you can execute them directly from the release URL without checking out the repository.
+The installer downloads the matching archive and checksum from the same release, verifies it, and installs Yeoul under the default per-user location.
+On macOS and Linux that is `~/.local/share/yeoul/<tag>` with wrapper commands in `~/.local/bin`. On Windows that is `%LOCALAPPDATA%\\Programs\\yeoul\\<tag>`, and the script adds its `bin` directory to the user `PATH`.
 
-macOS and Linux:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.sh | bash
-```
-
-Install a specific version:
+Latest release on macOS and Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.sh | YEOUL_VERSION=v0.1.0 bash
+curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.sh | bash
 ```
 
-Windows PowerShell:
+Specific version on macOS and Linux:
+
+```bash
+curl -fsSL https://github.com/mrchypark/yeoul/releases/download/v0.1.0/install.sh | bash
+```
+
+If you want the latest installer script but a specific Yeoul version:
+
+```bash
+curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.sh | YEOUL_VERSION=v0.1.0 bash
+```
+
+Latest release on Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.ps1 | iex
+irm https://github.com/mrchypark/yeoul/releases/latest/download/install.ps1 | iex
 ```
 
-Install a specific version:
+Specific version on Windows PowerShell:
+
+```powershell
+irm https://github.com/mrchypark/yeoul/releases/download/v0.1.0/install.ps1 | iex
+```
+
+If you want the latest installer script but a specific Yeoul version:
 
 ```powershell
 $env:YEOUL_VERSION = "v0.1.0"
-irm https://raw.githubusercontent.com/mrchypark/yeoul/main/scripts/install.ps1 | iex
+irm https://github.com/mrchypark/yeoul/releases/latest/download/install.ps1 | iex
 ```
 
 Windows builds currently target `x64` and still require the Microsoft Visual C++ 2015-2022 Redistributable because Ladybug ships as a native shared library.
