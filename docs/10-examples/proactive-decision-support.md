@@ -37,8 +37,8 @@ yeoul fact lookup --db ./yeoul.lbug \
 If prior memory appears inconsistent, incomplete, or time-sensitive:
 
 ```bash
-yeoul timeline --db ./yeoul.lbug --episode ep_000001 --descending
-yeoul provenance --db ./yeoul.lbug --episode ep_000001 --max-depth 2
+yeoul timeline --db ./yeoul.lbug --entity project:yeoul --descending
+yeoul provenance --db ./yeoul.lbug --fact fact_000001 --max-depth 2
 ```
 
 Prefer surfacing the active state, the conflicting prior state, and the supporting episode rather than silently choosing one.
@@ -80,7 +80,7 @@ yeoul fact assert --db ./yeoul.lbug \
 When a state changes, prefer superseding instead of overwriting:
 
 ```bash
-yeoul fact supersede --db ./yeoul.lbug \
+yeoul fact supersede --confirm --db ./yeoul.lbug \
   --id fact_000001 \
   --predicate HAS_STATUS \
   --subject-id project_yeoul \
