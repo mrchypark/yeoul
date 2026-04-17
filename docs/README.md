@@ -113,7 +113,7 @@ Some planned files in the tree are still intentionally pending and can be added 
 
 ## Scope Anchor
 
-Use [current-scope.md](/Users/cypark/Documents/project/yeoul/docs/00-overview/current-scope.md) as the primary reference for what is actively in scope versus documented-but-deferred.
+Use [current-scope.md](./00-overview/current-scope.md) as the primary reference for what is actively in scope versus documented-but-deferred.
 
 In short:
 

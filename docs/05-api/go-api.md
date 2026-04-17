@@ -13,7 +13,7 @@ All other interfaces, including the CLI and optional Service API, must map back 
 
 1. **Embedded-first**: the Go API is Yeoul's primary boundary.
 2. **Agent-free**: the API does not contain prompts, skills, recipes, tool-calling, or LLM runtime concerns.
-3. **Query-contract aligned**: read operations must use the canonical request and response types defined in [query-api.md](/Users/cypark/Documents/project/yeoul/docs/05-api/query-api.md).
+3. **Query-contract aligned**: read operations must use the canonical request and response types defined in [query-api.md](./query-api.md).
 4. **Small write surface**: writes expose Yeoul memory operations only.
 5. **Context-aware**: all operations accept `context.Context`.
 6. **Stable semantics**: API stability matters more than storage-specific convenience.
@@ -67,7 +67,7 @@ type Engine interface {
 
 ## Read API rule
 
-The embedded read surface must reuse the canonical query models from [query-api.md](/Users/cypark/Documents/project/yeoul/docs/05-api/query-api.md).
+The embedded read surface must reuse the canonical query models from [query-api.md](./query-api.md).
 
 This means:
 
@@ -139,7 +139,7 @@ A successful embedded read and the equivalent successful service request must ha
 
 ### 3. Temporal correctness
 
-Read methods that accept `TemporalFilter` must obey the temporal rules defined in [query-api.md](/Users/cypark/Documents/project/yeoul/docs/05-api/query-api.md).
+Read methods that accept `TemporalFilter` must obey the temporal rules defined in [query-api.md](./query-api.md).
 
 ### 4. Lifecycle correctness
 
@@ -159,7 +159,7 @@ Policy layers may translate those concepts into ordinary Yeoul read and write re
 
 ## Error model
 
-The Go API should surface structured errors that align with [error-model.md](/Users/cypark/Documents/project/yeoul/docs/05-api/error-model.md).
+The Go API should surface structured errors that align with [error-model.md](./error-model.md).
 
 At minimum, callers must be able to distinguish:
 
@@ -174,7 +174,7 @@ At minimum, callers must be able to distinguish:
 ## Final decisions for v1
 
 1. The embedded Go API is Yeoul's primary product boundary.
-2. The canonical read contract is defined by [query-api.md](/Users/cypark/Documents/project/yeoul/docs/05-api/query-api.md).
+2. The canonical read contract is defined by [query-api.md](./query-api.md).
 3. The Service API is a transport adapter over this API, not a second model.
 4. Convenience getters are allowed, but they must remain thin wrappers over canonical read semantics.
 5. Raw Cypher is not part of the public Go API.
