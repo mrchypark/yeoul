@@ -1,0 +1,4 @@
+schema_version: "1"
+display_name: "Yeoul Memory"
+short_description: "Use Yeoul CLI and memory rules safely in this repo."
+default_prompt: "Use Yeoul memory deliberately: search first when prior context matters, preserve provenance and lifecycle semantics, and use CLI workflows rather than raw storage queries."
