@@ -64,6 +64,16 @@ Default behavior:
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
+When recording a decision, prefer storing more than the conclusion alone.
+Include, when available:
+- the decision itself
+- the background or context
+- the main options considered
+- the selected option
+- the reason for choosing it
+- important tradeoffs or rejected paths
+- conditions that would justify revisiting the decision
+
 ## Write rules
 
 Use `ingest episode` or `ingest file` for source records.

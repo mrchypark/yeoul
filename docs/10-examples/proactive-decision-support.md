@@ -64,6 +64,27 @@ During implementation, review, or debugging:
 
 When a decision, fix, status change, or correction becomes clear, store a source episode even if the user did not explicitly ask to save it.
 
+For decisions, do not save only the conclusion when richer context is available.
+Prefer a compact decision record that preserves how the choice was made.
+
+Recommended decision template:
+
+```text
+Decision: <what was decided>
+Context: <background, trigger, or problem>
+Options:
+1. <option A>
+2. <option B>
+Chosen: <selected option>
+Why:
+- <reason 1>
+- <reason 2>
+Tradeoffs:
+- <important downside or rejected path>
+Revisit when:
+- <condition that would change the decision>
+```
+
 ```bash
 yeoul ingest episode --db "$YEOUL_DB" \
   --kind decision_note \
@@ -74,6 +95,25 @@ yeoul ingest episode --db "$YEOUL_DB" \
 ```
 
 Use a plain-text episode when you want a reliable source record first.
+
+Example decision note content:
+
+```text
+Decision: use a single user-level Yeoul database by default.
+Context: project-local databases create too many files and split memory across repositories.
+Options:
+1. keep one database per repository
+2. use one user-level database for normal work
+Chosen: use one user-level database for normal work
+Why:
+- reduces file sprawl
+- keeps long-lived working memory in one place
+- fits the long-term global-memory operating model better
+Tradeoffs:
+- search scoping must stay disciplined until CLI space and scope controls improve
+Revisit when:
+- CLI support for stronger per-project space selection or scoped retrieval becomes available
+```
 
 ### 5. Promote structured state only when clear
 
