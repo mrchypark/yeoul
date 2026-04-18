@@ -66,13 +66,13 @@ Default behavior:
 
 When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
-- the decision topic or question
-- the background or context
-- the main options considered
-- the final decision
-- the reason for choosing it
-- important tradeoffs or rejected paths
-- conditions that would justify revisiting the decision
+- `Topic`: the decision topic or question
+- `Context`: the background or context
+- `Options`: the main options considered
+- `Decision`: the final decision and brief summary
+- `Why`: the reason for choosing it
+- `Tradeoffs`: important tradeoffs or rejected paths
+- `Revisit when`: conditions that would justify revisiting the decision
 
 ## Write rules
 
