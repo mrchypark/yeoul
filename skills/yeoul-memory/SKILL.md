@@ -7,6 +7,15 @@ description: Use when working in the Yeoul repository or when an agent should st
 
 Use this skill when the task depends on prior project memory, durable decisions, fact lifecycle, or provenance in the Yeoul repo.
 
+## Default database path
+
+For normal work, prefer a single user-level Yeoul database instead of a project-local database file.
+
+Default path:
+- `$HOME/.local/share/yeoul/work-memory.lbug`
+
+Project-local `./yeoul.lbug` is only for quickstarts, isolated tests, or temporary debugging.
+
 ## Search first
 
 Search Yeoul before answering when:
@@ -21,6 +30,11 @@ Prefer:
 - `yeoul timeline` for change history
 - `yeoul provenance` for explanation
 - `yeoul neighborhood` for local graph context
+
+Default behavior:
+- proactively search before recommendations, design choices, prioritization, status interpretation, or conflict resolution
+- proactively search when the user refers to earlier decisions, previous attempts, current status, or continuity across work
+- skip lookup only when the task is clearly self-contained and prior memory is unlikely to matter
 
 ## Remember deliberately
 
@@ -37,6 +51,21 @@ Do not store:
 - unsupported guesses
 - destructive corrections without a reason
 
+Default behavior:
+- when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
+- prefer storing at the end of a decision, implementation, review, or correction cycle
+- if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
+
+When recording a decision, prefer storing more than the conclusion alone.
+Include, when available:
+- `Topic`: the decision topic or question
+- `Context`: the background or context
+- `Options`: the main options considered
+- `Decision`: the final decision and brief summary
+- `Why`: the reason for choosing it
+- `Tradeoffs`: important tradeoffs or rejected paths
+- `Revisit when`: conditions that would justify revisiting the decision
+
 ## Write rules
 
 - Use `ingest episode` or `ingest file` for source episodes.
@@ -52,6 +81,7 @@ Do not store:
 - Mention time context when it matters.
 - Mention provenance or supporting episodes when explaining why something is believed.
 - Treat duplicate-marked entities as historical aliases, not canonical current answers.
+- When memory use materially changes the answer, say briefly that prior context was checked and summarize the relevant decision, constraint, or conflict.
 
 ## Repo-specific workflow
 
