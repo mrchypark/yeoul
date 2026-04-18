@@ -64,6 +64,16 @@ Default behavior:
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
+When recording a decision, prefer storing more than the conclusion alone.
+Include, when available:
+- `Topic`: the decision topic or question
+- `Context`: the background or context
+- `Options`: the main options considered
+- `Decision`: the final decision and brief summary
+- `Why`: the reason for choosing it
+- `Tradeoffs`: important tradeoffs or rejected paths
+- `Revisit when`: conditions that would justify revisiting the decision
+
 ## Write rules
 
 Use `ingest episode` or `ingest file` for source records.
