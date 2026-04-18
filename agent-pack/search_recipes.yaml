@@ -31,6 +31,8 @@ recipes:
   project_memory:
     description: Retrieve project-level context and durable guidance.
     strategy: neighborhood
+    filters:
+      fact_status: active
     expand:
       hops: 2
       entity_types: [Project, Task, Decision, Issue, Document, Person]
