@@ -35,11 +35,13 @@ Default behavior:
 ## Decision support behavior
 
 When helping with a decision:
+- search for similar past decisions before proposing a new one
 - summarize the decision question briefly
 - retrieve relevant prior memory before recommending a direction
-- present concrete options and tradeoffs when multiple paths are viable
+- present concrete options, implementation examples, and tradeoffs when multiple paths are viable
 - make a recommendation only when the basis is clear
 - if memory conflicts, surface the conflict instead of silently choosing one
+- after the user decides, restate the selected direction briefly before recording it
 
 ## What to remember
 
@@ -68,11 +70,16 @@ When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
 - `Topic`: the decision topic or question
 - `Context`: the background or context
+- `Similar past decisions`: relevant previous decisions or constraints
 - `Options`: the main options considered
 - `Decision`: the final decision and brief summary
 - `Why`: the reason for choosing it
 - `Tradeoffs`: important tradeoffs or rejected paths
 - `Revisit when`: conditions that would justify revisiting the decision
+
+Prefer the most reusable abstraction that is still true.
+If a project-specific choice is only one application of a broader rule, store the broader rule as the main decision and treat the project-specific detail as an example or current application.
+Do not let a product name, environment name, or one-off implementation detail become the main decision unless that specificity is itself what will matter later.
 
 ## Write rules
 

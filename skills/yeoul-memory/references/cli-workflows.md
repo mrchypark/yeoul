@@ -60,6 +60,7 @@ For decisions, prefer recording structured context instead of only the conclusio
 ```text
 Topic: default Yeoul database location for normal work
 Context: project-local databases create too many files and split memory across repositories
+Similar past decisions: prefer a single long-lived memory store when reuse across work matters
 Options:
 1. keep one database per repository
 2. use one user-level database for normal work
@@ -69,9 +70,14 @@ Why:
 - keeps long-lived memory in one place
 Tradeoffs:
 - retrieval scoping must remain disciplined until CLI space and scope controls improve
+Current application:
+- use $HOME/.local/share/yeoul/work-memory.lbug as the normal default
 Revisit when:
 - stronger per-project space selection becomes available
 ```
+
+Prefer the most reusable abstraction that is still true.
+If the current project choice is only one example of a broader rule, store the broader rule as the main decision and keep the project-specific detail under `Current application`.
 
 For file-backed content:
 
