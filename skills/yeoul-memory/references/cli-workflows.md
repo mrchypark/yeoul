@@ -18,6 +18,16 @@ yeoul search --db ./yeoul.lbug \
   --include-related
 ```
 
+For a before-you-start briefing, prefer the dedicated recipe:
+
+```bash
+yeoul search --db ./yeoul.lbug \
+  --query "what should I check before working on release automation?" \
+  --policy-path ./agent-pack \
+  --recipe preflight_briefing \
+  --include-related
+```
+
 ## Check whether a fact already exists
 
 ```bash

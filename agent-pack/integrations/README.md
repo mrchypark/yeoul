@@ -32,9 +32,10 @@ This path reflects the current Codex local runtime convention.
 ```md
 # Yeoul Memory
 
-Use the `yeoul-memory` skill when a task depends on prior decisions, constraints, ownership, status changes, or provenance in this repository.
+Use the `yeoul-memory` skill when a task depends on prior decisions, constraints, working guidance, ownership, status changes, or provenance in this repository.
 
 Search Yeoul before answering when prior project memory may matter.
+Search Yeoul before starting non-trivial work when prior context may change the plan, tools, or output.
 Prefer the workflows documented in `skills/yeoul-memory/SKILL.md` and `skills/yeoul-memory/references/cli-workflows.md`.
 
 When writing memory, preserve provenance and lifecycle semantics. Do not overwrite old facts when the state changes.
@@ -76,9 +77,11 @@ description = "Search Yeoul project memory"
 prompt = """
 Use Yeoul as the durable project memory for this repository.
 Search first when prior decisions, constraints, status, or provenance may matter.
+Also search before non-trivial work when standing guidance or recent context may change the plan.
 
 Start with:
-- yeoul search --db <DB_PATH> --query "{{args}}"
+- yeoul search --db <DB_PATH> --query "{{args}}" --policy-path ./agent-pack --recipe recent_context
+- before non-trivial work: yeoul search --db <DB_PATH> --query "{{args}}" --policy-path ./agent-pack --recipe preflight_briefing
 
 Then refine with yeoul fact lookup, yeoul timeline, yeoul provenance, or yeoul neighborhood when needed.
 Summarize answers with time context and provenance.
@@ -125,8 +128,10 @@ Create `.claude/commands/yeoul-memory.md`:
 Use Yeoul as the durable project memory for this repository.
 
 Search first when prior decisions, constraints, status, or provenance may matter.
+Also search before non-trivial work when standing guidance or recent context may change the plan.
 Start with:
-- `yeoul search --db <DB_PATH> --query "$ARGUMENTS"`
+- `yeoul search --db <DB_PATH> --query "$ARGUMENTS" --policy-path ./agent-pack --recipe recent_context`
+- before non-trivial work: `yeoul search --db <DB_PATH> --query "$ARGUMENTS" --policy-path ./agent-pack --recipe preflight_briefing`
 
 Then refine with `yeoul fact lookup`, `yeoul timeline`, `yeoul provenance`, or `yeoul neighborhood` when needed.
 Summarize answers with time context and provenance.

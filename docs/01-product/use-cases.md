@@ -115,6 +115,22 @@ A new ontology or deduplication policy is introduced and derived graph state nee
 - source episodes remain the durable substrate
 - rebuild should be deterministic for the same input and policy version
 
+## UC-8: Brief an agent before starting work
+
+### Scenario
+A coding or operations agent is about to implement, review, or investigate something and needs to know whether prior memory should change the approach.
+
+### Expected behavior
+- identify the target project, task, issue, or document from the current request
+- retrieve active context that should influence the next action
+- include standing instructions, constraints, recent blockers, and reusable workflow guidance when relevant
+- return a concise briefing before the agent commits to a plan or tool sequence
+
+### Acceptance notes
+- retrieval must help before action, not only after a decision is already made
+- non-decision context should be retrievable when it is likely to affect execution
+- the agent should be able to say that no relevant prior memory was found
+
 ## Out-of-scope use cases
 - distributed graph database clustering
 - remote multi-tenant SaaS memory platform

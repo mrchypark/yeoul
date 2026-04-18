@@ -1,4 +1,4 @@
 schema_version: "1"
 display_name: "Yeoul Memory"
 short_description: "Use Yeoul CLI and memory rules safely in this repo."
-default_prompt: "Use Yeoul memory deliberately: search first when prior context matters, preserve provenance and lifecycle semantics, and use CLI workflows rather than raw storage queries."
+default_prompt: "Use Yeoul memory deliberately: search first when prior context matters, search before non-trivial work when prior memory may change the plan, preserve provenance and lifecycle semantics, say briefly what prior context changed, and use CLI workflows rather than raw storage queries."
