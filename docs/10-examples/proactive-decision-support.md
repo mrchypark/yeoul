@@ -70,12 +70,12 @@ Prefer a compact decision record that preserves how the choice was made.
 Recommended decision template:
 
 ```text
-Decision: <what was decided>
+Topic: <the question or subject>
 Context: <background, trigger, or problem>
 Options:
 1. <option A>
 2. <option B>
-Chosen: <selected option>
+Decision: <selected option and brief summary>
 Why:
 - <reason 1>
 - <reason 2>
@@ -99,12 +99,12 @@ Use a plain-text episode when you want a reliable source record first.
 Example decision note content:
 
 ```text
-Decision: use a single user-level Yeoul database by default.
+Topic: default Yeoul database location for normal work.
 Context: project-local databases create too many files and split memory across repositories.
 Options:
 1. keep one database per repository
 2. use one user-level database for normal work
-Chosen: use one user-level database for normal work
+Decision: use one user-level database for normal work.
 Why:
 - reduces file sprawl
 - keeps long-lived working memory in one place

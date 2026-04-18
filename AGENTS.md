@@ -66,10 +66,10 @@ Default behavior:
 
 When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
-- the decision itself
+- the decision topic or question
 - the background or context
 - the main options considered
-- the selected option
+- the final decision
 - the reason for choosing it
 - important tradeoffs or rejected paths
 - conditions that would justify revisiting the decision
