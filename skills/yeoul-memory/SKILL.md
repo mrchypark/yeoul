@@ -36,6 +36,13 @@ Default behavior:
 - proactively search when the user refers to earlier decisions, previous attempts, current status, or continuity across work
 - skip lookup only when the task is clearly self-contained and prior memory is unlikely to matter
 
+When a decision is required:
+- search for similar past decisions first
+- present current options and realistic alternatives
+- include implementation examples and tradeoffs when useful
+- restate the user's chosen direction before recording it
+- expect to reuse the recorded decision later
+
 ## Remember deliberately
 
 Store memory only when the content is likely to matter later:
@@ -60,11 +67,17 @@ When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
 - `Topic`: the decision topic or question
 - `Context`: the background or context
+- `Similar past decisions`: relevant previous decisions or constraints
 - `Options`: the main options considered
 - `Decision`: the final decision and brief summary
 - `Why`: the reason for choosing it
 - `Tradeoffs`: important tradeoffs or rejected paths
+- `Current application`: how the decision applies in the present project or task
 - `Revisit when`: conditions that would justify revisiting the decision
+
+Prefer the most reusable abstraction that is still true.
+If the current project choice is one application of a broader pattern, store the broader pattern as the main decision and treat the project-specific detail as the current application.
+Do not let a one-off tool name, environment name, or implementation detail become the main decision unless that specificity is exactly what future work will need.
 
 ## Write rules
 

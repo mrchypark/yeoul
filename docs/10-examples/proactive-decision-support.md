@@ -66,12 +66,15 @@ When a decision, fix, status change, or correction becomes clear, store a source
 
 For decisions, do not save only the conclusion when richer context is available.
 Prefer a compact decision record that preserves how the choice was made.
+Prefer the most reusable abstraction that is still true.
+If the current project choice is one example of a broader pattern, store the broader pattern as the main decision and keep the project-specific detail as the current application.
 
 Recommended decision template:
 
 ```text
 Topic: <the question or subject>
 Context: <background, trigger, or problem>
+Similar past decisions: <relevant prior decisions, if any>
 Options:
 1. <option A>
 2. <option B>
@@ -81,6 +84,8 @@ Why:
 - <reason 2>
 Tradeoffs:
 - <important downside or rejected path>
+Current application:
+- <how this decision applies in the current project>
 Revisit when:
 - <condition that would change the decision>
 ```
@@ -101,6 +106,7 @@ Example decision note content:
 ```text
 Topic: default Yeoul database location for normal work.
 Context: project-local databases create too many files and split memory across repositories.
+Similar past decisions: prefer a single long-lived memory store when the main goal is reuse across work.
 Options:
 1. keep one database per repository
 2. use one user-level database for normal work
@@ -111,8 +117,35 @@ Why:
 - fits the long-term global-memory operating model better
 Tradeoffs:
 - search scoping must stay disciplined until CLI space and scope controls improve
+Current application:
+- Yeoul should default to $HOME/.local/share/yeoul/work-memory.lbug for normal work
 Revisit when:
 - CLI support for stronger per-project space selection or scoped retrieval becomes available
+```
+
+Generalization example:
+
+Bad:
+
+```text
+Decision: use vind for replited PocketBase chaos testing
+```
+
+Better:
+
+```text
+Topic: default chaos-test environment strategy
+Context: the team needs a realistic but operable environment for failure testing
+Options:
+1. use a production-like replicated environment
+2. use a simpler single-node fallback
+Decision: prefer the closest production-like environment that still supports repeatable chaos scenarios
+Why:
+- keeps tests representative
+- preserves a workable fallback when the ideal setup is unavailable
+Current application:
+- use vind first for replited PocketBase chaos tests
+- fall back to single-node vind plus replica pod deletion chaos when needed
 ```
 
 ### 5. Promote structured state only when clear
