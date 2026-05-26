@@ -37,6 +37,8 @@ docs/
 
   03-architecture/
     system-architecture.md
+    v0.2-product-architecture.md
+    ladybug-plus-rax.md
     module-boundaries.md
     storage-architecture.md
     concurrency-model.md

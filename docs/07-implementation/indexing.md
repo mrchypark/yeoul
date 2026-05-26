@@ -2,6 +2,8 @@
 
 This document defines the initial indexing plan for Yeoul.
 
+For the recommended split between canonical memory and derived retrieval runtime, see [../03-architecture/ladybug-plus-rax.md](../03-architecture/ladybug-plus-rax.md).
+
 ## Goals
 - accelerate hot-path lookups
 - keep index count manageable
@@ -57,6 +59,26 @@ Where enabled, full-text search should be used for:
 ## Vector search
 Vector search should remain optional and additive.
 It should not replace entity, fact, and provenance-oriented retrieval.
+
+## Derived retrieval runtime
+
+When Yeoul uses an external retrieval runtime such as `rax`, the indexing boundary should be treated as a projection layer.
+
+That means:
+
+- Ladybug-backed Yeoul records remain canonical
+- projection records are rebuilt from canonical records
+- retrieval runtime indexes may be dropped and rebuilt without losing memory truth
+- final search responses should be hydrated from canonical Yeoul records before provenance and lifecycle-sensitive output is returned
+
+For rax 0.2, Yeoul publishes projections through the direct `.wax` product store path:
+
+```bash
+yeoul index publish-rax --root "$YEOUL_INDEX_ROOT" --store "$YEOUL_RAX_STORE"
+```
+
+The adapter maps Yeoul `projection_id` to rax `doc_id`, `search_text` to rax `text`, and preserves projection metadata under rax `metadata`.
+The temporary rax raw docs file is an adapter input only; `projection.ndjson` remains the durable Yeoul-owned boundary.
 
 ## Benchmark responsibility
 Any new index addition should include:

@@ -233,6 +233,124 @@ func TestCLIPolicyValidateAndListRecipes(t *testing.T) {
 	}
 }
 
+func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	ingestPath := filepath.Join(tmpDir, "graph.json")
+	indexRoot := filepath.Join(tmpDir, "index")
+	storePath := filepath.Join(tmpDir, "projection.wax")
+	fakeWaxPath := filepath.Join(tmpDir, "wax")
+	waxArgsPath := filepath.Join(tmpDir, "wax-args.txt")
+	waxProjectionPath := filepath.Join(tmpDir, "wax-projection.jsonl")
+
+	payload := `{
+  "episodes": [
+    {
+      "id":"ep-index",
+      "kind":"note",
+      "content":"Yeoul keeps Ladybug as canonical truth and uses rax as derived retrieval.",
+      "source":{"kind":"note","external_ref":"thread-index"}
+    }
+  ],
+  "entities": [
+    {"id":"project:yeoul","type":"Project","canonical_name":"Yeoul"},
+    {"id":"runtime:rax","type":"Runtime","canonical_name":"rax"}
+  ],
+  "facts": [
+    {
+      "id":"fact-index",
+      "predicate":"USES_RETRIEVAL_RUNTIME",
+      "subject_id":"project:yeoul",
+      "object_id":"runtime:rax",
+      "value_text":"Yeoul uses rax as derived retrieval runtime.",
+      "supporting_episode_ids":["ep-index"]
+    }
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+	fakeWax := `#!/bin/sh
+printf '%s\n' "$*" > "` + waxArgsPath + `"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--input" ]; then
+    shift
+    cp "$1" "` + waxProjectionPath + `"
+    exit 0
+  fi
+  shift
+done
+exit 2
+`
+	if err := os.WriteFile(fakeWaxPath, []byte(fakeWax), 0o755); err != nil {
+		t.Fatalf("write fake wax: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+
+	build := runCLI("index", "build", "--db", dbPath, "--root", indexRoot, "--json")
+	if !strings.Contains(build, `"projection_count": 4`) {
+		t.Fatalf("expected build JSON output, got %q", build)
+	}
+	if _, err := os.Stat(filepath.Join(indexRoot, "yeoul-index.json")); err != nil {
+		t.Fatalf("expected yeoul-index.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(indexRoot, "projection.ndjson")); err != nil {
+		t.Fatalf("expected projection.ndjson: %v", err)
+	}
+	projectionData, err := os.ReadFile(filepath.Join(indexRoot, "projection.ndjson"))
+	if err != nil {
+		t.Fatalf("read projection: %v", err)
+	}
+	if !strings.Contains(string(projectionData), `"projection_id":"fact:fact-index"`) || !strings.Contains(string(projectionData), `"search_text":"USES_RETRIEVAL_RUNTIME project:yeoul runtime:rax Yeoul uses rax as derived retrieval runtime."`) {
+		t.Fatalf("expected Yeoul projection fields, got %q", string(projectionData))
+	}
+
+	status := runCLI("index", "status", "--root", indexRoot, "--json")
+	if !strings.Contains(status, `"projection_count": 4`) || !strings.Contains(status, `"facts": 1`) {
+		t.Fatalf("expected status JSON output, got %q", status)
+	}
+
+	verify := runCLI("index", "verify", "--db", dbPath, "--root", indexRoot, "--json")
+	if !strings.Contains(verify, `"valid": true`) {
+		t.Fatalf("expected verify JSON output, got %q", verify)
+	}
+
+	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--wax-bin", fakeWaxPath, "--json")
+	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_document_count": 4`) {
+		t.Fatalf("expected publish JSON output, got %q", publish)
+	}
+	waxArgs, err := os.ReadFile(waxArgsPath)
+	if err != nil {
+		t.Fatalf("read fake wax args: %v", err)
+	}
+	if !strings.Contains(string(waxArgs), "ingest docs --store "+storePath+" --input ") {
+		t.Fatalf("expected wax ingest docs args, got %q", string(waxArgs))
+	}
+	raxDocs, err := os.ReadFile(waxProjectionPath)
+	if err != nil {
+		t.Fatalf("read fake wax docs: %v", err)
+	}
+	if !strings.Contains(string(raxDocs), `"doc_id":"fact:fact-index"`) || !strings.Contains(string(raxDocs), `"text":"USES_RETRIEVAL_RUNTIME project:yeoul runtime:rax Yeoul uses rax as derived retrieval runtime."`) {
+		t.Fatalf("expected rax raw document fields, got %q", string(raxDocs))
+	}
+	if !strings.Contains(string(raxDocs), `"metadata":{`) || !strings.Contains(string(raxDocs), `"predicate":"USES_RETRIEVAL_RUNTIME"`) || !strings.Contains(string(raxDocs), `"projection_type":"fact"`) {
+		t.Fatalf("expected rax metadata to preserve Yeoul projection metadata, got %q", string(raxDocs))
+	}
+}
+
 func TestCLIAdminExportImport(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

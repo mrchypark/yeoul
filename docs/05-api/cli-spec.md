@@ -74,6 +74,31 @@ yeoul search --db ./yeoul.lbug --query "recent decisions about ladybug"
 yeoul search --db ./yeoul.lbug --entity project:yeoul --window 30d
 ```
 
+### `yeoul index`
+Manage derived retrieval projections.
+
+#### Subcommands
+- `build`
+- `rebuild`
+- `verify`
+- `status`
+- `publish-rax`
+
+#### Examples
+```bash
+yeoul index build --db ./yeoul.lbug --root ~/.local/share/yeoul/index
+yeoul index verify --db ./yeoul.lbug --root ~/.local/share/yeoul/index
+yeoul index publish-rax \
+  --root ~/.local/share/yeoul/index \
+  --store ~/.local/share/yeoul/projection.wax
+```
+
+#### Behavior
+- treats the index as a derived artifact, not canonical truth
+- rebuilds or validates projection state against the Ladybug-backed Yeoul database
+- can publish Yeoul-owned projections into a `rax` 0.2 direct `.wax` store through `wax ingest docs --store`
+- keeps `projection.ndjson` as Yeoul's adapter boundary instead of adopting rax dataset-pack files as Yeoul artifacts
+
 ### `yeoul neighborhood`
 Expand around an entity or fact.
 

@@ -71,6 +71,8 @@ func (c cli) run(ctx context.Context, args []string) error {
 		return c.runEntity(ctx, args[1:])
 	case "policy":
 		return c.runPolicy(ctx, args[1:])
+	case "index":
+		return c.runIndex(ctx, args[1:])
 	case "admin":
 		return c.runAdmin(ctx, args[1:])
 	case "bench":
@@ -107,6 +109,11 @@ Usage:
   yeoul policy validate --path PATH [--json]
   yeoul policy show --path PATH [--json]
   yeoul policy list-recipes --path PATH [--json]
+  yeoul index build --db PATH --root DIR [--json]
+  yeoul index rebuild --db PATH --root DIR [--json]
+  yeoul index status --root DIR [--json]
+  yeoul index verify --db PATH --root DIR [--json]
+  yeoul index publish-rax --root DIR --store FILE [--wax-bin PATH] [--json]
   yeoul admin checkpoint --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json] [--confirm]
   yeoul admin export --db PATH --out FILE [--json]
@@ -131,6 +138,7 @@ Commands:
   entity          Inspect or manage entity merge markers.
   fact            Manage fact lifecycle operations.
   policy          Validate and inspect policy packs.
+  index           Manage derived retrieval projections.
   admin           Export and import Yeoul data.
   bench           Run local benchmark commands.
 `)

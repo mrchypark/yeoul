@@ -2,6 +2,10 @@
 
 Yeoul stores all durable memory in a Ladybug on-disk database.
 
+When Yeoul uses an external retrieval runtime, that runtime must remain derived from the Ladybug-backed canonical store rather than becoming an equal source of truth.
+
+See [ladybug-plus-rax.md](./ladybug-plus-rax.md) for the recommended dual-store architecture.
+
 ## Default path
 
 `./yeoul.lbug`

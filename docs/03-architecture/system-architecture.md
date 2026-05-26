@@ -31,3 +31,15 @@ Only the Storage and Memory Core layers are required.
 ## Governing Rule
 
 Yeoul Core must remain usable without any policy files and without any AI-specific packages.
+
+## v0.2 Direction
+
+The current system architecture remains valid for the core system boundary.
+However, the intended v0.2 product shape adds stronger retrieval, agent, and evaluation layers around the same core.
+
+See [v0.2-product-architecture.md](./v0.2-product-architecture.md) for the recommended product-facing layering:
+
+- core as canonical temporal truth
+- retrieval as hybrid search, rerank, and constructor
+- agent as CLI and integration ergonomics
+- evaluation as a first-class quality gate
