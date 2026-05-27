@@ -11,6 +11,7 @@ target_os="$1"
 target_arch="$2"
 go mod download github.com/LadybugDB/go-ladybug >/dev/null
 module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
+module_version="$(go list -m -f '{{.Version}}' github.com/LadybugDB/go-ladybug)"
 
 if [[ -z "${module_dir}" ]]; then
   echo "failed to resolve go-ladybug module directory" >&2
@@ -22,12 +23,12 @@ chmod -R u+w "${module_dir}" 2>/dev/null || true
 
 case "${target_os}/${target_arch}" in
   darwin/amd64)
-    asset="liblbug-osx-x86_64.tar.gz"
+    asset="liblbug-osx-universal.tar.gz"
     dest_dir="${module_dir}/lib/dynamic/darwin"
     runtime_files=("liblbug.dylib" "liblbug.0.dylib")
     ;;
   darwin/arm64)
-    asset="liblbug-osx-arm64.tar.gz"
+    asset="liblbug-osx-universal.tar.gz"
     dest_dir="${module_dir}/lib/dynamic/darwin"
     runtime_files=("liblbug.dylib" "liblbug.0.dylib")
     ;;
@@ -56,7 +57,7 @@ temp_dir="$(mktemp -d)"
 trap 'rm -rf "${temp_dir}"' EXIT
 
 archive_path="${temp_dir}/${asset}"
-download_url="https://github.com/LadybugDB/ladybug/releases/latest/download/${asset}"
+download_url="https://github.com/LadybugDB/ladybug/releases/download/${module_version}/${asset}"
 
 mkdir -p "${dest_dir}"
 

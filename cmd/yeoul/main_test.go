@@ -10,6 +10,45 @@ import (
 	json "github.com/goccy/go-json"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("YEOUL_FAKE_WAX") == "1" {
+		os.Exit(runFakeWax())
+	}
+	os.Exit(m.Run())
+}
+
+func runFakeWax() int {
+	argsPath := os.Getenv("YEOUL_FAKE_WAX_ARGS")
+	projectionPath := os.Getenv("YEOUL_FAKE_WAX_PROJECTION")
+	if argsPath == "" || projectionPath == "" {
+		_, _ = os.Stderr.WriteString("missing fake wax environment\n")
+		return 2
+	}
+
+	args := os.Args[1:]
+	if err := os.WriteFile(argsPath, []byte(strings.Join(args, " ")+"\n"), 0o644); err != nil {
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		return 2
+	}
+	for i, arg := range args {
+		if arg == "--input" && i+1 < len(args) {
+			data, err := os.ReadFile(args[i+1])
+			if err != nil {
+				_, _ = os.Stderr.WriteString(err.Error() + "\n")
+				return 2
+			}
+			if err := os.WriteFile(projectionPath, data, 0o644); err != nil {
+				_, _ = os.Stderr.WriteString(err.Error() + "\n")
+				return 2
+			}
+			return 0
+		}
+	}
+
+	_, _ = os.Stderr.WriteString("missing --input\n")
+	return 2
+}
+
 func TestCLIInitIngestEpisodeAndSearch(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "yeoul.lbug")
@@ -240,7 +279,7 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	ingestPath := filepath.Join(tmpDir, "graph.json")
 	indexRoot := filepath.Join(tmpDir, "index")
 	storePath := filepath.Join(tmpDir, "projection.wax")
-	fakeWaxPath := filepath.Join(tmpDir, "wax")
+	fakeWaxPath := os.Args[0]
 	waxArgsPath := filepath.Join(tmpDir, "wax-args.txt")
 	waxProjectionPath := filepath.Join(tmpDir, "wax-projection.jsonl")
 
@@ -271,21 +310,9 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write ingest payload: %v", err)
 	}
-	fakeWax := `#!/bin/sh
-printf '%s\n' "$*" > "` + waxArgsPath + `"
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--input" ]; then
-    shift
-    cp "$1" "` + waxProjectionPath + `"
-    exit 0
-  fi
-  shift
-done
-exit 2
-`
-	if err := os.WriteFile(fakeWaxPath, []byte(fakeWax), 0o755); err != nil {
-		t.Fatalf("write fake wax: %v", err)
-	}
+	t.Setenv("YEOUL_FAKE_WAX", "1")
+	t.Setenv("YEOUL_FAKE_WAX_ARGS", waxArgsPath)
+	t.Setenv("YEOUL_FAKE_WAX_PROJECTION", waxProjectionPath)
 
 	runCLI := func(args ...string) string {
 		t.Helper()
