@@ -364,6 +364,10 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	if !strings.Contains(verify, `"valid": true`) {
 		t.Fatalf("expected verify JSON output, got %q", verify)
 	}
+	rebuild := runCLI("index", "rebuild", "--db", dbPath, "--root", indexRoot, "--json")
+	if !strings.Contains(rebuild, `"projection_count": 4`) {
+		t.Fatalf("expected rebuild JSON output, got %q", rebuild)
+	}
 
 	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--wax-bin", fakeWaxPath, "--json")
 	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_document_count": 4`) {
@@ -385,6 +389,117 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	}
 	if !strings.Contains(string(raxDocs), `"metadata":{`) || !strings.Contains(string(raxDocs), `"predicate":"USES_RETRIEVAL_RUNTIME"`) || !strings.Contains(string(raxDocs), `"projection_type":"fact"`) {
 		t.Fatalf("expected rax metadata to preserve Yeoul projection metadata, got %q", string(raxDocs))
+	}
+}
+
+func TestCLIIndexVerifyRejectsCorruptProjectionContent(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "index-corrupt.lbug")
+	indexRoot := filepath.Join(tmpDir, "index")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "episode", "--db", dbPath, "--kind", "note", "--content", "original searchable content")
+	runCLI("index", "build", "--db", dbPath, "--root", indexRoot)
+
+	projectionPath := filepath.Join(indexRoot, "projection.ndjson")
+	projectionData, err := os.ReadFile(projectionPath)
+	if err != nil {
+		t.Fatalf("read projection: %v", err)
+	}
+	corruptData := strings.ReplaceAll(string(projectionData), "original searchable content", "corrupted stale content")
+	if err := os.WriteFile(projectionPath, []byte(corruptData), 0o644); err != nil {
+		t.Fatalf("write corrupt projection: %v", err)
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	err = run(ctx, []string{"index", "verify", "--db", dbPath, "--root", indexRoot}, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected verify to reject corrupt projection content, got stdout=%q", stdout.String())
+	}
+	if !strings.Contains(err.Error(), "projection documents do not match") {
+		t.Fatalf("expected projection document mismatch, got err=%v stderr=%s", err, stderr.String())
+	}
+}
+
+func TestCLIIndexVerifyReadsLargeProjectionDocuments(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "index-large.lbug")
+	indexRoot := filepath.Join(tmpDir, "index")
+	contentPath := filepath.Join(tmpDir, "large.txt")
+	if err := os.WriteFile(contentPath, []byte(strings.Repeat("A", 70_000)), 0o644); err != nil {
+		t.Fatalf("write large content: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "file", "--db", dbPath, "--kind", "note", "--file", contentPath)
+	runCLI("index", "build", "--db", dbPath, "--root", indexRoot)
+	verify := runCLI("index", "verify", "--db", dbPath, "--root", indexRoot, "--json")
+	if !strings.Contains(verify, `"valid": true`) {
+		t.Fatalf("expected large projection verify to succeed, got %q", verify)
+	}
+}
+
+func TestCLIIndexRejectsUnsafeProjectionManifestPath(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "index-unsafe-path.lbug")
+	indexRoot := filepath.Join(tmpDir, "index")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "episode", "--db", dbPath, "--kind", "note", "--content", "safe projection path")
+	runCLI("index", "build", "--db", dbPath, "--root", indexRoot)
+
+	manifestPath := filepath.Join(indexRoot, "yeoul-index.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	unsafeManifest := strings.Replace(string(manifestData), `"projection_file": "projection.ndjson"`, `"projection_file": "../projection.ndjson"`, 1)
+	if err := os.WriteFile(manifestPath, []byte(unsafeManifest), 0o644); err != nil {
+		t.Fatalf("write unsafe manifest: %v", err)
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	err = run(ctx, []string{"index", "status", "--root", indexRoot}, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected status to reject unsafe projection path, got stdout=%q", stdout.String())
+	}
+	if !strings.Contains(err.Error(), "invalid projection file") {
+		t.Fatalf("expected invalid projection file error, got err=%v stderr=%s", err, stderr.String())
 	}
 }
 
@@ -767,6 +882,48 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 	}
 	if parsed.Metadata["observed_at_basis"] != "system_time_default" {
 		t.Fatalf("expected system-time observed_at basis, got %v in %q", parsed.Metadata, systemObserved)
+	}
+}
+
+func TestCLIFactAssertUpsertFailureIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "fact-upsert-atomic.lbug")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	err := run(ctx, []string{
+		"fact", "assert",
+		"--db", dbPath,
+		"--predicate", "HAS_BROKEN_SUPPORT",
+		"--upsert-subject",
+		"--subject-type", "Project",
+		"--subject-name", "Orphan",
+		"--value-text", "should not partially persist",
+		"--observed-at", "2026-05-28T03:40:00Z",
+		"--supporting-episodes", "missing-episode",
+	}, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected fact assert to fail for missing supporting episode, got stdout=%q", stdout.String())
+	}
+
+	counts := runCLI("inspect", "counts", "--db", dbPath, "--json")
+	for _, want := range []string{`"entities": 0`, `"facts": 0`, `"episodes": 0`} {
+		if !strings.Contains(counts, want) {
+			t.Fatalf("expected failed upsert assert to leave no records; missing %q in %q", want, counts)
+		}
 	}
 }
 

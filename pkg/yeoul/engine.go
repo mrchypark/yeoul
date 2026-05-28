@@ -1761,8 +1761,7 @@ func summarize(content string) string {
 }
 
 func normalizeEntityID(namespace, entityType, canonical string) string {
-	parts := []string{normalizeIDPart(namespace), normalizeIDPart(entityType), normalizeIDPart(canonical)}
-	return strings.Trim(strings.Join(parts, ":"), ":")
+	return EntityID(namespace, entityType, canonical)
 }
 
 func normalizeSourceID(kind, externalRef string) string {

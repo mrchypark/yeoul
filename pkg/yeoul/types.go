@@ -2,8 +2,15 @@ package yeoul
 
 import (
 	"context"
+	"strings"
 	"time"
 )
+
+// EntityID returns the deterministic entity ID generated from entity identity fields.
+func EntityID(namespace, entityType, canonical string) string {
+	parts := []string{normalizeIDPart(namespace), normalizeIDPart(entityType), normalizeIDPart(canonical)}
+	return strings.Trim(strings.Join(parts, ":"), ":")
+}
 
 type Engine interface {
 	Close(ctx context.Context) error

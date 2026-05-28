@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -232,8 +233,12 @@ Usage:
 	if !sameCounts(expected.Counts, manifest.Counts) {
 		return fmt.Errorf("index verification failed: database counts %v do not match manifest counts %v", expected.Counts, manifest.Counts)
 	}
-	if !sameProjectionIDs(expectedProjections, actualProjections) {
-		return fmt.Errorf("index verification failed: projection ids do not match database records")
+	same, err := sameProjectionDocuments(expectedProjections, actualProjections)
+	if err != nil {
+		return err
+	}
+	if !same {
+		return fmt.Errorf("index verification failed: projection documents do not match database records")
 	}
 	result := indexVerifyResult{
 		Root:            root,
@@ -423,11 +428,23 @@ func writeProjectionArtifacts(root string, projections []projectionDocument, man
 	manifestPath := filepath.Join(root, "yeoul-index.json")
 	projectionPath := filepath.Join(root, manifest.ProjectionFile)
 
-	projectionFile, err := os.Create(projectionPath)
+	projectionFile, err := os.CreateTemp(root, ".projection-*.ndjson")
 	if err != nil {
 		return "", "", err
 	}
-	defer projectionFile.Close()
+	projectionTempPath := projectionFile.Name()
+	removeProjectionTemp := true
+	defer func() {
+		if removeProjectionTemp {
+			os.Remove(projectionTempPath)
+		}
+	}()
+	projectionFileOpen := true
+	defer func() {
+		if projectionFileOpen {
+			projectionFile.Close()
+		}
+	}()
 
 	encoder := json.NewEncoder(projectionFile)
 	for _, projection := range projections {
@@ -435,15 +452,57 @@ func writeProjectionArtifacts(root string, projections []projectionDocument, man
 			return "", "", err
 		}
 	}
+	if err := projectionFile.Close(); err != nil {
+		return "", "", err
+	}
+	projectionFileOpen = false
 
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", "", err
 	}
-	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+	manifestFile, err := os.CreateTemp(root, ".yeoul-index-*.json")
+	if err != nil {
 		return "", "", err
 	}
+	manifestTempPath := manifestFile.Name()
+	removeManifestTemp := true
+	defer func() {
+		if removeManifestTemp {
+			os.Remove(manifestTempPath)
+		}
+	}()
+	if n, err := manifestFile.Write(data); err != nil {
+		manifestFile.Close()
+		return "", "", err
+	} else if n != len(data) {
+		manifestFile.Close()
+		return "", "", io.ErrShortWrite
+	}
+	if err := manifestFile.Close(); err != nil {
+		return "", "", err
+	}
+	if err := replaceProjectionFile(projectionTempPath, projectionPath); err != nil {
+		return "", "", err
+	}
+	removeProjectionTemp = false
+	if err := replaceProjectionFile(manifestTempPath, manifestPath); err != nil {
+		return "", "", err
+	}
+	removeManifestTemp = false
 	return manifestPath, projectionPath, nil
+}
+
+func replaceProjectionFile(tempPath, finalPath string) error {
+	if err := os.Rename(tempPath, finalPath); err == nil {
+		return nil
+	} else if runtime.GOOS != "windows" || !os.IsExist(err) {
+		return err
+	}
+	if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(tempPath, finalPath)
 }
 
 func loadProjectionManifest(root string) (string, string, projectionManifest, error) {
@@ -456,11 +515,23 @@ func loadProjectionManifest(root string) (string, string, projectionManifest, er
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return "", "", projectionManifest{}, err
 	}
-	projectionPath := filepath.Join(root, manifest.ProjectionFile)
+	projectionFileName, err := safeProjectionFileName(manifest.ProjectionFile)
+	if err != nil {
+		return "", "", projectionManifest{}, err
+	}
+	projectionPath := filepath.Join(root, projectionFileName)
 	if _, err := os.Stat(projectionPath); err != nil {
 		return "", "", projectionManifest{}, err
 	}
 	return manifestPath, projectionPath, manifest, nil
+}
+
+func safeProjectionFileName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." || filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) || filepath.Clean(name) != name {
+		return "", fmt.Errorf("invalid projection file in manifest: %q", name)
+	}
+	return name, nil
 }
 
 func loadProjectionDocuments(path string) ([]projectionDocument, error) {
@@ -470,24 +541,19 @@ func loadProjectionDocuments(path string) ([]projectionDocument, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	decoder := json.NewDecoder(file)
 	projections := make([]projectionDocument, 0)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	for {
 		var projection projectionDocument
-		if err := json.Unmarshal([]byte(line), &projection); err != nil {
+		if err := decoder.Decode(&projection); err == io.EOF {
+			break
+		} else if err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(projection.ProjectionID) == "" {
 			return nil, fmt.Errorf("projection missing projection_id")
 		}
 		projections = append(projections, projection)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	return projections, nil
 }
@@ -537,24 +603,37 @@ func sameCounts(left, right map[string]int) bool {
 	return true
 }
 
-func sameProjectionIDs(expected, actual []projectionDocument) bool {
+func sameProjectionDocuments(expected, actual []projectionDocument) (bool, error) {
 	if len(expected) != len(actual) {
-		return false
+		return false, nil
 	}
-	expectedIDs := make([]string, 0, len(expected))
-	actualIDs := make([]string, 0, len(actual))
-	for _, projection := range expected {
-		expectedIDs = append(expectedIDs, projection.ProjectionID)
+	expectedByID, ok, err := projectionDocumentMap(expected)
+	if err != nil || !ok {
+		return ok, err
 	}
-	for _, projection := range actual {
-		actualIDs = append(actualIDs, projection.ProjectionID)
+	actualByID, ok, err := projectionDocumentMap(actual)
+	if err != nil || !ok {
+		return ok, err
 	}
-	sort.Strings(expectedIDs)
-	sort.Strings(actualIDs)
-	for index := range expectedIDs {
-		if expectedIDs[index] != actualIDs[index] {
-			return false
+	for id, expectedData := range expectedByID {
+		if actualByID[id] != expectedData {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
+}
+
+func projectionDocumentMap(projections []projectionDocument) (map[string]string, bool, error) {
+	byID := make(map[string]string, len(projections))
+	for _, projection := range projections {
+		if _, exists := byID[projection.ProjectionID]; exists {
+			return nil, false, nil
+		}
+		data, err := json.Marshal(projection)
+		if err != nil {
+			return nil, false, err
+		}
+		byID[projection.ProjectionID] = string(data)
+	}
+	return byID, true, nil
 }

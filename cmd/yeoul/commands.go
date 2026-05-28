@@ -1378,32 +1378,6 @@ Usage:
 		return err
 	}
 	supportingEpisodeIDs := splitCSV(supportingEpisodes)
-	if upsertSubject {
-		subject, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
-			ID:            subjectID,
-			Namespace:     subjectNamespace,
-			Type:          subjectType,
-			CanonicalName: subjectName,
-		})
-		if err != nil {
-			_ = closeEngine(ctx, eng)
-			return err
-		}
-		subjectID = subject.ID
-	}
-	if upsertObject {
-		object, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
-			ID:            objectID,
-			Namespace:     objectNamespace,
-			Type:          objectType,
-			CanonicalName: objectName,
-		})
-		if err != nil {
-			_ = closeEngine(ctx, eng)
-			return err
-		}
-		objectID = object.ID
-	}
 	observedAtInfo, err := inferFactObservedAt(ctx, eng, supportingEpisodeIDs, observedAtRaw)
 	if err != nil {
 		_ = closeEngine(ctx, eng)
@@ -1412,7 +1386,36 @@ Usage:
 		}
 		return err
 	}
-	result, err := eng.AssertFact(ctx, yeoul.FactInput{
+
+	batch := yeoul.BatchInput{}
+	if upsertSubject {
+		subjectInput := yeoul.EntityInput{
+			ID:            subjectID,
+			Namespace:     subjectNamespace,
+			Type:          subjectType,
+			CanonicalName: subjectName,
+		}
+		if strings.TrimSpace(subjectID) == "" {
+			subjectID = yeoul.EntityID(subjectNamespace, subjectType, subjectName)
+			subjectInput.ID = subjectID
+		}
+		batch.Entities = append(batch.Entities, subjectInput)
+	}
+	if upsertObject {
+		objectInput := yeoul.EntityInput{
+			ID:            objectID,
+			Namespace:     objectNamespace,
+			Type:          objectType,
+			CanonicalName: objectName,
+		}
+		if strings.TrimSpace(objectID) == "" {
+			objectID = yeoul.EntityID(objectNamespace, objectType, objectName)
+			objectInput.ID = objectID
+		}
+		batch.Entities = append(batch.Entities, objectInput)
+	}
+
+	factInput := yeoul.FactInput{
 		Predicate:            predicate,
 		SubjectID:            subjectID,
 		ObjectID:             objectID,
@@ -1420,7 +1423,22 @@ Usage:
 		ObservedAt:           observedAtInfo.ObservedAt,
 		SupportingEpisodeIDs: supportingEpisodeIDs,
 		Metadata:             observedAtInfo.Metadata(),
-	})
+	}
+	var result *yeoul.Fact
+	if len(batch.Entities) > 0 {
+		batch.Facts = []yeoul.FactInput{factInput}
+		batchResult, batchErr := eng.IngestBatch(ctx, batch)
+		if batchErr == nil {
+			if len(batchResult.FactIDs) != 1 {
+				batchErr = fmt.Errorf("fact assert failed: expected 1 fact id, got %d", len(batchResult.FactIDs))
+			} else {
+				result, batchErr = eng.GetFact(ctx, batchResult.FactIDs[0])
+			}
+		}
+		err = batchErr
+	} else {
+		result, err = eng.AssertFact(ctx, factInput)
+	}
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
 		err = closeErr
 	}
