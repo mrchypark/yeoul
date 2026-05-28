@@ -1,11 +1,13 @@
 ---
 name: yeoul-memory
-description: Use when working in the Yeoul repository or when an agent should store, search, or explain durable local temporal memory with Yeoul. Covers when to remember, when to search first, which CLI commands to use, and how to report provenance and lifecycle state safely.
+description: Use when working in the Yeoul repository or when an agent should store, search, or explain durable local temporal memory with Yeoul, including decisions, constraints, status, provenance, and falsifiable change contracts.
 ---
 
 # Yeoul Memory
 
 Use this skill when the task depends on prior project memory, durable decisions, fact lifecycle, or provenance in the Yeoul repo.
+
+Yeoul is active working memory, not only a decision log. In addition to settled decisions, use it to record falsifiable change contracts for agent harnesses, skills, prompts, evaluators, workflows, or automation changes whose predicted effects should be checked later.
 
 ## Default database path
 
@@ -22,6 +24,7 @@ Search Yeoul before answering when:
 - the user asks what was decided before
 - the task depends on prior project constraints or status
 - a new fact may conflict with existing memory
+- a change may depend on previous predictions, regressions, rollbacks, or evaluation results
 - you need provenance or change history
 
 Prefer:
@@ -50,6 +53,7 @@ Store memory only when the content is likely to matter later:
 - stable constraints
 - ownership or status changes
 - corrections or retractions
+- falsifiable change contracts and their evaluation results
 - repeated problems and resolutions
 
 Do not store:
@@ -63,6 +67,32 @@ Default behavior:
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - after storing the source episode, promote stable decisions, status, ownership, and dependency relationships to facts when the subject can be named
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
+
+## Falsifiable change contracts
+
+When modifying an agent harness, skill, prompt, evaluator, automation, memory policy, or other behavior-shaping workflow, record a change contract before or with the change when future evaluation matters.
+
+A change contract is not a settled decision. Treat it as a testable hypothesis with lifecycle state.
+
+Include, when available:
+- `Topic`: the contract topic
+- `Contract ID`: a stable local identifier
+- `Context`: the failing task, limitation, or repeated pattern
+- `Change`: the intended file, prompt, policy, command, or workflow change
+- `Prediction`: what task, benchmark, metric, or behavior should improve
+- `Regression risk`: what task, metric, or behavior might get worse
+- `Falsification condition`: what future evidence would show the change did not work
+- `Rollback plan`: the rollback unit, such as file, patch, commit, config, or instruction block
+- `Evaluation result`: observed results after the next relevant run
+- `Status`: `proposed`, `active`, `validated`, `falsified`, `reverted`, or `superseded`
+
+Use this pattern when a future agent should compare predicted and observed effects, especially for harness self-improvement loops. Do not use it for routine notes with no evaluation path.
+
+After evaluation:
+- keep validated and falsified contracts for future retrieval
+- record regressions explicitly instead of deleting the contract
+- use lifecycle operations for state changes when a fact already exists
+- roll back at the planned unit when the falsification condition or regression threshold is met
 
 When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:

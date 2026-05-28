@@ -81,6 +81,61 @@ Revisit when:
 Prefer the most reusable abstraction that is still true.
 If the current project choice is only one example of a broader rule, store the broader rule as the main decision and keep the project-specific detail under `Current application`.
 
+## Store a falsifiable change contract
+
+Use a change contract when a workflow, harness, skill, prompt, evaluator, or automation change should be checked against a later result. Record the prediction and the possible regression before treating the change as validated.
+
+```text
+Topic: harness timeout recovery contract
+Contract ID: contract_2026_05_13_harness_timeout_recovery
+Context:
+- evaluation task retry-on-timeout currently fails after the first timeout
+Change:
+- update the harness retry policy in skills/domain/example/SKILL.md
+Prediction:
+- retry-on-timeout should pass in the next evaluation run
+- timeout-related manual intervention should decrease
+Regression risk:
+- tasks that depend on immediate failure may run longer
+- stale browser sessions may be reused too aggressively
+Falsification condition:
+- retry-on-timeout still fails for the same reason
+- any unrelated timeout-sensitive task regresses
+Rollback plan:
+- revert the retry-policy block in skills/domain/example/SKILL.md
+Evaluation result:
+- pending
+Status: active
+```
+
+Store it as an episode unless there is already a clear subject, predicate, and supporting episode set for a fact:
+
+```bash
+yeoul ingest episode --db "$YEOUL_DB" \
+  --kind note \
+  --content "$(< contract.md)" \
+  --source-kind note \
+  --source-external-ref "change-contract:contract_2026_05_13_harness_timeout_recovery"
+```
+
+After the next evaluation, add an outcome episode instead of overwriting the original contract:
+
+```text
+Topic: harness timeout recovery contract outcome
+Contract ID: contract_2026_05_13_harness_timeout_recovery
+Evaluation result:
+- retry-on-timeout passed
+- one immediate-failure task regressed by waiting for retries
+Prediction match:
+- primary prediction matched
+- regression risk materialized
+Action:
+- falsified and reverted the retry-policy block
+Status: reverted
+```
+
+Use `fact supersede --confirm` only when a previously asserted current-status fact needs a lifecycle update. Keep the original contract and outcome episodes as provenance.
+
 For file-backed content:
 
 ```bash
