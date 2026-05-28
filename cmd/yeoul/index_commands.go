@@ -346,7 +346,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			Metadata:     meta,
 		}
 		if !episode.ObservedAt.IsZero() {
-			ts := uint64(episode.ObservedAt.UTC().UnixMilli())
+			ts := projectionTimestampMS(episode.ObservedAt)
 			doc.ObservedAtMS = &ts
 		}
 		projections = append(projections, doc)
@@ -403,7 +403,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			Metadata:     meta,
 		}
 		if !fact.ObservedAt.IsZero() {
-			ts := uint64(fact.ObservedAt.UTC().UnixMilli())
+			ts := projectionTimestampMS(fact.ObservedAt)
 			doc.ObservedAtMS = &ts
 		}
 		projections = append(projections, doc)
@@ -419,6 +419,14 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 		BuiltAt:         time.Now().UTC(),
 	}
 	return projections, manifest
+}
+
+func projectionTimestampMS(observedAt time.Time) uint64 {
+	milli := observedAt.UTC().UnixMilli()
+	if milli < 0 {
+		return 0
+	}
+	return uint64(milli)
 }
 
 func writeProjectionArtifacts(root string, projections []projectionDocument, manifest projectionManifest) (string, string, error) {
@@ -472,16 +480,21 @@ func writeProjectionArtifacts(root string, projections []projectionDocument, man
 			os.Remove(manifestTempPath)
 		}
 	}()
+	manifestFileOpen := true
+	defer func() {
+		if manifestFileOpen {
+			manifestFile.Close()
+		}
+	}()
 	if n, err := manifestFile.Write(data); err != nil {
-		manifestFile.Close()
 		return "", "", err
 	} else if n != len(data) {
-		manifestFile.Close()
 		return "", "", io.ErrShortWrite
 	}
 	if err := manifestFile.Close(); err != nil {
 		return "", "", err
 	}
+	manifestFileOpen = false
 	if err := replaceProjectionFile(projectionTempPath, projectionPath); err != nil {
 		return "", "", err
 	}
@@ -572,6 +585,12 @@ func writeTemporaryRaxRawDocuments(root string, projections []projectionDocument
 			os.Remove(path)
 		}
 	}()
+	fileOpen := true
+	defer func() {
+		if fileOpen {
+			file.Close()
+		}
+	}()
 
 	encoder := json.NewEncoder(file)
 	for _, projection := range projections {
@@ -582,13 +601,13 @@ func writeTemporaryRaxRawDocuments(root string, projections []projectionDocument
 			TimestampMS: projection.ObservedAtMS,
 		}
 		if err := encoder.Encode(rawDocument); err != nil {
-			file.Close()
 			return "", err
 		}
 	}
 	if err := file.Close(); err != nil {
 		return "", err
 	}
+	fileOpen = false
 	removeOnError = false
 	return path, nil
 }

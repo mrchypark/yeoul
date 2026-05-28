@@ -462,6 +462,63 @@ func TestCLIIndexVerifyReadsLargeProjectionDocuments(t *testing.T) {
 	}
 }
 
+func TestCLIIndexClampsPreUnixEpochProjectionTimestamps(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "index-pre-epoch.lbug")
+	ingestPath := filepath.Join(tmpDir, "pre-epoch.json")
+	indexRoot := filepath.Join(tmpDir, "index")
+
+	payload := `{
+  "episodes": [
+    {
+      "id":"ep-pre-epoch",
+      "kind":"note",
+      "content":"historical observation",
+      "observed_at":"1960-01-02T03:04:05Z"
+    }
+  ],
+  "entities": [
+    {"id":"project:history","type":"Project","canonical_name":"History"}
+  ],
+  "facts": [
+    {
+      "id":"fact-pre-epoch",
+      "predicate":"HAS_OBSERVATION",
+      "subject_id":"project:history",
+      "value_text":"historical fact",
+      "observed_at":"1960-01-02T03:04:05Z",
+      "supporting_episode_ids":["ep-pre-epoch"]
+    }
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+	runCLI("index", "build", "--db", dbPath, "--root", indexRoot)
+
+	projectionData, err := os.ReadFile(filepath.Join(indexRoot, "projection.ndjson"))
+	if err != nil {
+		t.Fatalf("read projection: %v", err)
+	}
+	if got := strings.Count(string(projectionData), `"observed_at_ms":0`); got != 2 {
+		t.Fatalf("expected episode and fact timestamps to clamp to zero, got %d in %q", got, string(projectionData))
+	}
+}
+
 func TestCLIIndexRejectsUnsafeProjectionManifestPath(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
