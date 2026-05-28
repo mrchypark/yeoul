@@ -103,7 +103,7 @@ Usage:
   yeoul entity merge --db PATH --target ID --source IDS --reason TEXT [--json] [--confirm]
   yeoul fact get --db PATH --id ID [--json]
   yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--as-of RFC3339] [--include-inactive] [--limit N] [--json]
-  yeoul fact assert --db PATH --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS [--json]
+  yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-type TYPE --subject-name NAME) [--object-id ID | --upsert-object --object-type TYPE --object-name NAME] [--value-text TEXT] [--observed-at RFC3339] --supporting-episodes IDS [--json]
   yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS --reason TEXT [--json]
   yeoul fact retract --db PATH --id ID --reason TEXT [--json]
   yeoul policy validate --path PATH [--json]

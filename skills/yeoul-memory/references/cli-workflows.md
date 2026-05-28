@@ -55,6 +55,8 @@ yeoul ingest episode --db "$YEOUL_DB" \
   --source-external-ref decision-log
 ```
 
+Use episode ingest as the provenance step, not always the final memory shape. If the episode contains a confirmed decision, stable constraint, status change, ownership change, dependency relation, or correction that future agents should retrieve through fact lookup, continue with structured promotion.
+
 For decisions, prefer recording structured context instead of only the conclusion:
 
 ```text
@@ -88,6 +90,45 @@ yeoul ingest file --db "$YEOUL_DB" \
   --source-kind file \
   --source-external-ref notes/decision.txt
 ```
+
+## Promote clear state to a fact
+
+When the subject entity already exists, assert the fact directly:
+
+```bash
+yeoul fact assert --db "$YEOUL_DB" \
+  --predicate HAS_DECISION \
+  --subject-id project:yeoul \
+  --value-text "Yeoul uses one user-level database for normal work" \
+  --observed-at 2026-04-17T00:00:00Z \
+  --supporting-episodes ep_000003
+```
+
+When the subject is clear but the entity has not been created yet, let the CLI create or update it before asserting the fact:
+
+```bash
+yeoul fact assert --db "$YEOUL_DB" \
+  --predicate HAS_DECISION \
+  --upsert-subject \
+  --subject-type Project \
+  --subject-name Yeoul \
+  --value-text "Yeoul uses one user-level database for normal work" \
+  --supporting-episodes ep_000003
+```
+
+If `--observed-at` is omitted, `fact assert` uses the first non-empty `observed_at` from the supporting episodes, then falls back to system time. Pass `--observed-at` explicitly when the fact observation time differs from the episode time. The CLI records the basis in metadata, for example `observed_at_basis=system_time_default`.
+
+For relationships, the object can be upserted in the same command:
+
+```bash
+yeoul fact assert --db "$YEOUL_DB" \
+  --predicate USES_STORAGE_ENGINE \
+  --upsert-subject --subject-type Project --subject-name Yeoul \
+  --upsert-object --object-type Database --object-name Ladybug \
+  --supporting-episodes ep_000001
+```
+
+Keep episode-only when the content is ambiguous, exploratory, or lacks a stable subject and predicate.
 
 ## Record lifecycle changes
 

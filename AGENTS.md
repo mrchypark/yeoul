@@ -64,6 +64,7 @@ Do not treat every message as durable memory. Prefer quality over quantity.
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
 - prefer storing at the end of a decision, implementation, review, or correction cycle
+- after storing the source episode, promote stable decisions, status, ownership, and dependency relationships to facts when the subject can be named
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
 When recording a decision, prefer storing more than the conclusion alone.
@@ -84,7 +85,9 @@ Do not let a product name, environment name, or one-off implementation detail be
 ## Write rules
 
 Use `ingest episode` or `ingest file` for source records.
-Use `fact assert` only when the subject and supporting episode are clear.
+Use `fact assert` when the subject and supporting episode are clear.
+Prefer `fact assert --upsert-subject --subject-type TYPE --subject-name NAME` when the fact subject is clear but the entity has not been created yet.
+Pass `fact assert --observed-at RFC3339` when the fact observation time differs from the supporting episode time; otherwise the CLI inherits the first non-empty supporting episode `observed_at`, then falls back to system time with `observed_at_basis=system_time_default`.
 Do not overwrite old facts when the state changes.
 Prefer lifecycle operations such as `fact supersede` and `fact retract` with an explicit reason.
 Preserve provenance when storing or summarizing memory.

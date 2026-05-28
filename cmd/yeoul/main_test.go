@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	json "github.com/goccy/go-json"
 )
@@ -67,11 +68,20 @@ func TestCLIInitIngestEpisodeAndSearch(t *testing.T) {
 	runCLI(
 		"ingest", "episode",
 		"--db", dbPath,
+		"--id", "ep-now",
 		"--kind", "note",
 		"--content", "Ladybug remains an internal storage concern.",
 		"--source-kind", "note",
 		"--source-external-ref", "thread-1",
 	)
+
+	episode := runCLI("get", "--db", dbPath, "--kind", "episode", "--id", "ep-now", "--json")
+	if strings.Contains(episode, `"observed_at": "0001-01-01T00:00:00Z"`) {
+		t.Fatalf("expected direct CLI episode ingest to default observed_at to system time, got %q", episode)
+	}
+	if !strings.Contains(episode, `"observed_at_basis": "system_time_default"`) {
+		t.Fatalf("expected episode metadata to record system-time observed_at basis, got %q", episode)
+	}
 
 	output := runCLI("search", "--db", dbPath, "--query", "Ladybug")
 	if !strings.Contains(output, "Ladybug remains an internal storage concern.") {
@@ -617,6 +627,146 @@ func TestCLITimelineProvenanceAndFactLookup(t *testing.T) {
 	lookup := runCLI("fact", "lookup", "--db", dbPath, "--subject-id", "project:yeoul", "--predicate", "USES_STORAGE_ENGINE", "--json")
 	if !strings.Contains(lookup, `"fact-q1"`) {
 		t.Fatalf("expected fact lookup output, got %q", lookup)
+	}
+}
+
+func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "fact-upsert-subject.lbug")
+	ingestPath := filepath.Join(tmpDir, "fact-upsert-subject.json")
+
+	payload := `{
+  "episodes": [
+    {
+      "id":"ep-decision",
+      "kind":"decision_note",
+      "content":"Use structured facts for stable decisions.",
+      "source":{"kind":"note","external_ref":"thread-decision"},
+      "observed_at":"2026-05-28T03:10:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+	asserted := runCLI("fact", "assert", "--db", dbPath,
+		"--predicate", "HAS_DECISION",
+		"--upsert-subject",
+		"--subject-type", "DecisionTopic",
+		"--subject-name", "Structured memory promotion",
+		"--value-text", "Confirmed durable decisions should be promoted to facts when the subject is clear.",
+		"--supporting-episodes", "ep-decision",
+		"--json")
+	for _, want := range []string{
+		`"predicate": "HAS_DECISION"`,
+		`"subject_id": "decisiontopic:structured-memory-promotion"`,
+		`"observed_at": "2026-05-28T03:10:00Z"`,
+		`"observed_at_basis": "supporting_episode"`,
+		`"observed_at_supporting_episode_id": "ep-decision"`,
+		`"supporting_episode_ids": [`,
+		`"ep-decision"`,
+	} {
+		if !strings.Contains(asserted, want) {
+			t.Fatalf("expected asserted fact output to contain %q, got %q", want, asserted)
+		}
+	}
+
+	counts := runCLI("inspect", "counts", "--db", dbPath, "--json")
+	if !strings.Contains(counts, `"entities": 1`) || !strings.Contains(counts, `"facts": 1`) {
+		t.Fatalf("expected one entity and one fact, got %q", counts)
+	}
+
+	lookup := runCLI("fact", "lookup", "--db", dbPath,
+		"--subject-id", "decisiontopic:structured-memory-promotion",
+		"--predicate", "HAS_DECISION",
+		"--json")
+	if !strings.Contains(lookup, `"HAS_DECISION"`) || !strings.Contains(lookup, `"ep-decision"`) {
+		t.Fatalf("expected promoted fact lookup output, got %q", lookup)
+	}
+
+	relationship := runCLI("fact", "assert", "--db", dbPath,
+		"--predicate", "USES_STORAGE_ENGINE",
+		"--upsert-subject",
+		"--subject-type", "Project",
+		"--subject-name", "Yeoul",
+		"--upsert-object",
+		"--object-type", "Database",
+		"--object-name", "Ladybug",
+		"--supporting-episodes", "ep-decision",
+		"--json")
+	for _, want := range []string{
+		`"predicate": "USES_STORAGE_ENGINE"`,
+		`"subject_id": "project:yeoul"`,
+		`"object_id": "database:ladybug"`,
+	} {
+		if !strings.Contains(relationship, want) {
+			t.Fatalf("expected relationship fact output to contain %q, got %q", want, relationship)
+		}
+	}
+
+	explicitObserved := runCLI("fact", "assert", "--db", dbPath,
+		"--predicate", "HAS_VERIFICATION_STATUS",
+		"--upsert-subject",
+		"--subject-type", "Feature",
+		"--subject-name", "Observed at CLI flag",
+		"--value-text", "explicit observed_at wins",
+		"--supporting-episodes", "ep-decision",
+		"--observed-at", "2026-05-29T04:11:00Z",
+		"--json")
+	if !strings.Contains(explicitObserved, `"observed_at": "2026-05-29T04:11:00Z"`) || !strings.Contains(explicitObserved, `"observed_at_basis": "explicit"`) {
+		t.Fatalf("expected explicit observed_at, got %q", explicitObserved)
+	}
+
+	noObservedPayload := `{
+  "episodes": [
+    {
+      "id":"ep-no-observed",
+      "kind":"decision_note",
+      "content":"No observed time was supplied.",
+      "source":{"kind":"note","external_ref":"thread-no-observed"}
+    }
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(noObservedPayload), 0o644); err != nil {
+		t.Fatalf("write no-observed ingest payload: %v", err)
+	}
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+	before := time.Now().UTC().Add(-2 * time.Second)
+	systemObserved := runCLI("fact", "assert", "--db", dbPath,
+		"--predicate", "HAS_SYSTEM_OBSERVED_AT",
+		"--upsert-subject",
+		"--subject-type", "Feature",
+		"--subject-name", "System observed at fallback",
+		"--value-text", "system time fallback",
+		"--supporting-episodes", "ep-no-observed",
+		"--json")
+	after := time.Now().UTC().Add(2 * time.Second)
+	var parsed struct {
+		ObservedAt time.Time      `json:"observed_at"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	if err := json.Unmarshal([]byte(systemObserved), &parsed); err != nil {
+		t.Fatalf("parse system observed fact: %v\noutput=%s", err, systemObserved)
+	}
+	if parsed.ObservedAt.Before(before) || parsed.ObservedAt.After(after) {
+		t.Fatalf("expected system observed_at between %s and %s, got %s", before, after, parsed.ObservedAt)
+	}
+	if parsed.Metadata["observed_at_basis"] != "system_time_default" {
+		t.Fatalf("expected system-time observed_at basis, got %v in %q", parsed.Metadata, systemObserved)
 	}
 }
 

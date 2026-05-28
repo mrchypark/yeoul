@@ -62,7 +62,7 @@ During implementation, review, or debugging:
 
 ### 4. Capture durable outcomes at the end of a cycle
 
-When a decision, fix, status change, or correction becomes clear, store a source episode even if the user did not explicitly ask to save it.
+When a decision, fix, status change, or correction becomes clear, store a source episode even if the user did not explicitly ask to save it. Then decide whether the episode contains stable structured state that should be promoted to a fact.
 
 For decisions, do not save only the conclusion when richer context is available.
 Prefer a compact decision record that preserves how the choice was made.
@@ -148,18 +148,35 @@ Current application:
 - fall back to single-node vind plus replica pod deletion chaos when needed
 ```
 
-### 5. Promote structured state only when clear
+### 5. Promote structured state when clear
 
 Plain-text episode ingest does not automatically create entities or facts from free text.
-Use fact lifecycle commands only when the subject and supporting episode are clear.
+Use fact lifecycle commands when the subject, predicate, and supporting episode are clear.
 
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
   --predicate HAS_STATUS \
   --subject-id project_yeoul \
   --value-text "active" \
+  --observed-at 2026-04-17T00:00:00Z \
   --supporting-episodes ep_000001
 ```
+
+If the subject entity does not exist yet, create or update it while asserting the fact:
+
+```bash
+yeoul fact assert --db "$YEOUL_DB" \
+  --predicate HAS_DECISION \
+  --upsert-subject \
+  --subject-type Project \
+  --subject-name Yeoul \
+  --value-text "Use one user-level Yeoul database for normal work" \
+  --supporting-episodes ep_000003
+```
+
+When `--observed-at` is omitted, `fact assert` inherits the first non-empty `observed_at` from the supporting episodes, then falls back to system time. Use an explicit `--observed-at` when the fact was observed at a different time. The CLI records the choice in metadata such as `observed_at_basis=system_time_default`.
+
+Do not stop at episode-only for confirmed decisions, stable constraints, ownership/status/dependency changes, or corrections that future agents should retrieve through `fact lookup`, `timeline`, `provenance`, or conflict checks. Keep episode-only when the content is ambiguous, exploratory, or lacks a stable subject and predicate.
 
 When a state changes, prefer superseding instead of overwriting:
 

@@ -111,6 +111,14 @@ type factDuplicateCandidate struct {
 	ValueText string   `json:"value_text,omitempty"`
 }
 
+const (
+	observedAtBasisKey               = "observed_at_basis"
+	observedAtSupportingEpisodeIDKey = "observed_at_supporting_episode_id"
+	observedAtBasisExplicit          = "explicit"
+	observedAtBasisSupportingEpisode = "supporting_episode"
+	observedAtBasisSystemTimeDefault = "system_time_default"
+)
+
 func (c cli) runInit(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
@@ -340,12 +348,16 @@ Usage:
 	}
 
 	var observedAt time.Time
+	observedAtBasis := observedAtBasisSystemTimeDefault
 	if strings.TrimSpace(observedAtRaw) != "" {
 		parsed, err := time.Parse(time.RFC3339, observedAtRaw)
 		if err != nil {
 			return &usageError{message: usage}
 		}
 		observedAt = parsed
+		observedAtBasis = observedAtBasisExplicit
+	} else {
+		observedAt = time.Now().UTC()
 	}
 
 	input := yeoul.EpisodeInput{
@@ -355,6 +367,9 @@ Usage:
 		SourceID:   sourceID,
 		GroupID:    groupID,
 		ObservedAt: observedAt,
+		Metadata: map[string]any{
+			observedAtBasisKey: observedAtBasis,
+		},
 	}
 	if sourceKind != "" || sourceURI != "" || sourceExternalRef != "" {
 		input.Source = yeoul.SourceInput{
@@ -1177,7 +1192,7 @@ func (c cli) runFact(ctx context.Context, args []string) error {
 Usage:
   yeoul fact get --db PATH --id ID [--json]
   yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--as-of RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
-  yeoul fact assert --db PATH --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS [--json]
+  yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-type TYPE --subject-name NAME) [--object-id ID | --upsert-object --object-type TYPE --object-name NAME] [--value-text TEXT] [--observed-at RFC3339] --supporting-episodes IDS [--json]
   yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS --reason TEXT [--json]
   yeoul fact retract --db PATH --id ID --reason TEXT [--json]
 `)
@@ -1299,22 +1314,40 @@ Usage:
 func (c cli) runFactAssert(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul fact assert --db PATH --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS [--json]
+  yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-type TYPE --subject-name NAME) [--object-id ID | --upsert-object --object-type TYPE --object-name NAME] [--value-text TEXT] [--observed-at RFC3339] --supporting-episodes IDS [--json]
 `)
 
 	fs := newFlagSet("fact assert")
 	var dbPath string
 	var predicate string
 	var subjectID string
+	var subjectType string
+	var subjectName string
+	var subjectNamespace string
+	var upsertSubject bool
 	var objectID string
+	var objectType string
+	var objectName string
+	var objectNamespace string
+	var upsertObject bool
 	var valueText string
+	var observedAtRaw string
 	var supportingEpisodes string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&predicate, "predicate", "", "fact predicate")
 	fs.StringVar(&subjectID, "subject-id", "", "subject entity ID")
+	fs.StringVar(&subjectType, "subject-type", "", "subject entity type when --upsert-subject is set")
+	fs.StringVar(&subjectName, "subject-name", "", "subject canonical name when --upsert-subject is set")
+	fs.StringVar(&subjectNamespace, "subject-namespace", "", "subject entity namespace when --upsert-subject is set")
+	fs.BoolVar(&upsertSubject, "upsert-subject", false, "create or update the subject entity before asserting the fact")
 	fs.StringVar(&objectID, "object-id", "", "object entity ID")
+	fs.StringVar(&objectType, "object-type", "", "object entity type when --upsert-object is set")
+	fs.StringVar(&objectName, "object-name", "", "object canonical name when --upsert-object is set")
+	fs.StringVar(&objectNamespace, "object-namespace", "", "object entity namespace when --upsert-object is set")
+	fs.BoolVar(&upsertObject, "upsert-object", false, "create or update the object entity before asserting the fact")
 	fs.StringVar(&valueText, "value-text", "", "value text")
+	fs.StringVar(&observedAtRaw, "observed-at", "", "observed time in RFC3339 format")
 	fs.StringVar(&supportingEpisodes, "supporting-episodes", "", "comma-separated supporting episode IDs")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
@@ -1324,7 +1357,16 @@ Usage:
 	if handled {
 		return nil
 	}
-	if fs.NArg() != 0 || predicate == "" || subjectID == "" || supportingEpisodes == "" {
+	if fs.NArg() != 0 || predicate == "" || supportingEpisodes == "" {
+		return &usageError{message: usage}
+	}
+	if !upsertSubject && strings.TrimSpace(subjectID) == "" {
+		return &usageError{message: usage}
+	}
+	if upsertSubject && (strings.TrimSpace(subjectType) == "" || strings.TrimSpace(subjectName) == "") {
+		return &usageError{message: usage}
+	}
+	if upsertObject && (strings.TrimSpace(objectType) == "" || strings.TrimSpace(objectName) == "") {
 		return &usageError{message: usage}
 	}
 	if err := requireDB(dbPath, usage); err != nil {
@@ -1335,12 +1377,49 @@ Usage:
 	if err != nil {
 		return err
 	}
+	supportingEpisodeIDs := splitCSV(supportingEpisodes)
+	if upsertSubject {
+		subject, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
+			ID:            subjectID,
+			Namespace:     subjectNamespace,
+			Type:          subjectType,
+			CanonicalName: subjectName,
+		})
+		if err != nil {
+			_ = closeEngine(ctx, eng)
+			return err
+		}
+		subjectID = subject.ID
+	}
+	if upsertObject {
+		object, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
+			ID:            objectID,
+			Namespace:     objectNamespace,
+			Type:          objectType,
+			CanonicalName: objectName,
+		})
+		if err != nil {
+			_ = closeEngine(ctx, eng)
+			return err
+		}
+		objectID = object.ID
+	}
+	observedAtInfo, err := inferFactObservedAt(ctx, eng, supportingEpisodeIDs, observedAtRaw)
+	if err != nil {
+		_ = closeEngine(ctx, eng)
+		if strings.TrimSpace(observedAtRaw) != "" {
+			return &usageError{message: usage}
+		}
+		return err
+	}
 	result, err := eng.AssertFact(ctx, yeoul.FactInput{
 		Predicate:            predicate,
 		SubjectID:            subjectID,
 		ObjectID:             objectID,
 		ValueText:            valueText,
-		SupportingEpisodeIDs: splitCSV(supportingEpisodes),
+		ObservedAt:           observedAtInfo.ObservedAt,
+		SupportingEpisodeIDs: supportingEpisodeIDs,
+		Metadata:             observedAtInfo.Metadata(),
 	})
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
 		err = closeErr
@@ -1353,6 +1432,49 @@ Usage:
 	}
 	_, err = fmt.Fprintf(c.stdout, "asserted fact %s\n", result.ID)
 	return err
+}
+
+type factObservedAtInfo struct {
+	ObservedAt          time.Time
+	Basis               string
+	SupportingEpisodeID string
+}
+
+func (info factObservedAtInfo) Metadata() map[string]any {
+	metadata := map[string]any{
+		observedAtBasisKey: info.Basis,
+	}
+	if info.SupportingEpisodeID != "" {
+		metadata[observedAtSupportingEpisodeIDKey] = info.SupportingEpisodeID
+	}
+	return metadata
+}
+
+func inferFactObservedAt(ctx context.Context, eng yeoul.Engine, supportingEpisodeIDs []string, observedAtRaw string) (factObservedAtInfo, error) {
+	if strings.TrimSpace(observedAtRaw) != "" {
+		parsed, err := time.Parse(time.RFC3339, observedAtRaw)
+		if err != nil {
+			return factObservedAtInfo{}, err
+		}
+		return factObservedAtInfo{ObservedAt: parsed, Basis: observedAtBasisExplicit}, nil
+	}
+	for _, episodeID := range supportingEpisodeIDs {
+		episode, err := eng.GetEpisode(ctx, episodeID)
+		if err != nil {
+			return factObservedAtInfo{}, err
+		}
+		if !episode.ObservedAt.IsZero() {
+			return factObservedAtInfo{
+				ObservedAt:          episode.ObservedAt,
+				Basis:               observedAtBasisSupportingEpisode,
+				SupportingEpisodeID: episode.ID,
+			}, nil
+		}
+	}
+	return factObservedAtInfo{
+		ObservedAt: time.Now().UTC(),
+		Basis:      observedAtBasisSystemTimeDefault,
+	}, nil
 }
 
 func (c cli) runFactSupersede(ctx context.Context, args []string) error {
