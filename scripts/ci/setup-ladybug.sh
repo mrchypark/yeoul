@@ -57,7 +57,11 @@ temp_dir="$(mktemp -d)"
 trap 'rm -rf "${temp_dir}"' EXIT
 
 archive_path="${temp_dir}/${asset}"
-download_url="https://github.com/LadybugDB/ladybug/releases/download/${module_version}/${asset}"
+if [[ "${module_version}" =~ -[0-9]{14}-[0-9a-f]{12}$ ]]; then
+  download_url="https://github.com/LadybugDB/ladybug/releases/latest/download/${asset}"
+else
+  download_url="https://github.com/LadybugDB/ladybug/releases/download/${module_version}/${asset}"
+fi
 
 mkdir -p "${dest_dir}"
 

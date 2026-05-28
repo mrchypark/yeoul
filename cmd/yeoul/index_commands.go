@@ -637,24 +637,49 @@ func sameProjectionDocuments(expected, actual []projectionDocument) (bool, error
 		return ok, err
 	}
 	for id, expectedData := range expectedByID {
-		if actualByID[id] != expectedData {
+		actualData, exists := actualByID[id]
+		if !exists {
 			return false, nil
+		}
+		same, err := sameProjectionDocument(expectedData, actualData)
+		if err != nil || !same {
+			return same, err
 		}
 	}
 	return true, nil
 }
 
-func projectionDocumentMap(projections []projectionDocument) (map[string]string, bool, error) {
-	byID := make(map[string]string, len(projections))
+func sameProjectionDocument(expected, actual projectionDocument) (bool, error) {
+	if expected.ProjectionID != actual.ProjectionID || expected.SearchText != actual.SearchText {
+		return false, nil
+	}
+	if (expected.ObservedAtMS == nil) != (actual.ObservedAtMS == nil) {
+		return false, nil
+	}
+	if expected.ObservedAtMS != nil && *expected.ObservedAtMS != *actual.ObservedAtMS {
+		return false, nil
+	}
+	expectedMetadata, err := json.Marshal(expected.Metadata)
+	if err != nil {
+		return false, err
+	}
+	actualMetadata, err := json.Marshal(actual.Metadata)
+	if err != nil {
+		return false, err
+	}
+	if string(expectedMetadata) != string(actualMetadata) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func projectionDocumentMap(projections []projectionDocument) (map[string]projectionDocument, bool, error) {
+	byID := make(map[string]projectionDocument, len(projections))
 	for _, projection := range projections {
 		if _, exists := byID[projection.ProjectionID]; exists {
 			return nil, false, nil
 		}
-		data, err := json.Marshal(projection)
-		if err != nil {
-			return nil, false, err
-		}
-		byID[projection.ProjectionID] = string(data)
+		byID[projection.ProjectionID] = projection
 	}
 	return byID, true, nil
 }
