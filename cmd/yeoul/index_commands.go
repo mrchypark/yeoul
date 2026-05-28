@@ -496,7 +496,9 @@ func writeProjectionArtifacts(root string, projections []projectionDocument, man
 func replaceProjectionFile(tempPath, finalPath string) error {
 	if err := os.Rename(tempPath, finalPath); err == nil {
 		return nil
-	} else if runtime.GOOS != "windows" || !os.IsExist(err) {
+	} else if runtime.GOOS != "windows" {
+		return err
+	} else if _, statErr := os.Stat(tempPath); statErr != nil {
 		return err
 	}
 	if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
