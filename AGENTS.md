@@ -12,6 +12,13 @@ Use `docs/10-examples/proactive-decision-support.md` as the default operating lo
 Use Yeoul proactively during normal work in this repository.
 Do not wait for the user to explicitly ask for memory lookup or memory write when prior context is likely to improve the answer or preserve a durable outcome.
 
+## GitHub account safety
+
+Before writing to GitHub for this repository, confirm the active GitHub account with `gh auth status`.
+For PR comments, review replies, review requests, issue comments, branch pushes, and other remote GitHub mutations, use the repository owner account `mrchypark` unless the user explicitly says otherwise.
+If another account such as `cypark-conalog` is active, switch to `mrchypark` first with `gh auth switch -u mrchypark` and re-check the active account before writing.
+Do not post GitHub comments, review replies, or review requests from an unverified account.
+
 ## Search first
 
 Search Yeoul before answering when:
