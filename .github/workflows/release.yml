@@ -42,6 +42,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Linux packaging dependency
         if: matrix.goos == 'linux'
         run: |
@@ -102,6 +105,7 @@ jobs:
             git
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-go
+            mingw-w64-ucrt-x86_64-rust
             unzip
 
       - name: Configure Git line endings
@@ -172,6 +176,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Linux packaging dependency
         if: matrix.goos == 'linux'
         run: |
@@ -215,6 +222,7 @@ jobs:
             git
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-go
+            mingw-w64-ucrt-x86_64-rust
             unzip
 
       - name: Configure Git line endings

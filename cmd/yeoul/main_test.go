@@ -12,24 +12,48 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("YEOUL_FAKE_WAX") == "1" {
-		os.Exit(runFakeWax())
+	if os.Getenv("YEOUL_FAKE_RAX") == "1" {
+		os.Exit(runFakeRax())
 	}
 	os.Exit(m.Run())
 }
 
-func runFakeWax() int {
-	argsPath := os.Getenv("YEOUL_FAKE_WAX_ARGS")
-	projectionPath := os.Getenv("YEOUL_FAKE_WAX_PROJECTION")
+func runFakeRax() int {
+	argsPath := os.Getenv("YEOUL_FAKE_RAX_ARGS")
+	projectionPath := os.Getenv("YEOUL_FAKE_RAX_PROJECTION")
 	if argsPath == "" || projectionPath == "" {
-		_, _ = os.Stderr.WriteString("missing fake wax environment\n")
+		_, _ = os.Stderr.WriteString("missing fake rax environment\n")
 		return 2
 	}
 
 	args := os.Args[1:]
-	if err := os.WriteFile(argsPath, []byte(strings.Join(args, " ")+"\n"), 0o644); err != nil {
+	argsLine := strings.Join(args, " ") + "\n"
+	argsFile, err := os.OpenFile(argsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
 		_, _ = os.Stderr.WriteString(err.Error() + "\n")
 		return 2
+	}
+	if _, err := argsFile.WriteString(argsLine); err != nil {
+		_ = argsFile.Close()
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		return 2
+	}
+	if err := argsFile.Close(); err != nil {
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		return 2
+	}
+	if len(args) > 0 && args[0] == "search" {
+		_, _ = os.Stdout.WriteString(`[{"doc_id":"fact:fact-index"}]`)
+		return 0
+	}
+	for i, arg := range args {
+		if arg == "--store" && i+1 < len(args) {
+			if err := os.WriteFile(args[i+1], []byte("fake rax store"), 0o644); err != nil {
+				_, _ = os.Stderr.WriteString(err.Error() + "\n")
+				return 2
+			}
+			break
+		}
 	}
 	for i, arg := range args {
 		if arg == "--input" && i+1 < len(args) {
@@ -48,6 +72,28 @@ func runFakeWax() int {
 
 	_, _ = os.Stderr.WriteString("missing --input\n")
 	return 2
+}
+
+func TestLookupRaxRuntimeFindsBundledFFI(t *testing.T) {
+	t.Setenv("YEOUL_RAX_LIB", "")
+	t.Setenv("YEOUL_RAX_BIN", "")
+	exePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	raxPath := filepath.Join(filepath.Dir(exePath), raxLibraryName())
+	if err := os.WriteFile(raxPath, []byte("fake ffi"), 0o644); err != nil {
+		t.Skipf("cannot stage bundled rax ffi fixture beside test executable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(raxPath) })
+
+	got, ok := lookupRaxRuntime("", "")
+	if !ok {
+		t.Fatalf("expected bundled rax ffi runtime to resolve")
+	}
+	if got.Kind != "ffi" || got.Path != raxPath {
+		t.Fatalf("expected bundled rax ffi path %q, got %#v", raxPath, got)
+	}
 }
 
 func TestCLIInitIngestEpisodeAndSearch(t *testing.T) {
@@ -288,10 +334,10 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
 	ingestPath := filepath.Join(tmpDir, "graph.json")
 	indexRoot := filepath.Join(tmpDir, "index")
-	storePath := filepath.Join(tmpDir, "projection.wax")
-	fakeWaxPath := os.Args[0]
-	waxArgsPath := filepath.Join(tmpDir, "wax-args.txt")
-	waxProjectionPath := filepath.Join(tmpDir, "wax-projection.jsonl")
+	storePath := filepath.Join(tmpDir, "projection.rax")
+	fakeRaxPath := os.Args[0]
+	raxArgsPath := filepath.Join(tmpDir, "rax-args.txt")
+	raxProjectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
 
 	payload := `{
   "episodes": [
@@ -320,9 +366,9 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write ingest payload: %v", err)
 	}
-	t.Setenv("YEOUL_FAKE_WAX", "1")
-	t.Setenv("YEOUL_FAKE_WAX_ARGS", waxArgsPath)
-	t.Setenv("YEOUL_FAKE_WAX_PROJECTION", waxProjectionPath)
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", raxArgsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", raxProjectionPath)
 
 	runCLI := func(args ...string) string {
 		t.Helper()
@@ -369,26 +415,82 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 		t.Fatalf("expected rebuild JSON output, got %q", rebuild)
 	}
 
-	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--wax-bin", fakeWaxPath, "--json")
-	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_document_count": 4`) {
+	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_runtime": "cli:`) || !strings.Contains(publish, `"rax_document_count": 4`) {
 		t.Fatalf("expected publish JSON output, got %q", publish)
 	}
-	waxArgs, err := os.ReadFile(waxArgsPath)
+	raxArgs, err := os.ReadFile(raxArgsPath)
 	if err != nil {
-		t.Fatalf("read fake wax args: %v", err)
+		t.Fatalf("read fake rax args: %v", err)
 	}
-	if !strings.Contains(string(waxArgs), "ingest docs --store "+storePath+" --input ") {
-		t.Fatalf("expected wax ingest docs args, got %q", string(waxArgs))
+	if !strings.Contains(string(raxArgs), "ingest docs --store "+storePath+" --input ") {
+		t.Fatalf("expected rax ingest docs args, got %q", string(raxArgs))
 	}
-	raxDocs, err := os.ReadFile(waxProjectionPath)
+	raxDocs, err := os.ReadFile(raxProjectionPath)
 	if err != nil {
-		t.Fatalf("read fake wax docs: %v", err)
+		t.Fatalf("read fake rax docs: %v", err)
 	}
 	if !strings.Contains(string(raxDocs), `"doc_id":"fact:fact-index"`) || !strings.Contains(string(raxDocs), `"text":"USES_RETRIEVAL_RUNTIME project:yeoul runtime:rax Yeoul uses rax as derived retrieval runtime."`) {
 		t.Fatalf("expected rax raw document fields, got %q", string(raxDocs))
 	}
 	if !strings.Contains(string(raxDocs), `"metadata":{`) || !strings.Contains(string(raxDocs), `"predicate":"USES_RETRIEVAL_RUNTIME"`) || !strings.Contains(string(raxDocs), `"projection_type":"fact"`) {
 		t.Fatalf("expected rax metadata to preserve Yeoul projection metadata, got %q", string(raxDocs))
+	}
+
+	search := runCLI("search", "--db", dbPath, "--query", "derived retrieval runtime", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(search, `"record_id": "fact-index"`) || !strings.Contains(search, `"rax_candidate_rank:1"`) {
+		t.Fatalf("expected search to use managed rax reranking, got %q", search)
+	}
+	_ = runCLI("search", "--db", dbPath, "--query", "derived retrieval runtime", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
+	raxArgsAfterSearch, err := os.ReadFile(raxArgsPath)
+	if err != nil {
+		t.Fatalf("read fake rax args after search: %v", err)
+	}
+	if got := strings.Count(string(raxArgsAfterSearch), "ingest docs "); got != 2 {
+		t.Fatalf("expected publish plus one managed rax ingest after repeated search, got %d calls:\n%s", got, string(raxArgsAfterSearch))
+	}
+	dbInfo, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat db: %v", err)
+	}
+	dbModTime := dbInfo.ModTime().Add(time.Second)
+	if err := os.Chtimes(dbPath, dbModTime, dbModTime); err != nil {
+		t.Fatalf("touch db: %v", err)
+	}
+	_ = runCLI("search", "--db", dbPath, "--query", "derived retrieval runtime", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
+	raxArgsAfterTouch, err := os.ReadFile(raxArgsPath)
+	if err != nil {
+		t.Fatalf("read fake rax args after db touch: %v", err)
+	}
+	if got := strings.Count(string(raxArgsAfterTouch), "ingest docs "); got != 3 {
+		t.Fatalf("expected db mtime change to rebuild managed rax store, got %d calls:\n%s", got, string(raxArgsAfterTouch))
+	}
+
+	bench := runCLI("bench", "query", "--db", dbPath, "--query", "derived retrieval runtime", "--backend", "rax", "--rax-bin", fakeRaxPath, "--iterations", "1", "--json")
+	if !strings.Contains(bench, `"search"`) {
+		t.Fatalf("expected bench query to use managed rax search path, got %q", bench)
+	}
+}
+
+func TestRaxProjectionChunkIDsMapBackToRecords(t *testing.T) {
+	kind, id, ok := raxRecordKindID("episode:project:thread" + raxChunkMarker + "2")
+	if !ok || kind != "episode" || id != "project:thread" {
+		t.Fatalf("expected chunk doc id to map to original record, got kind=%q id=%q ok=%v", kind, id, ok)
+	}
+}
+
+func TestParseRaxDocIDsAcceptsHitsAndStringIDs(t *testing.T) {
+	for _, input := range [][]byte{
+		[]byte(`[{"doc_id":"episode:one","preview":null}]`),
+		[]byte(`["episode:one"]`),
+	} {
+		docIDs, err := parseRaxDocIDs(input)
+		if err != nil {
+			t.Fatalf("parse rax doc ids: %v", err)
+		}
+		if len(docIDs) != 1 || docIDs[0] != "episode:one" {
+			t.Fatalf("expected episode:one, got %#v", docIDs)
+		}
 	}
 }
 

@@ -201,12 +201,24 @@ These commands should manage the Yeoul-to-`rax` projection boundary.
 
 ### 8.1 Example flows
 
+Normal search should let Yeoul manage the bundled rax FFI runtime and projection automatically:
+
+```bash
+yeoul search --db "$YEOUL_DB" --query "prior decisions about retrieval"
+```
+
+The explicit index commands are for inspection, verification, benchmarking, or operator-controlled publishing:
+
 ```bash
 yeoul index build --db "$YEOUL_DB" --root "$YEOUL_INDEX_ROOT"
 yeoul index verify --db "$YEOUL_DB" --root "$YEOUL_INDEX_ROOT"
 yeoul index publish-rax --root "$YEOUL_INDEX_ROOT" --store "$YEOUL_RAX_STORE"
-wax search --store "$YEOUL_RAX_STORE" --text "recent decisions" --top-k 5 --preview
 ```
+
+Normal users should not install or run `rax` separately. Yeoul release archives include
+the rax 0.4.4 FFI runtime beside the `yeoul` binary. The first native integration keeps
+Ladybug search as the correctness filter and uses rax candidate order as an automatic
+retrieval signal before deeper candidate hydration is added.
 
 ## 9. Why not move Ladybug semantics into rax now
 
@@ -248,7 +260,7 @@ Mitigation:
 
 ### 11.2 Scope inflation
 
-If Yeoul starts adopting broad Wax product scope directly, the retrieval layer may begin dictating the memory model.
+If Yeoul starts adopting broad `rax` product scope directly, the retrieval layer may begin dictating the memory model.
 
 Mitigation:
 
@@ -273,8 +285,8 @@ Mitigation:
 4. route Yeoul search through `rax` candidate retrieval plus Ladybug hydration
 5. add temporal and provenance-aware rerank diagnostics
 
-The first `rax` adapter targets rax 0.2 direct `.wax` stores.
-It converts Yeoul `projection.ndjson` records into rax raw documents with `doc_id`, `text`, `metadata`, and optional `timestamp_ms`, then calls `wax ingest docs --store`.
+The first `rax` adapter targets the rax 0.4.4 FFI document-ingest and search surface.
+Explicit index commands can inspect `projection.ndjson`; managed search cache rebuilds stream the same projection as JSONL bytes into the rax FFI adapter and keep only the manifest plus `.rax` store.
 
 ## 13. One-line summary
 

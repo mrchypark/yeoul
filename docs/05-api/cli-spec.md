@@ -71,8 +71,17 @@ Run retrieval queries.
 #### Examples
 ```bash
 yeoul search --db ./yeoul.lbug --query "recent decisions about ladybug"
+yeoul search --db ./yeoul.lbug --query "recent decisions about rax" --backend rax
 yeoul search --db ./yeoul.lbug --entity project:yeoul --window 30d
 ```
+
+#### Behavior
+- defaults to `--backend auto`
+- keeps Ladybug-backed Yeoul records as canonical truth
+- uses the Yeoul-bundled rax 0.4.4 FFI runtime for derived retrieval in release builds
+- automatically rebuilds a managed derived rax index and uses rax candidate order as a retrieval signal
+- falls back to core Yeoul search in `auto` mode only for source-tree or development runs where the bundled runtime has not been staged
+- fails on rax errors only when `--backend rax` is explicitly requested
 
 ### `yeoul index`
 Manage derived retrieval projections.
@@ -90,14 +99,15 @@ yeoul index build --db ./yeoul.lbug --root ~/.local/share/yeoul/index
 yeoul index verify --db ./yeoul.lbug --root ~/.local/share/yeoul/index
 yeoul index publish-rax \
   --root ~/.local/share/yeoul/index \
-  --store ~/.local/share/yeoul/projection.wax
+  --store ~/.local/share/yeoul/rax/projection.rax
 ```
 
 #### Behavior
 - treats the index as a derived artifact, not canonical truth
 - rebuilds or validates projection state against the Ladybug-backed Yeoul database
-- can publish Yeoul-owned projections into a `rax` 0.2 direct `.wax` store through `wax ingest docs --store`
-- keeps `projection.ndjson` as Yeoul's adapter boundary instead of adopting rax dataset-pack files as Yeoul artifacts
+- can publish Yeoul-owned projections into a `rax` 0.4.4 FFI-backed `.rax` retrieval index
+- keeps `projection.ndjson` as the explicit index inspection artifact; managed search cache stores only Yeoul's manifest plus the derived rax store
+- keeps `publish-rax` as an explicit inspection and operations command; normal `yeoul search --backend auto` uses the bundled rax FFI runtime and manages its own rax index path
 
 ### `yeoul neighborhood`
 Expand around an entity or fact.

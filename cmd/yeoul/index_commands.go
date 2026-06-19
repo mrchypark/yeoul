@@ -1,24 +1,32 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	json "github.com/goccy/go-json"
+	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
 type projectionManifest struct {
 	Version         int            `json:"version"`
 	DatabasePath    string         `json:"database_path,omitempty"`
-	ProjectionFile  string         `json:"projection_file"`
+	DatabaseSize    int64          `json:"database_size,omitempty"`
+	DatabaseModTime time.Time      `json:"database_mod_time,omitempty"`
+	ProjectionHash  string         `json:"projection_hash,omitempty"`
+	ProjectionFile  string         `json:"projection_file,omitempty"`
 	ProjectionCount int            `json:"projection_count"`
 	Counts          map[string]int `json:"counts"`
 	BuiltAt         time.Time      `json:"built_at"`
@@ -36,6 +44,10 @@ type raxRawDocument struct {
 	Text        string         `json:"text"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
 	TimestampMS *uint64        `json:"timestamp_ms,omitempty"`
+}
+
+type raxSearchHit struct {
+	DocID string `json:"doc_id"`
 }
 
 type indexBuildResult struct {
@@ -67,10 +79,18 @@ type indexPublishRaxResult struct {
 	Root             string `json:"root"`
 	ProjectionPath   string `json:"projection_path"`
 	StorePath        string `json:"store_path"`
-	WaxBin           string `json:"wax_bin"`
+	RaxRuntime       string `json:"rax_runtime"`
 	Published        bool   `json:"published"`
 	RaxDocumentCount int    `json:"rax_document_count"`
 }
+
+type raxRuntime struct {
+	Kind string
+	Path string
+}
+
+const raxChunkMarker = "#chunk:"
+const projectionManifestVersion = 3
 
 func (c cli) runIndex(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
@@ -79,7 +99,7 @@ Usage:
   yeoul index rebuild --db PATH --root DIR [--json]
   yeoul index status --root DIR [--json]
   yeoul index verify --db PATH --root DIR [--json]
-  yeoul index publish-rax --root DIR --store FILE [--wax-bin PATH] [--json]
+  yeoul index publish-rax --root DIR --store FILE [--rax-lib PATH] [--rax-bin PATH] [--json]
 `)
 	if len(args) == 0 {
 		return &usageError{message: usage}
@@ -258,16 +278,18 @@ Usage:
 func (c cli) runIndexPublishRax(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul index publish-rax --root DIR --store FILE [--wax-bin PATH] [--json]
+  yeoul index publish-rax --root DIR --store FILE [--rax-lib PATH] [--rax-bin PATH] [--json]
 `)
 	fs := newFlagSet("index publish-rax")
 	var root string
 	var storePath string
-	var waxBin string
+	var raxLib string
+	var raxBin string
 	var jsonOut bool
 	fs.StringVar(&root, "root", "", "index root directory")
-	fs.StringVar(&storePath, "store", "", "rax direct .wax store path")
-	fs.StringVar(&waxBin, "wax-bin", "wax", "wax CLI binary path")
+	fs.StringVar(&storePath, "store", "", "rax 0.4.4 .rax retrieval index file")
+	fs.StringVar(&raxLib, "rax-lib", "", "rax FFI library path")
+	fs.StringVar(&raxBin, "rax-bin", "", "rax CLI binary path")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -297,16 +319,18 @@ Usage:
 	}
 	defer os.Remove(rawDocsPath)
 
-	cmd := exec.CommandContext(ctx, waxBin, "ingest", "docs", "--store", storePath, "--input", rawDocsPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("rax publish failed: %w: %s", err, strings.TrimSpace(string(output)))
+	runtime, ok := lookupRaxRuntime(raxLib, raxBin)
+	if !ok {
+		return fmt.Errorf("rax publish failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
+	}
+	if _, err := raxIngestDocs(ctx, runtime, storePath, rawDocsPath); err != nil {
+		return fmt.Errorf("rax publish failed: %w", err)
 	}
 	result := indexPublishRaxResult{
 		Root:             root,
 		ProjectionPath:   projectionPath,
 		StorePath:        storePath,
-		WaxBin:           waxBin,
+		RaxRuntime:       runtime.String(),
 		Published:        true,
 		RaxDocumentCount: len(projections),
 	}
@@ -315,6 +339,506 @@ Usage:
 	}
 	_, err = fmt.Fprintf(c.stdout, "published %d projections to rax store %s\n", len(projections), storePath)
 	return err
+}
+
+func (r raxRuntime) String() string {
+	if r.Kind == "" || r.Path == "" {
+		return ""
+	}
+	return r.Kind + ":" + r.Path
+}
+
+func lookupRaxRuntime(explicitLib, explicitBin string) (raxRuntime, bool) {
+	if path, ok := lookupRaxLibrary(explicitLib); ok {
+		return raxRuntime{Kind: "ffi", Path: path}, true
+	}
+	if path, ok := lookupRaxBinary(explicitBin); ok {
+		return raxRuntime{Kind: "cli", Path: path}, true
+	}
+	return raxRuntime{}, false
+}
+
+func lookupRaxLibrary(explicit string) (string, bool) {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit, true
+	}
+	if envPath := strings.TrimSpace(os.Getenv("YEOUL_RAX_LIB")); envPath != "" {
+		return envPath, true
+	}
+	for _, candidate := range bundledRaxLibraryCandidates() {
+		if isRegularFile(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func lookupRaxBinary(explicit string) (string, bool) {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit, true
+	}
+	if envPath := strings.TrimSpace(os.Getenv("YEOUL_RAX_BIN")); envPath != "" {
+		return envPath, true
+	}
+	for _, candidate := range bundledRaxBinaryCandidates() {
+		if isExecutableFile(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func bundledRaxLibraryCandidates() []string {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	exeDir := filepath.Dir(exe)
+	name := raxLibraryName()
+	return []string{
+		filepath.Join(exeDir, "..", "lib", name),
+		filepath.Join(exeDir, name),
+		filepath.Join(exeDir, "..", "libexec", "yeoul", name),
+	}
+}
+
+func bundledRaxBinaryCandidates() []string {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	exeDir := filepath.Dir(exe)
+	name := raxExecutableName()
+	return []string{
+		filepath.Join(exeDir, name),
+		filepath.Join(exeDir, "..", "bin", name),
+		filepath.Join(exeDir, "..", "libexec", "yeoul", name),
+	}
+}
+
+func raxLibraryName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "librax_ffi.dylib"
+	case "linux":
+		return "librax_ffi.so"
+	case "windows":
+		return "rax_ffi.dll"
+	default:
+		return "librax_ffi"
+	}
+}
+
+func raxExecutableName() string {
+	if runtime.GOOS == "windows" {
+		return "rax.exe"
+	}
+	return "rax"
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return info.Mode()&0o111 != 0
+}
+
+func maybeRerankSearchWithRax(ctx context.Context, dbPath, query, backend, raxLib, raxBin string, limit int, resp *yeoul.SearchResponse) (*yeoul.SearchResponse, error) {
+	if backend == "core" || resp == nil || len(resp.Hits) == 0 {
+		return resp, nil
+	}
+	runtime, ok := lookupRaxRuntime(raxLib, raxBin)
+	if !ok {
+		if backend == "rax" {
+			return nil, fmt.Errorf("rax search failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
+		}
+		return resp, nil
+	}
+	docIDs, err := runManagedRaxSearch(ctx, dbPath, query, limit, runtime)
+	if err != nil {
+		if backend == "rax" {
+			return nil, err
+		}
+		return resp, nil
+	}
+	return rerankSearchResponseByRax(resp, docIDs), nil
+}
+
+func runRaxPrimarySearch(ctx context.Context, eng yeoul.Engine, dbPath string, req yeoul.SearchRequest, raxLib, raxBin string) (*yeoul.SearchResponse, error) {
+	runtime, ok := lookupRaxRuntime(raxLib, raxBin)
+	if !ok {
+		return nil, fmt.Errorf("rax search failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
+	}
+	limit := req.Page.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	docIDs, err := runManagedRaxSearch(ctx, dbPath, req.QueryText, limit*4, runtime)
+	if err != nil {
+		return nil, err
+	}
+	return buildRaxPrimarySearchResponse(ctx, eng, req, docIDs)
+}
+
+func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req yeoul.SearchRequest, docIDs []string) (*yeoul.SearchResponse, error) {
+	limit := req.Page.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	hits := make([]yeoul.SearchHit, 0, len(docIDs))
+	included := yeoul.IncludedRecords{}
+	types := compactStrings(req.Types...)
+	if len(types) == 0 {
+		types = []string{"fact", "episode", "entity"}
+	}
+	typeOK := map[string]bool{}
+	for _, typ := range types {
+		typeOK[typ] = true
+	}
+	seenRecords := map[string]bool{}
+	for rank, docID := range docIDs {
+		kind, id, ok := raxRecordKindID(docID)
+		if !ok || !typeOK[kind] {
+			continue
+		}
+		recordKey := kind + ":" + id
+		if seenRecords[recordKey] {
+			continue
+		}
+		seenRecords[recordKey] = true
+		record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{
+			Meta:     req.Meta,
+			Kind:     kind,
+			ID:       id,
+			Temporal: req.Temporal,
+		})
+		if err != nil {
+			continue
+		}
+		if !raxRecordPassesFilters(record.Record, req) {
+			continue
+		}
+		hit := yeoul.SearchHit{
+			HitID:       "hit_" + id,
+			HitType:     kind,
+			RecordID:    id,
+			Score:       1 / float64(rank+1),
+			MatchedText: raxMatchedText(record.Record),
+			Reasons:     []string{fmt.Sprintf("rax_candidate_rank:%d", rank+1)},
+		}
+		if req.MinScore != nil && hit.Score < *req.MinScore {
+			continue
+		}
+		hits = append(hits, hit)
+		if len(hits) >= limit {
+			break
+		}
+		if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
+			addIncludedRecord(&included, record.Record)
+		}
+	}
+	now := time.Now().UTC()
+	spaceID := strings.TrimSpace(req.Meta.SpaceID)
+	if spaceID == "" {
+		spaceID = "default"
+	}
+	resp := &yeoul.SearchResponse{
+		Meta: yeoul.QueryResponseMeta{SpaceID: spaceID, SnapshotAt: &now},
+		Hits: hits,
+	}
+	if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
+		resp.Included = included
+	}
+	return resp, nil
+}
+
+func runManagedRaxSearch(ctx context.Context, dbPath, query string, limit int, runtime raxRuntime) ([]string, error) {
+	storePath, err := ensureManagedRaxStore(ctx, dbPath, runtime)
+	if err != nil {
+		return nil, err
+	}
+	topK := limit
+	if topK <= 0 {
+		topK = 10
+	}
+	output, err := raxSearchText(ctx, runtime, storePath, query, topK)
+	if err != nil {
+		return nil, fmt.Errorf("rax search failed: %w", err)
+	}
+	return parseRaxDocIDs(output)
+}
+
+func ensureManagedRaxStore(ctx context.Context, dbPath string, runtime raxRuntime) (string, error) {
+	root, storePath, err := managedRaxIndexPaths(dbPath)
+	if err != nil {
+		return "", err
+	}
+	if ok, err := managedRaxStoreFresh(root, storePath, dbPath); err != nil {
+		return "", err
+	} else if !ok {
+		payload, err := exportDatabase(ctx, dbPath)
+		if err != nil {
+			return "", err
+		}
+		projections, manifest := buildProjectionArtifacts(dbPath, payload)
+		if err := rebuildManagedRaxStore(ctx, root, storePath, runtime, projections, manifest); err != nil {
+			return "", err
+		}
+	}
+	return storePath, nil
+}
+
+func parseRaxDocIDs(output []byte) ([]string, error) {
+	var hits []raxSearchHit
+	if err := json.Unmarshal(output, &hits); err == nil {
+		docIDs := make([]string, 0, len(hits))
+		seen := map[string]bool{}
+		for _, hit := range hits {
+			docID := strings.TrimSpace(hit.DocID)
+			if docID == "" || seen[docID] {
+				continue
+			}
+			seen[docID] = true
+			docIDs = append(docIDs, docID)
+		}
+		return docIDs, nil
+	}
+
+	var rawDocIDs []string
+	if err := json.Unmarshal(output, &rawDocIDs); err != nil {
+		return nil, fmt.Errorf("rax search failed: invalid JSON output: %w", err)
+	}
+	docIDs := make([]string, 0, len(rawDocIDs))
+	seen := map[string]bool{}
+	for _, rawDocID := range rawDocIDs {
+		docID := strings.TrimSpace(rawDocID)
+		if docID == "" || seen[docID] {
+			continue
+		}
+		seen[docID] = true
+		docIDs = append(docIDs, docID)
+	}
+	return docIDs, nil
+}
+
+func managedRaxStoreFresh(root, storePath, dbPath string) (bool, error) {
+	if _, err := os.Stat(storePath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	manifest, err := readProjectionManifest(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, nil
+	}
+	stat, err := os.Stat(dbPath)
+	if err != nil {
+		return false, err
+	}
+	// ponytail: file stat avoids exporting the DB on every search; use a DB
+	// revision if Ladybug exposes one.
+	return manifest.Version == projectionManifestVersion &&
+		manifest.DatabaseSize > 0 &&
+		manifest.DatabaseSize == stat.Size() &&
+		!manifest.DatabaseModTime.IsZero() &&
+		manifest.DatabaseModTime.Equal(stat.ModTime()), nil
+}
+
+func rebuildManagedRaxStore(ctx context.Context, root, storePath string, runtime raxRuntime, projections []projectionDocument, manifest projectionManifest) error {
+	if err := os.Remove(storePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if runtime.Kind == "ffi" {
+		manifest.ProjectionFile = ""
+		if _, err := writeProjectionManifest(root, manifest); err != nil {
+			return err
+		}
+		_ = os.Remove(filepath.Join(root, "projection.ndjson"))
+		jsonl, err := raxRawDocumentsJSONL(projections)
+		if err != nil {
+			return err
+		}
+		if _, err := raxFFIIngestDocs(runtime.Path, storePath, jsonl); err != nil {
+			return fmt.Errorf("rax ingest failed: %w", err)
+		}
+		return nil
+	}
+	if _, _, err := writeProjectionArtifacts(root, projections, manifest); err != nil {
+		return err
+	}
+	rawDocsPath, err := writeTemporaryRaxRawDocuments(root, projections)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(rawDocsPath)
+	if _, err := raxIngestDocs(ctx, runtime, storePath, rawDocsPath); err != nil {
+		return fmt.Errorf("rax ingest failed: %w", err)
+	}
+	return nil
+}
+
+func raxIngestDocs(ctx context.Context, runtime raxRuntime, storePath, rawDocsPath string) ([]byte, error) {
+	switch runtime.Kind {
+	case "ffi":
+		jsonl, err := os.ReadFile(rawDocsPath)
+		if err != nil {
+			return nil, err
+		}
+		return raxFFIIngestDocs(runtime.Path, storePath, jsonl)
+	case "cli":
+		cmd := exec.CommandContext(ctx, runtime.Path, "ingest", "docs", "--store", storePath, "--input", rawDocsPath)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return output, nil
+	default:
+		return nil, fmt.Errorf("unknown rax runtime kind %q", runtime.Kind)
+	}
+}
+
+func raxSearchText(ctx context.Context, runtime raxRuntime, storePath, query string, topK int) ([]byte, error) {
+	switch runtime.Kind {
+	case "ffi":
+		searcher, err := openRaxFFISearcher(runtime.Path, storePath)
+		if err != nil {
+			return nil, err
+		}
+		defer searcher.close()
+		return searcher.searchText(storePath, query, topK)
+	case "cli":
+		cmd := exec.CommandContext(ctx, runtime.Path, "search", "--store", storePath, "--mode", "text", "--text", query, "--top-k", fmt.Sprint(topK))
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return output, nil
+	default:
+		return nil, fmt.Errorf("unknown rax runtime kind %q", runtime.Kind)
+	}
+}
+
+func managedRaxIndexPaths(dbPath string) (string, string, error) {
+	absDBPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return "", "", err
+	}
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		cacheRoot = os.TempDir()
+	}
+	sum := sha256.Sum256([]byte(absDBPath))
+	key := hex.EncodeToString(sum[:])[:16]
+	root := filepath.Join(cacheRoot, "yeoul", "rax", key)
+	return root, filepath.Join(root, "projection.rax"), nil
+}
+
+func rerankSearchResponseByRax(resp *yeoul.SearchResponse, docIDs []string) *yeoul.SearchResponse {
+	if resp == nil || len(resp.Hits) == 0 || len(docIDs) == 0 {
+		return resp
+	}
+	rank := make(map[string]int, len(docIDs))
+	for i, docID := range docIDs {
+		if projectionID, ok := raxRecordProjectionID(docID); ok {
+			rank[projectionID] = i
+		}
+	}
+	out := *resp
+	out.Hits = append([]yeoul.SearchHit(nil), resp.Hits...)
+	sort.SliceStable(out.Hits, func(i, j int) bool {
+		leftRank, leftOK := rank[raxProjectionIDForHit(out.Hits[i])]
+		rightRank, rightOK := rank[raxProjectionIDForHit(out.Hits[j])]
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if leftOK {
+			return leftRank < rightRank
+		}
+		return false
+	})
+	for i := range out.Hits {
+		if rank, ok := rank[raxProjectionIDForHit(out.Hits[i])]; ok {
+			out.Hits[i].Reasons = append(out.Hits[i].Reasons, fmt.Sprintf("rax_candidate_rank:%d", rank+1))
+		}
+	}
+	return &out
+}
+
+func raxProjectionIDForHit(hit yeoul.SearchHit) string {
+	return strings.TrimSpace(hit.HitType) + ":" + strings.TrimSpace(hit.RecordID)
+}
+
+func raxRecordProjectionID(docID string) (string, bool) {
+	kind, id, ok := raxRecordKindID(docID)
+	if !ok {
+		return "", false
+	}
+	return kind + ":" + id, true
+}
+
+func raxRecordKindID(docID string) (string, string, bool) {
+	kind, id, ok := strings.Cut(strings.TrimSpace(docID), ":")
+	if !ok || kind == "" || id == "" {
+		return "", "", false
+	}
+	if before, _, ok := strings.Cut(id, raxChunkMarker); ok {
+		id = before
+	}
+	if id == "" {
+		return "", "", false
+	}
+	return kind, id, true
+}
+
+func raxRecordPassesFilters(record any, req yeoul.SearchRequest) bool {
+	switch value := record.(type) {
+	case *yeoul.Fact:
+		if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, value.Predicate) {
+			return false
+		}
+		return true
+	case *yeoul.Episode, *yeoul.Entity:
+		return len(req.Predicates) == 0
+	default:
+		return false
+	}
+}
+
+func raxMatchedText(record any) string {
+	switch value := record.(type) {
+	case *yeoul.Fact:
+		return value.ValueText
+	case *yeoul.Episode:
+		return value.Content
+	case *yeoul.Entity:
+		return value.CanonicalName
+	default:
+		return ""
+	}
+}
+
+func addIncludedRecord(included *yeoul.IncludedRecords, record any) {
+	switch value := record.(type) {
+	case *yeoul.Fact:
+		included.Facts = append(included.Facts, *value)
+	case *yeoul.Episode:
+		included.Episodes = append(included.Episodes, *value)
+	case *yeoul.Entity:
+		included.Entities = append(included.Entities, *value)
+	}
 }
 
 func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionDocument, projectionManifest) {
@@ -411,14 +935,34 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 
 	sort.Slice(projections, func(i, j int) bool { return projections[i].ProjectionID < projections[j].ProjectionID })
 	manifest := projectionManifest{
-		Version:         1,
+		Version:         projectionManifestVersion,
 		DatabasePath:    dbPath,
 		ProjectionFile:  "projection.ndjson",
 		ProjectionCount: len(projections),
 		Counts:          counts,
 		BuiltAt:         time.Now().UTC(),
 	}
+	if stat, err := os.Stat(dbPath); err == nil {
+		manifest.DatabaseSize = stat.Size()
+		manifest.DatabaseModTime = stat.ModTime()
+	}
+	manifest.ProjectionHash = projectionHash(projections)
 	return projections, manifest
+}
+
+func projectionHash(projections []projectionDocument) string {
+	hash := sha256.New()
+	for _, projection := range projections {
+		_, _ = io.WriteString(hash, projection.ProjectionID)
+		_, _ = io.WriteString(hash, "\x00")
+		_, _ = io.WriteString(hash, projection.SearchText)
+		_, _ = io.WriteString(hash, "\x00")
+		if projection.ObservedAtMS != nil {
+			_, _ = fmt.Fprintf(hash, "%d", *projection.ObservedAtMS)
+		}
+		_, _ = io.WriteString(hash, "\n")
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func projectionTimestampMS(observedAt time.Time) uint64 {
@@ -506,6 +1050,40 @@ func writeProjectionArtifacts(root string, projections []projectionDocument, man
 	return manifestPath, projectionPath, nil
 }
 
+func writeProjectionManifest(root string, manifest projectionManifest) (string, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	manifestPath := filepath.Join(root, "yeoul-index.json")
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	temp, err := os.CreateTemp(root, ".yeoul-index-*.json")
+	if err != nil {
+		return "", err
+	}
+	tempPath := temp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			os.Remove(tempPath)
+		}
+	}()
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return "", err
+	}
+	if err := temp.Close(); err != nil {
+		return "", err
+	}
+	if err := replaceProjectionFile(tempPath, manifestPath); err != nil {
+		return "", err
+	}
+	removeTemp = false
+	return manifestPath, nil
+}
+
 func replaceProjectionFile(tempPath, finalPath string) error {
 	if err := os.Rename(tempPath, finalPath); err == nil {
 		return nil
@@ -522,12 +1100,8 @@ func replaceProjectionFile(tempPath, finalPath string) error {
 
 func loadProjectionManifest(root string) (string, string, projectionManifest, error) {
 	manifestPath := filepath.Join(root, "yeoul-index.json")
-	data, err := os.ReadFile(manifestPath)
+	manifest, err := readProjectionManifest(root)
 	if err != nil {
-		return "", "", projectionManifest{}, err
-	}
-	var manifest projectionManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
 		return "", "", projectionManifest{}, err
 	}
 	projectionFileName, err := safeProjectionFileName(manifest.ProjectionFile)
@@ -539,6 +1113,18 @@ func loadProjectionManifest(root string) (string, string, projectionManifest, er
 		return "", "", projectionManifest{}, err
 	}
 	return manifestPath, projectionPath, manifest, nil
+}
+
+func readProjectionManifest(root string) (projectionManifest, error) {
+	data, err := os.ReadFile(filepath.Join(root, "yeoul-index.json"))
+	if err != nil {
+		return projectionManifest{}, err
+	}
+	var manifest projectionManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return projectionManifest{}, err
+	}
+	return manifest, nil
 }
 
 func safeProjectionFileName(name string) (string, error) {
@@ -610,6 +1196,23 @@ func writeTemporaryRaxRawDocuments(root string, projections []projectionDocument
 	fileOpen = false
 	removeOnError = false
 	return path, nil
+}
+
+func raxRawDocumentsJSONL(projections []projectionDocument) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	for _, projection := range projections {
+		rawDocument := raxRawDocument{
+			DocID:       projection.ProjectionID,
+			Text:        projection.SearchText,
+			Metadata:    projection.Metadata,
+			TimestampMS: projection.ObservedAtMS,
+		}
+		if err := encoder.Encode(rawDocument); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
 }
 
 func sameCounts(left, right map[string]int) bool {

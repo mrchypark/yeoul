@@ -22,6 +22,7 @@ Release artifacts are published for macOS, Linux, and Windows.
 `install.sh` and `install.ps1` are uploaded as GitHub Release assets, so you can execute them directly from the release URL without checking out the repository.
 The installer downloads the matching archive and checksum from the same release, verifies it, and installs Yeoul under the default per-user location.
 On macOS and Linux that is `~/.local/share/yeoul/<tag>` with wrapper commands in `~/.local/bin`. On Windows that is `%LOCALAPPDATA%\\Programs\\yeoul\\<tag>`, and the script adds its `bin` directory to the user `PATH`.
+Release archives include Yeoul's native runtimes, including Ladybug storage libraries and the bundled rax FFI retrieval runtime used by `yeoul search`.
 
 Latest release on macOS and Linux:
 

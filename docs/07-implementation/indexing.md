@@ -71,14 +71,16 @@ That means:
 - retrieval runtime indexes may be dropped and rebuilt without losing memory truth
 - final search responses should be hydrated from canonical Yeoul records before provenance and lifecycle-sensitive output is returned
 
-For rax 0.2, Yeoul publishes projections through the direct `.wax` product store path:
+For rax 0.4.4, Yeoul publishes projections through the rax FFI direct document-ingest path:
 
 ```bash
 yeoul index publish-rax --root "$YEOUL_INDEX_ROOT" --store "$YEOUL_RAX_STORE"
 ```
 
 The adapter maps Yeoul `projection_id` to rax `doc_id`, `search_text` to rax `text`, and preserves projection metadata under rax `metadata`.
-The temporary rax raw docs file is an adapter input only; `projection.ndjson` remains the durable Yeoul-owned boundary.
+Explicit index commands keep `projection.ndjson` for inspection; managed search cache streams JSONL bytes into rax FFI and keeps only the Yeoul manifest plus derived rax store.
+
+`yeoul search --backend auto` uses the same projection mapping internally through Yeoul's bundled rax FFI runtime. It writes a managed derived rax index under the user's cache directory, rebuilds it from Ladybug-backed records for correctness, and uses rax hit order to rerank the canonical Yeoul search response.
 
 ## Benchmark responsibility
 Any new index addition should include:
