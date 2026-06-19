@@ -4,7 +4,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"syscall"
 	"unsafe"
 )
@@ -72,7 +71,7 @@ func raxWindowsOutput(status uintptr, callErr error, out *byte, free, lastError 
 	if status != 0 {
 		msgPtr, _, _ := lastError.Call()
 		if msgPtr != 0 {
-			return nil, errors.New(syscall.BytePtrToString((*byte)(unsafe.Pointer(msgPtr))))
+			return nil, errors.New(windowsBytePtrString((*byte)(unsafe.Pointer(msgPtr))))
 		}
 		return nil, callErr
 	}
@@ -80,5 +79,19 @@ func raxWindowsOutput(status uintptr, callErr error, out *byte, free, lastError 
 		return nil, nil
 	}
 	defer free.Call(uintptr(unsafe.Pointer(out)))
-	return []byte(syscall.BytePtrToString(out)), nil
+	return []byte(windowsBytePtrString(out)), nil
+}
+
+func windowsBytePtrString(ptr *byte) string {
+	if ptr == nil {
+		return ""
+	}
+	var bytes []byte
+	for p := uintptr(unsafe.Pointer(ptr)); ; p++ {
+		b := *(*byte)(unsafe.Pointer(p))
+		if b == 0 {
+			return string(bytes)
+		}
+		bytes = append(bytes, b)
+	}
 }
