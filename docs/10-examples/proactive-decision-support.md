@@ -15,10 +15,14 @@ For normal work, prefer a single user-level database rather than a project-local
 
 ```bash
 export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
+export YEOUL_GROUP="project:yeoul"
+export YEOUL_PROJECT_ID="repo:mrchypark-yeoul:project:yeoul"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
 Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
+`$YEOUL_GROUP` scopes searches and episode writes. `fact assert` does not take `--group-id`; use `$YEOUL_PROJECT_ID` or repo namespace `repo:mrchypark/yeoul` plus stable keys for fact subjects instead.
+If a harness provides a specific Yeoul binary or DB path, run that exact binary and DB in every memory command; do not run `command -v yeoul`, `yeoul --help`, or any bare `yeoul` fallback unless no binary path was provided.
 
 ## Default loop
 
@@ -38,6 +42,7 @@ Before recommending a direction, interpreting status, or resolving a tradeoff:
 ```bash
 yeoul search --db "$YEOUL_DB" \
   --query "current context for this task" \
+  --group-id "$YEOUL_GROUP" \
   --mode hybrid \
   --policy-path ./agent-pack \
   --recipe recent_context \
@@ -48,6 +53,7 @@ Use narrower queries when the question is specific:
 
 ```bash
 yeoul fact lookup --db "$YEOUL_DB" \
+  --group-id "$YEOUL_GROUP" \
   --predicate HAS_STATUS \
   --include-inactive
 ```
@@ -57,7 +63,7 @@ yeoul fact lookup --db "$YEOUL_DB" \
 If prior memory appears inconsistent, incomplete, or time-sensitive:
 
 ```bash
-yeoul timeline --db "$YEOUL_DB" --entity project:yeoul --descending
+yeoul timeline --db "$YEOUL_DB" --entity "$YEOUL_PROJECT_ID" --descending
 yeoul provenance --db "$YEOUL_DB" --fact fact_000001 --max-depth 2
 ```
 
@@ -73,6 +79,8 @@ During implementation, review, or debugging:
 
 When a decision, fix, status change, or correction becomes clear, store a self-contained context/evidence episode even if the user did not explicitly ask to save it. Then assert the decision or durable state as a fact when the subject and predicate are clear.
 
+Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped.
+
 Treat a message as a decision candidate when it does any of these:
 
 - chooses between options, tradeoffs, tools, architectures, policies, defaults, or priorities
@@ -87,6 +95,10 @@ For decisions, do not save only the conclusion when richer context is available.
 Prefer a compact decision context episode that preserves how the choice was made.
 Prefer the most reusable abstraction that is still true.
 If the current project choice is one example of a broader pattern, store the broader pattern as the main decision and keep the project-specific detail as the current application.
+Before asking the user, fill every field that can be inferred from the conversation, retrieved memory, code, tests, docs, or command output. Ask only for missing information that is required for a complete and truthful record, such as unclear scope, final choice, reason, owner/status, or revisit condition. Do not use missing optional details as a reason to save a thin record.
+If the current turn only proposes a durable choice or asks for advice, do not silently postpone the write and call that confirmation. Say the exact missing question first, then record only after the user confirms or the final choice is otherwise explicit.
+For multi-turn transcripts or replay evaluations, process each user turn as a live turn: search or answer first, ask if confirmation is missing, write immediately after a later turn confirms, then verify the record can be retrieved before using it.
+Use a field-labeled `decision_context` episode for decisions. If a field below is unknown but required to make the record truthful, ask before asserting the fact; if it is optional and unavailable, write `unknown` or `none found` rather than inventing it.
 
 Recommended decision context episode template:
 
@@ -123,6 +135,7 @@ yeoul ingest episode --db "$YEOUL_DB" \
   --source-kind codex_thread \
   --source-external-ref local-thread \
   --observed-at 2026-04-17T00:00:00Z \
+  --group-id "$YEOUL_GROUP" \
   --content "Topic: proactive Yeoul usage for repository decision support. Context: decisions should remain reusable across sessions. Options: wait for explicit save requests, or proactively search and record durable outcomes. Decision: use proactive Yeoul memory. Why: it preserves prior decisions and catches conflicts. Tradeoffs: requires judgment to avoid low-signal records."
 ```
 
@@ -189,7 +202,7 @@ Use fact lifecycle commands for the decision statement, status, owner, and other
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
   --predicate HAS_STATUS \
-  --subject-id project_yeoul \
+  --subject-id "$YEOUL_PROJECT_ID" \
   --value-text "active" \
   --observed-at 2026-04-17T00:00:00Z \
   --supporting-episodes ep_000001
@@ -201,8 +214,10 @@ If the subject entity does not exist yet, create or update it while asserting th
 yeoul fact assert --db "$YEOUL_DB" \
   --predicate HAS_DECISION \
   --upsert-subject \
+  --subject-namespace repo:mrchypark/yeoul \
   --subject-type Project \
   --subject-name Yeoul \
+  --subject-stable-key yeoul \
   --value-text "Use one user-level Yeoul database for normal work" \
   --supporting-episodes ep_000003
 ```
@@ -217,18 +232,18 @@ When a state changes, prefer superseding instead of overwriting:
 yeoul fact supersede --confirm --db "$YEOUL_DB" \
   --id fact_000001 \
   --predicate HAS_STATUS \
-  --subject-id project_yeoul \
+  --subject-id "$YEOUL_PROJECT_ID" \
   --value-text "completed" \
   --supporting-episodes ep_000010 \
   --reason "status changed"
 ```
 
-For one-current-value slots, let the CLI supersede older active facts in the same slot:
+Use `--cardinality one` only when all overlapping active facts for the same subject/predicate should be replaced. For auditable decision changes where one known fact should link to one replacement, prefer explicit `fact supersede --confirm --reason`.
 
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
   --predicate HAS_STATUS \
-  --upsert-subject --subject-type Project --subject-name Yeoul --subject-stable-key project:yeoul \
+  --upsert-subject --subject-namespace repo:mrchypark/yeoul --subject-type Project --subject-name Yeoul --subject-stable-key yeoul \
   --value-text "ready for review" \
   --cardinality one \
   --supporting-episodes ep_000011

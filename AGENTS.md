@@ -4,6 +4,9 @@ Use the `yeoul-memory` skill when a task depends on prior decisions, constraints
 
 When working with repository memory in normal use, use a single user-level Yeoul database instead of a project-local database file.
 Default path: `$HOME/.local/share/yeoul/work-memory.lbug`
+For this repository, scope global-memory searches and episode writes with group ID `project:yeoul`; scope fact writes with repo-qualified entity namespace `repo:mrchypark/yeoul`, stable keys, or canonical project subject ID `repo:mrchypark-yeoul:project:yeoul`.
+This is an agent fail-closed convention, not a storage-layer security boundary. If a command cannot carry `--group-id`, encode the repository scope in the subject ID or namespace/stable-key and do not imply runtime enforcement.
+If the user, harness, or repo instructions provide a specific Yeoul binary or database path, treat them as the memory target. Run that exact binary path in every command; do not run `command -v yeoul`, `yeoul --help`, `file $(command -v yeoul)`, or any bare `yeoul` fallback unless no binary path was provided.
 
 Project-local `./yeoul.lbug` is only for quickstart examples, isolated tests, or temporary debugging.
 Prefer the workflows documented in `skills/yeoul-memory/SKILL.md` and `skills/yeoul-memory/references/cli-workflows.md`.
@@ -15,10 +18,11 @@ Do not wait for the user to explicitly ask for memory lookup or memory write whe
 
 ## GitHub account safety
 
-Before writing to GitHub for this repository, confirm the active GitHub account with `gh auth status`.
-For PR comments, review replies, review requests, issue comments, branch pushes, and other remote GitHub mutations, use the repository owner account `mrchypark` unless the user explicitly says otherwise.
-If another account such as `cypark-conalog` is active, switch to `mrchypark` first with `gh auth switch -u mrchypark` and re-check the active account before writing.
-Do not post GitHub comments, review replies, or review requests from an unverified account.
+Before writing to GitHub for this repository, confirm the active GitHub API account with both `gh auth status` and `gh api user --jq .login`; both must identify `mrchypark`.
+For pushes, also verify the git transport identity or use a remote/credential path known to write as `mrchypark`; if it cannot be verified as the same account, do not push.
+For PR comments, review replies, review requests, issue comments, branch pushes, releases, and other remote GitHub mutations, use the repository owner account `mrchypark` unless the user explicitly says otherwise.
+If another account such as `cypark-conalog` is active, if `gh auth status`, `gh api user`, and git transport identity diverge, or if any identity cannot be verified, stop before every remote mutation and ask the user to switch accounts; do not mutate host-wide GitHub CLI state automatically.
+Do not post GitHub comments, review replies, review requests, or push branches from an unverified account.
 
 ## Search first
 
@@ -39,6 +43,7 @@ Default behavior:
 - proactively search before recommendations, design choices, prioritization, status interpretation, or conflict resolution
 - proactively search when the user refers to "before", "again", "still", "last time", "current status", or similar continuity cues
 - skip lookup only when the task is clearly self-contained and prior memory is unlikely to matter
+- when a user provides a specific Yeoul binary, database path, group, or replay harness, use that exact target for all memory actions
 
 ## Decision support behavior
 
@@ -70,16 +75,23 @@ Do not store:
 - acknowledgements or low-signal chat
 - unsupported guesses
 - duplicate summaries of the same event
+- secrets, credentials, personal data, customer data, or verbatim private content
 
 Do not treat every message as durable memory. Prefer quality over quantity.
 
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
+- never store prohibited sensitive data even with confirmation; redact or omit it
+- before implicit writes to the global database, confirm exact scope/fact text unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - store self-contained decision context and evidence as an episode, then record the decision statement, status, ownership, or dependency as facts when the subject can be named
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
 When recording decision context, prefer storing more than the conclusion alone.
+Before asking the user, fill every field that can be inferred from the conversation, retrieved memory, code, tests, docs, or command output. Ask only for missing information that is required for a complete and truthful record, such as unclear scope, final choice, reason, owner/status, or revisit condition. Do not use missing optional details as a reason to save a thin record.
+If the current turn only proposes a durable choice or asks for advice, do not silently postpone the write and call that confirmation. Say the exact missing question first, then record only after the user confirms or the final choice is otherwise explicit.
+For multi-turn transcripts or replay evaluations, process each user turn as a live turn: search or answer first, ask if confirmation is missing, write immediately after a later turn confirms, then verify the record can be retrieved before using it.
+Use a field-labeled `decision_context` episode for decisions. If a field below is unknown but required to make the record truthful, ask before asserting the fact; if it is optional and unavailable, write `unknown` or `none found` rather than inventing it.
 Include, when available:
 - `Topic`: the reusable decision topic or question, not just the current product or file name
 - `Context`: the background or context
@@ -106,8 +118,8 @@ Use `timeline` and `provenance` first, then use `fact supersede` for replacement
 
 Use `ingest episode` or `ingest file` for context and evidence records.
 Use `fact assert` for the decision statement or other durable state when the subject and supporting episode are clear.
-Prefer `fact assert --upsert-subject --subject-type TYPE --subject-name NAME` when the fact subject is clear but the entity has not been created yet.
-Use `fact assert --cardinality one` for one-current-value slots such as current owner, status, default backend, or selected strategy.
+Prefer `fact assert --upsert-subject --subject-namespace REPO --subject-type TYPE --subject-name NAME --subject-stable-key KEY` when writing to the global database and the subject has not been created yet.
+Use `fact assert --cardinality one` only when all overlapping active facts for the same subject/predicate should be replaced. Use explicit `fact supersede --confirm --reason` when one known fact should be linked to one replacement or the replacement needs an audit reason.
 Use stable keys when names can change but entity identity should remain stable.
 Pass `fact assert --observed-at RFC3339` when the fact observation time differs from the supporting episode time; otherwise the CLI inherits the first non-empty supporting episode `observed_at`, then falls back to system time with `observed_at_basis=system_time_default`.
 Use `--as-of` for knowledge/lifecycle time and `--valid-at` for domain validity; do not conflate what was known then with what was true then.

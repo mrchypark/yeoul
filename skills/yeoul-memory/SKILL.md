@@ -18,6 +18,8 @@ Default path:
 
 Project-local `./yeoul.lbug` is only for quickstarts, isolated tests, or temporary debugging.
 
+If the user, harness, or repo instructions provide a specific Yeoul binary or database path, treat them as the memory target. Run that exact binary path in every command; do not run `command -v yeoul`, `yeoul --help`, `file $(command -v yeoul)`, or any bare `yeoul` fallback unless no binary path was provided.
+
 ## Search first
 
 Search Yeoul before answering when:
@@ -38,6 +40,7 @@ Default behavior:
 - proactively search before recommendations, design choices, prioritization, status interpretation, or conflict resolution
 - proactively search when the user refers to earlier decisions, previous attempts, current status, or continuity across work
 - skip lookup only when the task is clearly self-contained and prior memory is unlikely to matter
+- when a user provides a specific Yeoul binary, database path, group, or replay harness, use that exact target for all memory actions
 
 When a decision is required:
 - search for similar past decisions first
@@ -61,9 +64,12 @@ Do not store:
 - low-signal chatter
 - unsupported guesses
 - destructive corrections without a reason
+- secrets, credentials, personal data, customer data, or verbatim private content
 
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
+- never store prohibited sensitive data even with confirmation; redact or omit it
+- before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - store self-contained context and evidence as an episode, then assert stable decisions, status, ownership, and dependency relationships as facts when the subject can be named
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
@@ -92,9 +98,13 @@ After evaluation:
 - keep validated and falsified contracts for future retrieval
 - record regressions explicitly instead of deleting the contract
 - use lifecycle operations for state changes when a fact already exists
-- roll back at the planned unit when the falsification condition or regression threshold is met
+- propose rollback when the falsification condition or regression threshold is met; execute only when the user explicitly authorizes the rollback in the current turn or an active repo policy already permits that exact rollback unit, and only after checking the diff scope
 
 When recording decision context, prefer storing more than the conclusion alone.
+Before asking the user, fill every field that can be inferred from the conversation, retrieved memory, code, tests, docs, or command output. Ask only for missing information that is required for a complete and truthful record, such as unclear scope, final choice, reason, owner/status, or revisit condition. Do not use missing optional details as a reason to save a thin record.
+If the current turn only proposes a durable choice or asks for advice, do not silently postpone the write and call that confirmation. Say the exact missing question first, then record only after the user confirms or the final choice is otherwise explicit.
+For multi-turn transcripts or replay evaluations, process each user turn as a live turn: search or answer first, ask if confirmation is missing, write immediately after a later turn confirms, then verify the record can be retrieved before using it.
+Use a field-labeled `decision_context` episode for decisions. If a field below is unknown but required to make the record truthful, ask before asserting the fact; if it is optional and unavailable, write `unknown` or `none found` rather than inventing it.
 Include, when available:
 - `Topic`: the decision topic or question
 - `Context`: the background or context
@@ -114,7 +124,7 @@ Do not let a one-off tool name, environment name, or implementation detail becom
 
 - Use `ingest episode` or `ingest file` for context and evidence episodes.
 - Use `fact assert` for decision statements and durable state when subject and supporting episodes are clear.
-- Prefer `fact assert --upsert-subject --subject-type TYPE --subject-name NAME` when the fact subject is clear but the entity has not been created yet.
+- Prefer `fact assert --upsert-subject --subject-namespace REPO --subject-type TYPE --subject-name NAME --subject-stable-key KEY` when writing to the global database and the subject has not been created yet.
 - Pass `fact assert --observed-at RFC3339` when the fact observation time differs from the supporting episode time; otherwise the CLI inherits the first non-empty supporting episode `observed_at`, then falls back to system time with `observed_at_basis=system_time_default`.
 - Use `fact supersede --confirm` for state changes rather than overwriting.
 - Use `fact retract --confirm` only with an explicit reason.
