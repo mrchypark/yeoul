@@ -73,6 +73,8 @@ func (c cli) run(ctx context.Context, args []string) error {
 		return c.runEntity(ctx, args[1:])
 	case "policy":
 		return c.runPolicy(ctx, args[1:])
+	case "index":
+		return c.runIndex(ctx, args[1:])
 	case "admin":
 		return c.runAdmin(ctx, args[1:])
 	case "bench":
@@ -92,7 +94,7 @@ Usage:
   yeoul ingest json --db PATH --file FILE [--json]
   yeoul ingest batch --db PATH --file FILE [--json]
   yeoul get --db PATH --kind episode|entity|fact|source --id ID [--json]
-  yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--limit N] [--include-related] [--json]
+  yeoul search --db PATH --query TEXT [--backend auto|core|rax] [--type fact,episode,entity] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--limit N] [--include-related] [--json]
   yeoul context --db PATH --query TEXT [--type fact,episode,entity] [--limit N] [--json]
   yeoul timeline --db PATH [--entity ID | --fact ID | --episode ID | --source ID] [--event-type TYPES] [--as-of RFC3339] [--from RFC3339] [--to RFC3339] [--descending] [--limit N] [--json]
   yeoul provenance --db PATH (--kind KIND --id ID | --entity ID | --fact ID | --episode ID) [--as-of RFC3339] [--max-depth N] [--json]
@@ -110,12 +112,17 @@ Usage:
   yeoul policy validate --path PATH [--json]
   yeoul policy show --path PATH [--json]
   yeoul policy list-recipes --path PATH [--json]
+  yeoul index build --db PATH --root DIR [--json]
+  yeoul index rebuild --db PATH --root DIR [--json]
+  yeoul index status --root DIR [--json]
+  yeoul index verify --db PATH --root DIR [--json]
+  yeoul index publish-rax --root DIR --store FILE [--rax-lib PATH] [--rax-bin PATH] [--json]
   yeoul admin checkpoint --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json] [--confirm]
   yeoul admin export --db PATH --out FILE [--json]
   yeoul admin import --db PATH --in FILE [--json]
   yeoul bench ingest --db PATH --episodes N [--facts-per-episode N] [--json]
-  yeoul bench query --db PATH --query TEXT [--entity ID] [--fact ID] [--iterations N] [--json]
+  yeoul bench query --db PATH --query TEXT [--backend auto|core|rax] [--entity ID] [--fact ID] [--iterations N] [--json]
   yeoul bench lifecycle --db PATH --iterations N [--json]
 
 Commands:
@@ -134,6 +141,7 @@ Commands:
   entity          Inspect or manage entity merge markers.
   fact            Manage fact lifecycle operations.
   policy          Validate and inspect policy packs.
+  index           Manage derived retrieval projections.
   admin           Export and import Yeoul data.
   bench           Run local benchmark commands.
 `)
