@@ -57,6 +57,8 @@ func (c cli) run(ctx context.Context, args []string) error {
 		return c.runGet(ctx, args[1:])
 	case "search":
 		return c.runSearch(ctx, args[1:])
+	case "context":
+		return c.runContext(ctx, args[1:])
 	case "timeline":
 		return c.runTimeline(ctx, args[1:])
 	case "provenance":
@@ -90,7 +92,8 @@ Usage:
   yeoul ingest json --db PATH --file FILE [--json]
   yeoul ingest batch --db PATH --file FILE [--json]
   yeoul get --db PATH --kind episode|entity|fact|source --id ID [--json]
-  yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--limit N] [--include-related] [--json]
+  yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--limit N] [--include-related] [--json]
+  yeoul context --db PATH --query TEXT [--type fact,episode,entity] [--limit N] [--json]
   yeoul timeline --db PATH [--entity ID | --fact ID | --episode ID | --source ID] [--event-type TYPES] [--as-of RFC3339] [--from RFC3339] [--to RFC3339] [--descending] [--limit N] [--json]
   yeoul provenance --db PATH (--kind KIND --id ID | --entity ID | --fact ID | --episode ID) [--as-of RFC3339] [--max-depth N] [--json]
   yeoul inspect schema --db PATH [--json]
@@ -100,9 +103,9 @@ Usage:
   yeoul entity merge-preview --db PATH [--json]
   yeoul entity merge --db PATH --target ID --source IDS --reason TEXT [--json] [--confirm]
   yeoul fact get --db PATH --id ID [--json]
-  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--as-of RFC3339] [--include-inactive] [--limit N] [--json]
-  yeoul fact assert --db PATH --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS [--json]
-  yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS --reason TEXT [--json]
+  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--limit N] [--json]
+  yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-namespace NS --subject-type TYPE --subject-name NAME [--subject-stable-key KEY]) [--object-id ID | --upsert-object --object-namespace NS --object-type TYPE --object-name NAME [--object-stable-key KEY]] [--value-text TEXT] [--observed-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--cardinality one|many] --supporting-episodes IDS [--json]
+  yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] [--valid-from RFC3339] [--valid-to RFC3339] --supporting-episodes IDS --reason TEXT [--json]
   yeoul fact retract --db PATH --id ID --reason TEXT [--json]
   yeoul policy validate --path PATH [--json]
   yeoul policy show --path PATH [--json]

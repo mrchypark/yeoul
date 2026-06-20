@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 )
@@ -337,6 +338,177 @@ func TestLadybugDriverIncrementalWritesDoNotDuplicateNodesOrEdges(t *testing.T) 
 	assertRowCount(t, raw, "MATCH (e:Entity {id: 'project:yeoul'}) RETURN e.id", 1)
 	assertRowCount(t, raw, "MATCH (:Fact {id: 'fact-1'})-[:SUPPORTED_BY]->(:Episode {id: 'ep-1'}) RETURN 1", 1)
 	assertRowCount(t, raw, "MATCH (:Episode {id: 'ep-1'})-[:ASSERTS]->(:Fact {id: 'fact-1'}) RETURN 1", 1)
+}
+
+func TestLadybugDriverPersistsBitemporalRevisions(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "yeoul-revisions.lbug")
+
+	eng, err := Open(ctx, Config{
+		Driver:          StorageDriverLadybug,
+		DatabasePath:    dbPath,
+		CreateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{
+		ID:      "ep-rev",
+		SpaceID: "default",
+		Kind:    "note",
+		Content: "status changed",
+		Source:  SourceInput{Kind: "note"},
+	})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	project, err := eng.UpsertEntity(ctx, EntityInput{
+		ID:            "project:rev",
+		SpaceID:       "default",
+		Type:          "Project",
+		CanonicalName: "Revisioned",
+	})
+	if err != nil {
+		t.Fatalf("upsert project: %v", err)
+	}
+	oldFact, err := eng.AssertFact(ctx, FactInput{
+		ID:                   "fact-rev-old",
+		SpaceID:              "default",
+		Predicate:            "HAS_STATUS",
+		SubjectID:            project.ID,
+		ValueText:            "alpha",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	if err != nil {
+		t.Fatalf("assert old fact: %v", err)
+	}
+	beforeSupersede := oldFact.CreatedAt.Add(time.Nanosecond)
+	transition, err := eng.SupersedeFact(ctx, oldFact.ID, FactInput{
+		ID:                   "fact-rev-new",
+		SpaceID:              "default",
+		Predicate:            "HAS_STATUS",
+		SubjectID:            project.ID,
+		ValueText:            "beta",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}, "status update")
+	if err != nil {
+		t.Fatalf("supersede fact: %v", err)
+	}
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
+
+	raw, err := lstore.Open(dbPath, true)
+	if err != nil {
+		t.Fatalf("open raw ladybug store: %v", err)
+	}
+	assertRowCount(t, raw, "MATCH (m:YeoulMigration {id: 'bitemporal_revision_seed_v1'}) RETURN m.id", 1)
+	assertRowCount(t, raw, "MATCH (r:EntityRevision {entity_id: 'project:rev'}) RETURN r.id", 1)
+	assertRowCount(t, raw, "MATCH (r:FactRevision {fact_id: 'fact-rev-old'}) RETURN r.id", 2)
+	assertRowCount(t, raw, "MATCH (r:FactRevision {fact_id: 'fact-rev-new'}) RETURN r.id", 2)
+	raw.Close()
+
+	reopened, err := Open(ctx, Config{
+		Driver:       StorageDriverLadybug,
+		DatabasePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("reopen engine: %v", err)
+	}
+	defer func() { _ = reopened.Close(ctx) }()
+
+	historical, err := reopened.LookupFacts(ctx, FactLookupRequest{
+		Meta:       QueryMeta{SpaceID: "default"},
+		SubjectIDs: []string{project.ID},
+		Temporal:   TemporalFilter{AsOf: &beforeSupersede},
+	})
+	if err != nil {
+		t.Fatalf("historical lookup: %v", err)
+	}
+	if len(historical.Facts) != 1 || historical.Facts[0].ID != oldFact.ID || historical.Facts[0].ValueText != "alpha" {
+		t.Fatalf("expected old fact after reopen, got %#v", historical.Facts)
+	}
+
+	current, err := reopened.LookupFacts(ctx, FactLookupRequest{
+		Meta:       QueryMeta{SpaceID: "default"},
+		SubjectIDs: []string{project.ID},
+	})
+	if err != nil {
+		t.Fatalf("current lookup: %v", err)
+	}
+	if len(current.Facts) != 1 || current.Facts[0].ID != transition.NewFactID || current.Facts[0].ValueText != "beta" {
+		t.Fatalf("expected new current fact after reopen, got %#v", current.Facts)
+	}
+}
+
+func TestLadybugDriverSeedsRevisionMigrationForLegacyState(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "yeoul-legacy-revisions.lbug")
+	createdAt := time.Date(2026, time.June, 1, 12, 0, 0, 0, time.UTC)
+
+	store, err := newLadybugStore(Config{
+		Driver:          StorageDriverLadybug,
+		DatabasePath:    dbPath,
+		CreateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("open legacy store: %v", err)
+	}
+	legacy := emptyPersistedState()
+	legacy.Sequence = 10
+	legacy.Sources["src-legacy"] = Source{ID: "src-legacy", SpaceID: "default", Kind: "note", CreatedAt: createdAt}
+	legacy.Episodes["ep-legacy"] = Episode{ID: "ep-legacy", SpaceID: "default", Kind: "note", Content: "legacy", SourceID: "src-legacy", IngestedAt: createdAt}
+	legacy.Entities["entity:legacy"] = Entity{ID: "entity:legacy", SpaceID: "default", Type: "Project", CanonicalName: "Legacy", CreatedAt: createdAt, UpdatedAt: createdAt}
+	legacy.Facts["fact-legacy"] = Fact{
+		ID:                   "fact-legacy",
+		SpaceID:              "default",
+		Predicate:            "HAS_STATE",
+		SubjectID:            "entity:legacy",
+		ValueText:            "legacy state",
+		Status:               factStatusActive,
+		CreatedAt:            createdAt,
+		UpdatedAt:            createdAt,
+		SupportingEpisodeIDs: []string{"ep-legacy"},
+	}
+	if err := store.Save(legacy); err != nil {
+		t.Fatalf("save legacy projection: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close legacy store: %v", err)
+	}
+
+	eng, err := Open(ctx, Config{
+		Driver:       StorageDriverLadybug,
+		DatabasePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("open migrated engine: %v", err)
+	}
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close migrated engine: %v", err)
+	}
+
+	reopened, err := Open(ctx, Config{
+		Driver:       StorageDriverLadybug,
+		DatabasePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("reopen migrated engine: %v", err)
+	}
+	if err := reopened.Close(ctx); err != nil {
+		t.Fatalf("close reopened engine: %v", err)
+	}
+
+	raw, err := lstore.Open(dbPath, true)
+	if err != nil {
+		t.Fatalf("open raw migrated store: %v", err)
+	}
+	defer raw.Close()
+
+	assertRowCount(t, raw, "MATCH (m:YeoulMigration {id: 'bitemporal_revision_seed_v1'}) RETURN m.id", 1)
+	assertRowCount(t, raw, "MATCH (r:EntityRevision {id: 'seed:entity:legacy'}) RETURN r.id", 1)
+	assertRowCount(t, raw, "MATCH (r:FactRevision {id: 'seed:fact-legacy'}) RETURN r.id", 1)
 }
 
 func assertSingleStringResult(t *testing.T, store *lstore.Store, query, want string) {

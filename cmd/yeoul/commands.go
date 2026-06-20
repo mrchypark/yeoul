@@ -13,6 +13,7 @@ import (
 	json "github.com/goccy/go-json"
 	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 	"github.com/mrchypark/yeoul/pkg/policy"
+	"github.com/mrchypark/yeoul/pkg/retrieval"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
@@ -22,9 +23,11 @@ type initResult struct {
 }
 
 type ingestJSONFile struct {
-	Episodes []yeoul.EpisodeInput `json:"episodes,omitempty"`
-	Entities []yeoul.EntityInput  `json:"entities,omitempty"`
-	Facts    []yeoul.FactInput    `json:"facts,omitempty"`
+	Episodes        []yeoul.EpisodeInput   `json:"episodes,omitempty"`
+	Entities        []yeoul.EntityInput    `json:"entities,omitempty"`
+	Facts           []yeoul.FactInput      `json:"facts,omitempty"`
+	EntityRevisions []yeoul.EntityRevision `json:"entity_revisions,omitempty"`
+	FactRevisions   []yeoul.FactRevision   `json:"fact_revisions,omitempty"`
 }
 
 type ingestJSONResult struct {
@@ -58,9 +61,11 @@ type inspectCountsResult struct {
 }
 
 type exportFile struct {
-	Episodes []yeoul.EpisodeInput `json:"episodes,omitempty"`
-	Entities []yeoul.EntityInput  `json:"entities,omitempty"`
-	Facts    []yeoul.FactInput    `json:"facts,omitempty"`
+	Episodes        []yeoul.EpisodeInput   `json:"episodes,omitempty"`
+	Entities        []yeoul.EntityInput    `json:"entities,omitempty"`
+	Facts           []yeoul.FactInput      `json:"facts,omitempty"`
+	EntityRevisions []yeoul.EntityRevision `json:"entity_revisions,omitempty"`
+	FactRevisions   []yeoul.FactRevision   `json:"fact_revisions,omitempty"`
 }
 
 type benchIngestResult struct {
@@ -110,6 +115,14 @@ type factDuplicateCandidate struct {
 	ObjectID  string   `json:"object_id,omitempty"`
 	ValueText string   `json:"value_text,omitempty"`
 }
+
+const (
+	observedAtBasisKey               = "observed_at_basis"
+	observedAtSupportingEpisodeIDKey = "observed_at_supporting_episode_id"
+	observedAtBasisExplicit          = "explicit"
+	observedAtBasisSupportingEpisode = "supporting_episode"
+	observedAtBasisSystemTimeDefault = "system_time_default"
+)
 
 func (c cli) runInit(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
@@ -340,12 +353,16 @@ Usage:
 	}
 
 	var observedAt time.Time
+	observedAtBasis := observedAtBasisSystemTimeDefault
 	if strings.TrimSpace(observedAtRaw) != "" {
 		parsed, err := time.Parse(time.RFC3339, observedAtRaw)
 		if err != nil {
 			return &usageError{message: usage}
 		}
 		observedAt = parsed
+		observedAtBasis = observedAtBasisExplicit
+	} else {
+		observedAt = time.Now().UTC()
 	}
 
 	input := yeoul.EpisodeInput{
@@ -355,6 +372,9 @@ Usage:
 		SourceID:   sourceID,
 		GroupID:    groupID,
 		ObservedAt: observedAt,
+		Metadata: map[string]any{
+			observedAtBasisKey: observedAtBasis,
+		},
 	}
 	if sourceKind != "" || sourceURI != "" || sourceExternalRef != "" {
 		input.Source = yeoul.SourceInput{
@@ -566,7 +586,7 @@ func (c cli) runSearch(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--mode hybrid|keyword|semantic] [--entity ID] [--predicate PREDS] [--min-score N]
-      [--as-of RFC3339] [--from RFC3339] [--to RFC3339] [--include-inactive] [--cursor CURSOR]
+      [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--from RFC3339] [--to RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--cursor CURSOR]
       [--policy-path PATH] [--recipe NAME] [--limit N] [--include-related] [--json]
 `)
 
@@ -577,11 +597,15 @@ Usage:
 	var mode string
 	var entityID string
 	var predicatesRaw string
+	var groupIDsRaw string
 	var minScore float64
 	var minScoreSet bool
 	var asOfRaw string
+	var validAtRaw string
 	var fromRaw string
 	var toRaw string
+	var validFromRaw string
+	var validToRaw string
 	var includeInactive bool
 	var cursor string
 	var policyPath string
@@ -595,6 +619,7 @@ Usage:
 	fs.StringVar(&mode, "mode", "hybrid", "search mode: hybrid, keyword, semantic")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
 	fs.StringVar(&predicatesRaw, "predicate", "", "comma-separated predicates")
+	fs.StringVar(&groupIDsRaw, "group-id", "", "comma-separated group IDs")
 	fs.Func("min-score", "minimum score threshold", func(value string) error {
 		parsed, err := strconv.ParseFloat(value, 64)
 		if err != nil {
@@ -604,9 +629,12 @@ Usage:
 		minScoreSet = true
 		return nil
 	})
-	fs.StringVar(&asOfRaw, "as-of", "", "point-in-time view in RFC3339 format")
-	fs.StringVar(&fromRaw, "from", "", "start time in RFC3339 format")
-	fs.StringVar(&toRaw, "to", "", "end time in RFC3339 format")
+	fs.StringVar(&asOfRaw, "as-of", "", "knowledge-time view in RFC3339 format")
+	fs.StringVar(&validAtRaw, "valid-at", "", "domain-valid point in RFC3339 format")
+	fs.StringVar(&fromRaw, "from", "", "observed start time in RFC3339 format")
+	fs.StringVar(&toRaw, "to", "", "observed end time in RFC3339 format")
+	fs.StringVar(&validFromRaw, "valid-from", "", "domain-valid interval start in RFC3339 format")
+	fs.StringVar(&validToRaw, "valid-to", "", "domain-valid interval end in RFC3339 format")
 	fs.BoolVar(&includeInactive, "include-inactive", false, "include inactive facts")
 	fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
 	fs.StringVar(&policyPath, "policy-path", "", "policy pack path")
@@ -630,7 +658,7 @@ Usage:
 	if strings.TrimSpace(query) == "" {
 		return &usageError{message: usage}
 	}
-	temporal, err := parseTemporalFlags(asOfRaw, fromRaw, toRaw, includeInactive)
+	temporal, err := parseTemporalFlagsFull(asOfRaw, validAtRaw, fromRaw, toRaw, validFromRaw, validToRaw, includeInactive)
 	if err != nil {
 		return &usageError{message: usage}
 	}
@@ -641,6 +669,7 @@ Usage:
 		Types:      splitCSV(typesRaw),
 		AnchorIDs:  splitCSV(entityID),
 		Predicates: splitCSV(predicatesRaw),
+		Scope:      yeoul.ScopeFilter{GroupIDs: splitCSV(groupIDsRaw)},
 		Temporal:   temporal,
 		Page: yeoul.Page{
 			Limit:  limit,
@@ -712,6 +741,73 @@ Usage:
 			len(resp.Included.Sources),
 		)
 		return err
+	}
+	return nil
+}
+
+func (c cli) runContext(ctx context.Context, args []string) error {
+	usage := strings.TrimSpace(`
+Usage:
+  yeoul context --db PATH --query TEXT [--type fact,episode,entity] [--entity ID] [--limit N] [--max-blocks N] [--max-text-runes N] [--json]
+`)
+	fs := newFlagSet("context")
+	var dbPath string
+	var query string
+	var typesRaw string
+	var entityID string
+	var limit int
+	var maxBlocks int
+	var maxTextRunes int
+	var jsonOut bool
+	fs.StringVar(&dbPath, "db", "", "database path")
+	fs.StringVar(&query, "query", "", "query text")
+	fs.StringVar(&typesRaw, "type", "", "comma-separated hit types")
+	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
+	fs.IntVar(&limit, "limit", 10, "maximum number of hits")
+	fs.IntVar(&maxBlocks, "max-blocks", 16, "maximum context blocks")
+	fs.IntVar(&maxTextRunes, "max-text-runes", 512, "maximum runes per block")
+	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
+	handled, err := parseFlagSet(fs, usage, args, c.stdout)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(query) == "" {
+		return &usageError{message: usage}
+	}
+	if err := requireDB(dbPath, usage); err != nil {
+		return err
+	}
+	eng, err := openReadEngine(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	searchResp, err := eng.Search(ctx, yeoul.SearchRequest{
+		QueryText: query,
+		Types:     splitCSV(typesRaw),
+		AnchorIDs: splitCSV(entityID),
+		Include: yeoul.Include{
+			SupportingEpisodes: true,
+			RelatedEntities:    true,
+		},
+		Page: yeoul.Page{Limit: limit},
+	})
+	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	bundle := retrieval.BuildContext(*searchResp, retrieval.ContextOptions{MaxBlocks: maxBlocks, MaxTextRunes: maxTextRunes})
+	if jsonOut {
+		return writeJSON(c.stdout, bundle)
+	}
+	for _, block := range bundle.Blocks {
+		if _, err := fmt.Fprintf(c.stdout, "[%s] %s %s\n", block.Kind, block.Title, block.Text); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -939,8 +1035,11 @@ Usage:
 	var sourceID string
 	var eventTypesRaw string
 	var asOfRaw string
+	var validAtRaw string
 	var fromRaw string
 	var toRaw string
+	var validFromRaw string
+	var validToRaw string
 	var descending bool
 	var cursor string
 	var limit int
@@ -951,9 +1050,12 @@ Usage:
 	fs.StringVar(&episodeID, "episode", "", "episode anchor ID")
 	fs.StringVar(&sourceID, "source", "", "source anchor ID")
 	fs.StringVar(&eventTypesRaw, "event-type", "", "comma-separated event types")
-	fs.StringVar(&asOfRaw, "as-of", "", "point-in-time view in RFC3339 format")
-	fs.StringVar(&fromRaw, "from", "", "start time in RFC3339 format")
-	fs.StringVar(&toRaw, "to", "", "end time in RFC3339 format")
+	fs.StringVar(&asOfRaw, "as-of", "", "knowledge-time view in RFC3339 format")
+	fs.StringVar(&validAtRaw, "valid-at", "", "domain-valid point in RFC3339 format")
+	fs.StringVar(&fromRaw, "from", "", "observed start time in RFC3339 format")
+	fs.StringVar(&toRaw, "to", "", "observed end time in RFC3339 format")
+	fs.StringVar(&validFromRaw, "valid-from", "", "domain-valid interval start in RFC3339 format")
+	fs.StringVar(&validToRaw, "valid-to", "", "domain-valid interval end in RFC3339 format")
 	fs.BoolVar(&descending, "descending", false, "sort descending by timestamp")
 	fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
 	fs.IntVar(&limit, "limit", 25, "maximum number of events")
@@ -971,7 +1073,7 @@ Usage:
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
 	}
-	temporal, err := parseTemporalFlags(asOfRaw, fromRaw, toRaw, false)
+	temporal, err := parseTemporalFlagsFull(asOfRaw, validAtRaw, fromRaw, toRaw, validFromRaw, validToRaw, false)
 	if err != nil {
 		return &usageError{message: usage}
 	}
@@ -1176,9 +1278,9 @@ func (c cli) runFact(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul fact get --db PATH --id ID [--json]
-  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--as-of RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
-  yeoul fact assert --db PATH --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS [--json]
-  yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS --reason TEXT [--json]
+  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
+  yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-namespace NS --subject-type TYPE --subject-name NAME [--subject-stable-key KEY]) [--object-id ID | --upsert-object --object-namespace NS --object-type TYPE --object-name NAME [--object-stable-key KEY]] [--value-text TEXT] [--observed-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--cardinality one|many] --supporting-episodes IDS [--json]
+  yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] [--valid-from RFC3339] [--valid-to RFC3339] --supporting-episodes IDS --reason TEXT [--json]
   yeoul fact retract --db PATH --id ID --reason TEXT [--json]
 `)
 
@@ -1213,7 +1315,7 @@ func (c cli) runFactLookup(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT]
-      [--as-of RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
+      [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
 `)
 
 	fs := newFlagSet("fact lookup")
@@ -1222,7 +1324,11 @@ Usage:
 	var predicatesRaw string
 	var objectIDsRaw string
 	var objectText string
+	var groupIDsRaw string
 	var asOfRaw string
+	var validAtRaw string
+	var validFromRaw string
+	var validToRaw string
 	var includeInactive bool
 	var limit int
 	var cursor string
@@ -1232,7 +1338,11 @@ Usage:
 	fs.StringVar(&predicatesRaw, "predicate", "", "comma-separated predicates")
 	fs.StringVar(&objectIDsRaw, "object-id", "", "comma-separated object IDs")
 	fs.StringVar(&objectText, "object-text", "", "free-text object/value filter")
-	fs.StringVar(&asOfRaw, "as-of", "", "point-in-time view in RFC3339 format")
+	fs.StringVar(&groupIDsRaw, "group-id", "", "comma-separated group IDs")
+	fs.StringVar(&asOfRaw, "as-of", "", "knowledge-time view in RFC3339 format")
+	fs.StringVar(&validAtRaw, "valid-at", "", "domain-valid point in RFC3339 format")
+	fs.StringVar(&validFromRaw, "valid-from", "", "domain-valid interval start in RFC3339 format")
+	fs.StringVar(&validToRaw, "valid-to", "", "domain-valid interval end in RFC3339 format")
 	fs.BoolVar(&includeInactive, "include-inactive", false, "include inactive facts")
 	fs.IntVar(&limit, "limit", 25, "maximum number of facts")
 	fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
@@ -1250,7 +1360,7 @@ Usage:
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
 	}
-	temporal, err := parseTemporalFlags(asOfRaw, "", "", includeInactive)
+	temporal, err := parseTemporalFlagsFull(asOfRaw, validAtRaw, "", "", validFromRaw, validToRaw, includeInactive)
 	if err != nil {
 		return &usageError{message: usage}
 	}
@@ -1265,6 +1375,7 @@ Usage:
 		Predicates: splitCSV(predicatesRaw),
 		ObjectIDs:  splitCSV(objectIDsRaw),
 		ObjectText: objectText,
+		Scope:      yeoul.ScopeFilter{GroupIDs: splitCSV(groupIDsRaw)},
 		Include: yeoul.Include{
 			Provenance:         true,
 			SupportingEpisodes: true,
@@ -1299,22 +1410,50 @@ Usage:
 func (c cli) runFactAssert(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul fact assert --db PATH --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS [--json]
+  yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-namespace NS --subject-type TYPE --subject-name NAME [--subject-stable-key KEY]) [--object-id ID | --upsert-object --object-namespace NS --object-type TYPE --object-name NAME [--object-stable-key KEY]] [--value-text TEXT] [--observed-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--cardinality one|many] --supporting-episodes IDS [--json]
 `)
 
 	fs := newFlagSet("fact assert")
 	var dbPath string
 	var predicate string
 	var subjectID string
+	var subjectType string
+	var subjectName string
+	var subjectNamespace string
+	var subjectStableKey string
+	var upsertSubject bool
 	var objectID string
+	var objectType string
+	var objectName string
+	var objectNamespace string
+	var objectStableKey string
+	var upsertObject bool
 	var valueText string
+	var observedAtRaw string
+	var validFromRaw string
+	var validToRaw string
+	var cardinality string
 	var supportingEpisodes string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&predicate, "predicate", "", "fact predicate")
 	fs.StringVar(&subjectID, "subject-id", "", "subject entity ID")
+	fs.StringVar(&subjectType, "subject-type", "", "subject entity type when --upsert-subject is set")
+	fs.StringVar(&subjectName, "subject-name", "", "subject canonical name when --upsert-subject is set")
+	fs.StringVar(&subjectNamespace, "subject-namespace", "", "subject entity namespace when --upsert-subject is set")
+	fs.StringVar(&subjectStableKey, "subject-stable-key", "", "subject stable identity key when --upsert-subject is set")
+	fs.BoolVar(&upsertSubject, "upsert-subject", false, "create or update the subject entity before asserting the fact")
 	fs.StringVar(&objectID, "object-id", "", "object entity ID")
+	fs.StringVar(&objectType, "object-type", "", "object entity type when --upsert-object is set")
+	fs.StringVar(&objectName, "object-name", "", "object canonical name when --upsert-object is set")
+	fs.StringVar(&objectNamespace, "object-namespace", "", "object entity namespace when --upsert-object is set")
+	fs.StringVar(&objectStableKey, "object-stable-key", "", "object stable identity key when --upsert-object is set")
+	fs.BoolVar(&upsertObject, "upsert-object", false, "create or update the object entity before asserting the fact")
 	fs.StringVar(&valueText, "value-text", "", "value text")
+	fs.StringVar(&observedAtRaw, "observed-at", "", "observed time in RFC3339 format")
+	fs.StringVar(&validFromRaw, "valid-from", "", "domain-valid interval start in RFC3339 format")
+	fs.StringVar(&validToRaw, "valid-to", "", "domain-valid interval end in RFC3339 format")
+	fs.StringVar(&cardinality, "cardinality", "", "fact slot cardinality: one or many")
 	fs.StringVar(&supportingEpisodes, "supporting-episodes", "", "comma-separated supporting episode IDs")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
@@ -1324,7 +1463,16 @@ Usage:
 	if handled {
 		return nil
 	}
-	if fs.NArg() != 0 || predicate == "" || subjectID == "" || supportingEpisodes == "" {
+	if fs.NArg() != 0 || predicate == "" || supportingEpisodes == "" {
+		return &usageError{message: usage}
+	}
+	if !upsertSubject && strings.TrimSpace(subjectID) == "" {
+		return &usageError{message: usage}
+	}
+	if upsertSubject && (strings.TrimSpace(subjectType) == "" || strings.TrimSpace(subjectName) == "") {
+		return &usageError{message: usage}
+	}
+	if upsertObject && (strings.TrimSpace(objectType) == "" || strings.TrimSpace(objectName) == "") {
 		return &usageError{message: usage}
 	}
 	if err := requireDB(dbPath, usage); err != nil {
@@ -1335,13 +1483,83 @@ Usage:
 	if err != nil {
 		return err
 	}
-	result, err := eng.AssertFact(ctx, yeoul.FactInput{
+	supportingEpisodeIDs := splitCSV(supportingEpisodes)
+	observedAtInfo, err := inferFactObservedAt(ctx, eng, supportingEpisodeIDs, observedAtRaw)
+	if err != nil {
+		_ = closeEngine(ctx, eng)
+		if strings.TrimSpace(observedAtRaw) != "" {
+			return &usageError{message: usage}
+		}
+		return err
+	}
+	validFrom, err := parseFactTimeFlag(validFromRaw, usage)
+	if err != nil {
+		_ = closeEngine(ctx, eng)
+		return err
+	}
+	validTo, err := parseFactTimeFlag(validToRaw, usage)
+	if err != nil {
+		_ = closeEngine(ctx, eng)
+		return err
+	}
+
+	batch := yeoul.BatchInput{}
+	if upsertSubject {
+		subjectInput := yeoul.EntityInput{
+			ID:            subjectID,
+			Namespace:     subjectNamespace,
+			Type:          subjectType,
+			CanonicalName: subjectName,
+			StableKey:     subjectStableKey,
+		}
+		if strings.TrimSpace(subjectID) == "" {
+			subjectID = yeoul.EntityID(subjectNamespace, subjectType, fallbackString(subjectStableKey, subjectName))
+			subjectInput.ID = subjectID
+		}
+		batch.Entities = append(batch.Entities, subjectInput)
+	}
+	if upsertObject {
+		objectInput := yeoul.EntityInput{
+			ID:            objectID,
+			Namespace:     objectNamespace,
+			Type:          objectType,
+			CanonicalName: objectName,
+			StableKey:     objectStableKey,
+		}
+		if strings.TrimSpace(objectID) == "" {
+			objectID = yeoul.EntityID(objectNamespace, objectType, fallbackString(objectStableKey, objectName))
+			objectInput.ID = objectID
+		}
+		batch.Entities = append(batch.Entities, objectInput)
+	}
+
+	factInput := yeoul.FactInput{
 		Predicate:            predicate,
 		SubjectID:            subjectID,
 		ObjectID:             objectID,
 		ValueText:            valueText,
-		SupportingEpisodeIDs: splitCSV(supportingEpisodes),
-	})
+		ObservedAt:           observedAtInfo.ObservedAt,
+		ValidFrom:            validFrom,
+		ValidTo:              validTo,
+		SupportingEpisodeIDs: supportingEpisodeIDs,
+		Cardinality:          cardinality,
+		Metadata:             observedAtInfo.Metadata(),
+	}
+	var result *yeoul.Fact
+	if len(batch.Entities) > 0 {
+		batch.Facts = []yeoul.FactInput{factInput}
+		batchResult, batchErr := eng.IngestBatch(ctx, batch)
+		if batchErr == nil {
+			if len(batchResult.FactIDs) != 1 {
+				batchErr = fmt.Errorf("fact assert failed: expected 1 fact id, got %d", len(batchResult.FactIDs))
+			} else {
+				result, batchErr = eng.GetFact(ctx, batchResult.FactIDs[0])
+			}
+		}
+		err = batchErr
+	} else {
+		result, err = eng.AssertFact(ctx, factInput)
+	}
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
 		err = closeErr
 	}
@@ -1355,10 +1573,64 @@ Usage:
 	return err
 }
 
+type factObservedAtInfo struct {
+	ObservedAt          time.Time
+	Basis               string
+	SupportingEpisodeID string
+}
+
+func (info factObservedAtInfo) Metadata() map[string]any {
+	metadata := map[string]any{
+		observedAtBasisKey: info.Basis,
+	}
+	if info.SupportingEpisodeID != "" {
+		metadata[observedAtSupportingEpisodeIDKey] = info.SupportingEpisodeID
+	}
+	return metadata
+}
+
+func inferFactObservedAt(ctx context.Context, eng yeoul.Engine, supportingEpisodeIDs []string, observedAtRaw string) (factObservedAtInfo, error) {
+	if strings.TrimSpace(observedAtRaw) != "" {
+		parsed, err := time.Parse(time.RFC3339, observedAtRaw)
+		if err != nil {
+			return factObservedAtInfo{}, err
+		}
+		return factObservedAtInfo{ObservedAt: parsed, Basis: observedAtBasisExplicit}, nil
+	}
+	for _, episodeID := range supportingEpisodeIDs {
+		episode, err := eng.GetEpisode(ctx, episodeID)
+		if err != nil {
+			return factObservedAtInfo{}, err
+		}
+		if !episode.ObservedAt.IsZero() {
+			return factObservedAtInfo{
+				ObservedAt:          episode.ObservedAt,
+				Basis:               observedAtBasisSupportingEpisode,
+				SupportingEpisodeID: episode.ID,
+			}, nil
+		}
+	}
+	return factObservedAtInfo{
+		ObservedAt: time.Now().UTC(),
+		Basis:      observedAtBasisSystemTimeDefault,
+	}, nil
+}
+
+func parseFactTimeFlag(raw, usage string) (time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, &usageError{message: usage}
+	}
+	return parsed, nil
+}
+
 func (c cli) runFactSupersede(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] --supporting-episodes IDS --reason TEXT [--json]
+  yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] [--valid-from RFC3339] [--valid-to RFC3339] --supporting-episodes IDS --reason TEXT [--json]
 `)
 
 	fs := newFlagSet("fact supersede")
@@ -1368,6 +1640,8 @@ Usage:
 	var subjectID string
 	var objectID string
 	var valueText string
+	var validFromRaw string
+	var validToRaw string
 	var supportingEpisodes string
 	var reason string
 	var jsonOut bool
@@ -1377,6 +1651,8 @@ Usage:
 	fs.StringVar(&subjectID, "subject-id", "", "subject entity ID")
 	fs.StringVar(&objectID, "object-id", "", "object entity ID")
 	fs.StringVar(&valueText, "value-text", "", "value text")
+	fs.StringVar(&validFromRaw, "valid-from", "", "domain-valid interval start in RFC3339 format")
+	fs.StringVar(&validToRaw, "valid-to", "", "domain-valid interval end in RFC3339 format")
 	fs.StringVar(&supportingEpisodes, "supporting-episodes", "", "comma-separated supporting episode IDs")
 	fs.StringVar(&reason, "reason", "", "supersede reason")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
@@ -1401,11 +1677,23 @@ Usage:
 	if err != nil {
 		return err
 	}
+	validFrom, err := parseFactTimeFlag(validFromRaw, usage)
+	if err != nil {
+		_ = closeEngine(ctx, eng)
+		return err
+	}
+	validTo, err := parseFactTimeFlag(validToRaw, usage)
+	if err != nil {
+		_ = closeEngine(ctx, eng)
+		return err
+	}
 	result, err := eng.SupersedeFact(ctx, factID, yeoul.FactInput{
 		Predicate:            predicate,
 		SubjectID:            subjectID,
 		ObjectID:             objectID,
 		ValueText:            valueText,
+		ValidFrom:            validFrom,
+		ValidTo:              validTo,
 		SupportingEpisodeIDs: splitCSV(supportingEpisodes),
 	}, reason)
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
@@ -2070,6 +2358,9 @@ Usage:
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return err
 	}
+	if len(payload.EntityRevisions) > 0 || len(payload.FactRevisions) > 0 {
+		return fmt.Errorf("admin import does not restore revision history; import episodes/entities/facts only")
+	}
 
 	eng, err := openWriteEngine(ctx, dbPath)
 	if err != nil {
@@ -2275,11 +2566,12 @@ Usage:
 	}
 	for i := 0; i < iterations; i++ {
 		start := time.Now()
-		if _, err := eng.Search(ctx, yeoul.SearchRequest{
+		searchReq := yeoul.SearchRequest{
 			QueryText: query,
 			AnchorIDs: compactStrings(entityID),
 			Page:      yeoul.Page{Limit: 10},
-		}); err != nil {
+		}
+		if _, err := eng.Search(ctx, searchReq); err != nil {
 			return err
 		}
 		metrics["search"] = append(metrics["search"], time.Since(start))
@@ -2555,10 +2847,129 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		})
 	}
 
+	entityRevisionRows, err := queryRowsAllowMissing(store, "MATCH (r:EntityRevision) RETURN r.id, r.entity_id, r.space_id, r.revision_kind, r.tx_time, r.namespace, r.type, r.canonical_name, r.aliases_json, r.created_at, r.updated_at, r.metadata_json")
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range entityRevisionRows {
+		payload.EntityRevisions = append(payload.EntityRevisions, yeoul.EntityRevision{
+			ID:            rowString(row, "r.id"),
+			EntityID:      rowString(row, "r.entity_id"),
+			SpaceID:       rowString(row, "r.space_id"),
+			RevisionKind:  rowString(row, "r.revision_kind"),
+			TxTime:        rowTime(row, "r.tx_time"),
+			Namespace:     rowString(row, "r.namespace"),
+			Type:          rowString(row, "r.type"),
+			CanonicalName: rowString(row, "r.canonical_name"),
+			Aliases:       rowStringSlice(row, "r.aliases_json"),
+			CreatedAt:     rowTime(row, "r.created_at"),
+			UpdatedAt:     rowTime(row, "r.updated_at"),
+			Metadata:      rowMap(row, "r.metadata_json"),
+		})
+	}
+
+	factRevisionRows, err := queryRowsAllowMissing(store, "MATCH (r:FactRevision) RETURN r.id, r.fact_id, r.space_id, r.revision_kind, r.tx_time, r.predicate, r.subject_id, r.object_id, r.value_text, r.confidence, r.status, r.valid_from, r.valid_to, r.observed_at, r.created_at, r.updated_at, r.retracted_at, r.retraction_reason, r.supporting_episode_ids_json, r.metadata_json")
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range factRevisionRows {
+		payload.FactRevisions = append(payload.FactRevisions, yeoul.FactRevision{
+			ID:                   rowString(row, "r.id"),
+			FactID:               rowString(row, "r.fact_id"),
+			SpaceID:              rowString(row, "r.space_id"),
+			RevisionKind:         rowString(row, "r.revision_kind"),
+			TxTime:               rowTime(row, "r.tx_time"),
+			Predicate:            rowString(row, "r.predicate"),
+			SubjectID:            rowString(row, "r.subject_id"),
+			ObjectID:             rowString(row, "r.object_id"),
+			ValueText:            rowString(row, "r.value_text"),
+			Confidence:           rowFloat64(row, "r.confidence"),
+			Status:               rowString(row, "r.status"),
+			ValidFrom:            rowTime(row, "r.valid_from"),
+			ValidTo:              rowTime(row, "r.valid_to"),
+			ObservedAt:           rowTime(row, "r.observed_at"),
+			CreatedAt:            rowTime(row, "r.created_at"),
+			UpdatedAt:            rowTime(row, "r.updated_at"),
+			RetractedAt:          rowTime(row, "r.retracted_at"),
+			RetractionReason:     rowString(row, "r.retraction_reason"),
+			SupportingEpisodeIDs: rowStringSlice(row, "r.supporting_episode_ids_json"),
+			Metadata:             rowMap(row, "r.metadata_json"),
+		})
+	}
+
 	sort.Slice(payload.Episodes, func(i, j int) bool { return payload.Episodes[i].ID < payload.Episodes[j].ID })
 	sort.Slice(payload.Entities, func(i, j int) bool { return payload.Entities[i].ID < payload.Entities[j].ID })
 	sort.Slice(payload.Facts, func(i, j int) bool { return payload.Facts[i].ID < payload.Facts[j].ID })
+	sort.Slice(payload.EntityRevisions, func(i, j int) bool { return payload.EntityRevisions[i].ID < payload.EntityRevisions[j].ID })
+	sort.Slice(payload.FactRevisions, func(i, j int) bool { return payload.FactRevisions[i].ID < payload.FactRevisions[j].ID })
 	return payload, nil
+}
+
+func queryRowsAllowMissing(store *lstore.Store, query string) ([]map[string]any, error) {
+	rows, err := queryRows(store, query)
+	if err != nil && strings.Contains(err.Error(), "Binder exception: Table ") {
+		return nil, nil
+	}
+	return rows, err
+}
+
+func rowString(row map[string]any, key string) string {
+	value := row[key]
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
+func rowTime(row map[string]any, key string) time.Time {
+	switch value := row[key].(type) {
+	case time.Time:
+		return value.UTC()
+	case string:
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err == nil {
+			return parsed.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+func rowFloat64(row map[string]any, key string) float64 {
+	switch value := row[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	}
+	return 0
+}
+
+func rowStringSlice(row map[string]any, key string) []string {
+	raw := strings.TrimSpace(rowString(row, key))
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err == nil {
+		return out
+	}
+	return nil
+}
+
+func rowMap(row map[string]any, key string) map[string]any {
+	raw := strings.TrimSpace(rowString(row, key))
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err == nil {
+		return out
+	}
+	return nil
 }
 
 func queryRows(store *lstore.Store, query string) ([]map[string]any, error) {
@@ -2621,6 +3032,10 @@ func singleIntQuery(store *lstore.Store, query string) (int, error) {
 }
 
 func parseTemporalFlags(asOfRaw, fromRaw, toRaw string, includeInactive bool) (yeoul.TemporalFilter, error) {
+	return parseTemporalFlagsFull(asOfRaw, "", fromRaw, toRaw, "", "", includeInactive)
+}
+
+func parseTemporalFlagsFull(asOfRaw, validAtRaw, fromRaw, toRaw, validFromRaw, validToRaw string, includeInactive bool) (yeoul.TemporalFilter, error) {
 	var filter yeoul.TemporalFilter
 	parseOne := func(raw string) (*time.Time, error) {
 		if strings.TrimSpace(raw) == "" {
@@ -2636,6 +3051,10 @@ func parseTemporalFlags(asOfRaw, fromRaw, toRaw string, includeInactive bool) (y
 	if err != nil {
 		return filter, err
 	}
+	validAt, err := parseOne(validAtRaw)
+	if err != nil {
+		return filter, err
+	}
 	from, err := parseOne(fromRaw)
 	if err != nil {
 		return filter, err
@@ -2644,9 +3063,29 @@ func parseTemporalFlags(asOfRaw, fromRaw, toRaw string, includeInactive bool) (y
 	if err != nil {
 		return filter, err
 	}
+	validFrom, err := parseOne(validFromRaw)
+	if err != nil {
+		return filter, err
+	}
+	validTo, err := parseOne(validToRaw)
+	if err != nil {
+		return filter, err
+	}
+	if validAt != nil && (validFrom != nil || validTo != nil) {
+		return filter, fmt.Errorf("--valid-at cannot be combined with --valid-from or --valid-to")
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return filter, fmt.Errorf("--from must be before --to")
+	}
+	if validFrom != nil && validTo != nil && !validFrom.Before(*validTo) {
+		return filter, fmt.Errorf("--valid-from must be before --valid-to")
+	}
 	filter.AsOf = asOf
+	filter.ValidAt = validAt
 	filter.ObservedFrom = from
 	filter.ObservedTo = to
+	filter.ValidFrom = validFrom
+	filter.ValidTo = validTo
 	filter.IncludeInactive = includeInactive
 	return filter, nil
 }
