@@ -58,6 +58,15 @@ func (s *ladybugStore) Load() (*persistedState, error) {
 	if err := s.loadFacts(&state); err != nil {
 		return nil, err
 	}
+	if err := s.loadFactRevisions(&state); err != nil {
+		return nil, err
+	}
+	if err := s.loadEntityRevisions(&state); err != nil {
+		return nil, err
+	}
+	if err := s.loadMigrationWatermarks(&state); err != nil {
+		return nil, err
+	}
 	if err := s.loadSubjectEdges(&state); err != nil {
 		return nil, err
 	}
@@ -207,6 +216,68 @@ func (s *ladybugStore) loadFacts(state *persistedState) error {
 	})
 }
 
+func (s *ladybugStore) loadFactRevisions(state *persistedState) error {
+	return s.loadNodes("MATCH (r:FactRevision) RETURN r", func(node lbug.Node) error {
+		revision := FactRevision{
+			ID:                   asString(node.Properties["id"]),
+			FactID:               asString(node.Properties["fact_id"]),
+			SpaceID:              asString(node.Properties["space_id"]),
+			RevisionKind:         asString(node.Properties["revision_kind"]),
+			TxTime:               asTime(node.Properties["tx_time"]),
+			Predicate:            asString(node.Properties["predicate"]),
+			SubjectID:            asString(node.Properties["subject_id"]),
+			ObjectID:             asString(node.Properties["object_id"]),
+			ValueText:            asString(node.Properties["value_text"]),
+			Confidence:           asFloat64(node.Properties["confidence"]),
+			Status:               asString(node.Properties["status"]),
+			ValidFrom:            asTime(node.Properties["valid_from"]),
+			ValidTo:              asTime(node.Properties["valid_to"]),
+			ObservedAt:           asTime(node.Properties["observed_at"]),
+			CreatedAt:            asTime(node.Properties["created_at"]),
+			UpdatedAt:            asTime(node.Properties["updated_at"]),
+			RetractedAt:          asTime(node.Properties["retracted_at"]),
+			RetractionReason:     asString(node.Properties["retraction_reason"]),
+			SupportingEpisodeIDs: decodeJSONStringSlice(asString(node.Properties["supporting_episode_ids_json"])),
+			Metadata:             decodeJSONMap(asString(node.Properties["metadata_json"])),
+		}
+		state.FactRevisions[revision.ID] = revision
+		return nil
+	})
+}
+
+func (s *ladybugStore) loadEntityRevisions(state *persistedState) error {
+	return s.loadNodes("MATCH (r:EntityRevision) RETURN r", func(node lbug.Node) error {
+		revision := EntityRevision{
+			ID:            asString(node.Properties["id"]),
+			EntityID:      asString(node.Properties["entity_id"]),
+			SpaceID:       asString(node.Properties["space_id"]),
+			RevisionKind:  asString(node.Properties["revision_kind"]),
+			TxTime:        asTime(node.Properties["tx_time"]),
+			Namespace:     asString(node.Properties["namespace"]),
+			Type:          asString(node.Properties["type"]),
+			CanonicalName: asString(node.Properties["canonical_name"]),
+			Aliases:       decodeJSONStringSlice(asString(node.Properties["aliases_json"])),
+			Metadata:      decodeJSONMap(asString(node.Properties["metadata_json"])),
+			CreatedAt:     asTime(node.Properties["created_at"]),
+			UpdatedAt:     asTime(node.Properties["updated_at"]),
+		}
+		state.EntityRevisions[revision.ID] = revision
+		return nil
+	})
+}
+
+func (s *ladybugStore) loadMigrationWatermarks(state *persistedState) error {
+	return s.loadNodes("MATCH (m:YeoulMigration) RETURN m", func(node lbug.Node) error {
+		watermark := MigrationWatermark{
+			ID:        asString(node.Properties["id"]),
+			AppliedAt: asTime(node.Properties["applied_at"]),
+			Metadata:  decodeJSONMap(asString(node.Properties["metadata_json"])),
+		}
+		state.MigrationWatermarks[watermark.ID] = watermark
+		return nil
+	})
+}
+
 func (s *ladybugStore) loadSubjectEdges(state *persistedState) error {
 	query := "MATCH (f:Fact)-[:SUBJECT]->(e:Entity) RETURN f.id, e.id"
 	return s.loadRows(query, func(values []any) error {
@@ -253,8 +324,10 @@ func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
 		})
 		state.Facts[oldID] = oldFact
 		newFact := state.Facts[newID]
+		supersedes := metadataStringIDs(newFact.Metadata["supersedes"])
+		supersedes = append(supersedes, oldID)
 		newFact.Metadata = mergeAnyMap(newFact.Metadata, map[string]any{
-			"supersedes":       oldID,
+			"supersedes":       dedupeStrings(supersedes),
 			"supersede_reason": reason,
 		})
 		state.Facts[newID] = newFact
@@ -331,6 +404,9 @@ func (s *ladybugStore) buildDeltaStatements(prev, next persistedState) []string 
 	statements = append(statements, s.buildEpisodeDelta(prev.Episodes, next.Episodes)...)
 	statements = append(statements, s.buildEntityDelta(prev.Entities, next.Entities)...)
 	statements = append(statements, s.buildFactDelta(prev.Facts, next.Facts)...)
+	statements = append(statements, s.buildMigrationWatermarkDelta(prev.MigrationWatermarks, next.MigrationWatermarks)...)
+	statements = append(statements, s.buildEntityRevisionDelta(prev.EntityRevisions, next.EntityRevisions)...)
+	statements = append(statements, s.buildFactRevisionDelta(prev.FactRevisions, next.FactRevisions)...)
 
 	statements = append(statements, s.buildEpisodeRelationshipDelta(prev.Episodes, next.Episodes)...)
 	statements = append(statements, s.buildFactRelationshipDelta(prev.Facts, next.Facts)...)
@@ -403,6 +479,43 @@ func (s *ladybugStore) buildFactDelta(prev, next map[string]Fact) []string {
 		case oldOK && newOK && !reflect.DeepEqual(stripFactRelationshipFields(oldFact), stripFactRelationshipFields(newFact)):
 			statements = append(statements, updateFactStatement(newFact))
 		}
+	}
+	return statements
+}
+
+func (s *ladybugStore) buildMigrationWatermarkDelta(prev, next map[string]MigrationWatermark) []string {
+	statements := make([]string, 0)
+	for _, id := range unionSortedKeys(prev, next) {
+		oldWatermark, oldOK := prev[id]
+		newWatermark, newOK := next[id]
+		switch {
+		case !oldOK && newOK:
+			statements = append(statements, createMigrationWatermarkStatement(newWatermark))
+		case oldOK && newOK && !reflect.DeepEqual(oldWatermark, newWatermark):
+			statements = append(statements, updateMigrationWatermarkStatement(newWatermark))
+		}
+	}
+	return statements
+}
+
+func (s *ladybugStore) buildEntityRevisionDelta(prev, next map[string]EntityRevision) []string {
+	statements := make([]string, 0)
+	for _, id := range sortedKeys(next) {
+		if _, ok := prev[id]; ok {
+			continue
+		}
+		statements = append(statements, createEntityRevisionStatement(next[id]))
+	}
+	return statements
+}
+
+func (s *ladybugStore) buildFactRevisionDelta(prev, next map[string]FactRevision) []string {
+	statements := make([]string, 0)
+	for _, id := range sortedKeys(next) {
+		if _, ok := prev[id]; ok {
+			continue
+		}
+		statements = append(statements, createFactRevisionStatement(next[id]))
 	}
 	return statements
 }
@@ -494,6 +607,9 @@ func ladybugDDLStatements() []string {
 		"CREATE NODE TABLE IF NOT EXISTS Episode(id STRING, space_id STRING, kind STRING, content STRING, content_hash STRING, source_id STRING, group_id STRING, observed_at TIMESTAMP, ingested_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
 		"CREATE NODE TABLE IF NOT EXISTS Entity(id STRING, space_id STRING, namespace STRING, type STRING, canonical_name STRING, aliases_json STRING, fingerprint STRING, created_at TIMESTAMP, updated_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
 		"CREATE NODE TABLE IF NOT EXISTS Fact(id STRING, space_id STRING, predicate STRING, value_text STRING, confidence DOUBLE, status STRING, valid_from TIMESTAMP, valid_to TIMESTAMP, observed_at TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, retracted_at TIMESTAMP, retraction_reason STRING, metadata_json STRING, PRIMARY KEY(id))",
+		"CREATE NODE TABLE IF NOT EXISTS YeoulMigration(id STRING, applied_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
+		"CREATE NODE TABLE IF NOT EXISTS EntityRevision(id STRING, entity_id STRING, space_id STRING, revision_kind STRING, tx_time TIMESTAMP, namespace STRING, type STRING, canonical_name STRING, aliases_json STRING, created_at TIMESTAMP, updated_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
+		"CREATE NODE TABLE IF NOT EXISTS FactRevision(id STRING, fact_id STRING, space_id STRING, revision_kind STRING, tx_time TIMESTAMP, predicate STRING, subject_id STRING, object_id STRING, value_text STRING, confidence DOUBLE, status STRING, valid_from TIMESTAMP, valid_to TIMESTAMP, observed_at TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, retracted_at TIMESTAMP, retraction_reason STRING, supporting_episode_ids_json STRING, metadata_json STRING, PRIMARY KEY(id))",
 		"CREATE REL TABLE IF NOT EXISTS FROM_SOURCE(FROM Episode TO Source, created_at TIMESTAMP)",
 		"CREATE REL TABLE IF NOT EXISTS ASSERTS(FROM Episode TO Fact, created_at TIMESTAMP)",
 		"CREATE REL TABLE IF NOT EXISTS SUBJECT(FROM Fact TO Entity, created_at TIMESTAMP)",
@@ -630,6 +746,68 @@ func updateFactStatement(fact Fact) string {
 		cypherTimeLiteral(fact.RetractedAt),
 		cypherStringLiteral(fact.RetractionReason),
 		cypherJSONLiteral(fact.Metadata),
+	)
+}
+
+func createMigrationWatermarkStatement(watermark MigrationWatermark) string {
+	return fmt.Sprintf(
+		"CREATE (:YeoulMigration {id:%s, applied_at:%s, metadata_json:%s})",
+		cypherStringLiteral(watermark.ID),
+		cypherTimeLiteral(watermark.AppliedAt),
+		cypherJSONLiteral(watermark.Metadata),
+	)
+}
+
+func updateMigrationWatermarkStatement(watermark MigrationWatermark) string {
+	return fmt.Sprintf(
+		"MATCH (m:YeoulMigration {id:%s}) SET m.applied_at=%s, m.metadata_json=%s",
+		cypherStringLiteral(watermark.ID),
+		cypherTimeLiteral(watermark.AppliedAt),
+		cypherJSONLiteral(watermark.Metadata),
+	)
+}
+
+func createEntityRevisionStatement(revision EntityRevision) string {
+	return fmt.Sprintf(
+		"CREATE (:EntityRevision {id:%s, entity_id:%s, space_id:%s, revision_kind:%s, tx_time:%s, namespace:%s, type:%s, canonical_name:%s, aliases_json:%s, created_at:%s, updated_at:%s, metadata_json:%s})",
+		cypherStringLiteral(revision.ID),
+		cypherStringLiteral(revision.EntityID),
+		cypherStringLiteral(revision.SpaceID),
+		cypherStringLiteral(revision.RevisionKind),
+		cypherTimeLiteral(revision.TxTime),
+		cypherStringLiteral(revision.Namespace),
+		cypherStringLiteral(revision.Type),
+		cypherStringLiteral(revision.CanonicalName),
+		cypherJSONLiteral(revision.Aliases),
+		cypherTimeLiteral(revision.CreatedAt),
+		cypherTimeLiteral(revision.UpdatedAt),
+		cypherJSONLiteral(revision.Metadata),
+	)
+}
+
+func createFactRevisionStatement(revision FactRevision) string {
+	return fmt.Sprintf(
+		"CREATE (:FactRevision {id:%s, fact_id:%s, space_id:%s, revision_kind:%s, tx_time:%s, predicate:%s, subject_id:%s, object_id:%s, value_text:%s, confidence:%s, status:%s, valid_from:%s, valid_to:%s, observed_at:%s, created_at:%s, updated_at:%s, retracted_at:%s, retraction_reason:%s, supporting_episode_ids_json:%s, metadata_json:%s})",
+		cypherStringLiteral(revision.ID),
+		cypherStringLiteral(revision.FactID),
+		cypherStringLiteral(revision.SpaceID),
+		cypherStringLiteral(revision.RevisionKind),
+		cypherTimeLiteral(revision.TxTime),
+		cypherStringLiteral(revision.Predicate),
+		cypherStringLiteral(revision.SubjectID),
+		cypherStringLiteral(revision.ObjectID),
+		cypherStringLiteral(revision.ValueText),
+		cypherFloatLiteral(revision.Confidence),
+		cypherStringLiteral(revision.Status),
+		cypherTimeLiteral(revision.ValidFrom),
+		cypherTimeLiteral(revision.ValidTo),
+		cypherTimeLiteral(revision.ObservedAt),
+		cypherTimeLiteral(revision.CreatedAt),
+		cypherTimeLiteral(revision.UpdatedAt),
+		cypherTimeLiteral(revision.RetractedAt),
+		cypherStringLiteral(revision.RetractionReason),
+		cypherJSONLiteral(revision.SupportingEpisodeIDs),
+		cypherJSONLiteral(revision.Metadata),
 	)
 }
 
@@ -927,6 +1105,15 @@ func clonePersistedState(state persistedState) persistedState {
 	}
 	for id, fact := range state.Facts {
 		cloned.Facts[id] = *cloneFact(fact)
+	}
+	for id, revision := range state.FactRevisions {
+		cloned.FactRevisions[id] = *cloneFactRevision(revision)
+	}
+	for id, revision := range state.EntityRevisions {
+		cloned.EntityRevisions[id] = *cloneEntityRevision(revision)
+	}
+	for id, watermark := range state.MigrationWatermarks {
+		cloned.MigrationWatermarks[id] = *cloneMigrationWatermark(watermark)
 	}
 	return cloned
 }
