@@ -307,17 +307,19 @@ func TestCLIAdminExportImport(t *testing.T) {
 	if !strings.Contains(string(data), `"ep-export"`) {
 		t.Fatalf("expected export payload to contain episode id, got %q", string(data))
 	}
-	if !strings.Contains(string(data), `"fact_revisions"`) || !strings.Contains(string(data), `"old export state"`) {
-		t.Fatalf("expected export payload to contain fact revisions, got %q", string(data))
+	if strings.Contains(string(data), `"fact_revisions"`) || strings.Contains(string(data), `"entity_revisions"`) {
+		t.Fatalf("expected importable export payload without revision history, got %q", string(data))
 	}
-	if !strings.Contains(string(data), `"entity_revisions"`) || !strings.Contains(string(data), `"export renamed"`) {
-		t.Fatalf("expected export payload to contain entity revisions, got %q", string(data))
+	if strings.Contains(string(data), `"old export state"`) || !strings.Contains(string(data), `"new export state"`) {
+		t.Fatalf("expected export payload to contain current active snapshot only, got %q", string(data))
 	}
 
 	importedDB := filepath.Join(tmpDir, "imported.lbug")
 	runCLI("init", "--db", importedDB)
-	if err := runCLIError("admin", "import", "--confirm", "--db", importedDB, "--in", exportPath); err == nil {
-		t.Fatal("expected admin import to reject revision restore payload")
+	runCLI("admin", "import", "--confirm", "--db", importedDB, "--in", exportPath)
+	imported := runCLI("search", "--db", importedDB, "--query", "new export state", "--json")
+	if !strings.Contains(imported, `"new export state"`) {
+		t.Fatalf("expected imported snapshot search result, got %q", imported)
 	}
 
 	restorePath := filepath.Join(tmpDir, "restore.json")
@@ -797,6 +799,16 @@ func TestCLIProvenanceShowsInactiveFactLifecycle(t *testing.T) {
 	output := runCLI("provenance", "--db", dbPath, "--fact", "fact-pi-old", "--json")
 	if !strings.Contains(output, `"SUPERSEDES"`) || !strings.Contains(output, `"superseded_by"`) {
 		t.Fatalf("expected inactive fact provenance lifecycle output, got %q", output)
+	}
+
+	defaultTimeline := runCLI("timeline", "--db", dbPath, "--entity", "task:pi", "--json")
+	if !strings.Contains(defaultTimeline, `"fact_superseded"`) || !strings.Contains(defaultTimeline, `"fact-pi-old"`) {
+		t.Fatalf("expected default timeline to include inactive fact lifecycle output, got %q", defaultTimeline)
+	}
+
+	timeline := runCLI("timeline", "--db", dbPath, "--entity", "task:pi", "--event-type", "fact_superseded", "--json")
+	if !strings.Contains(timeline, `"fact_superseded"`) || !strings.Contains(timeline, `"fact-pi-old"`) {
+		t.Fatalf("expected inactive fact lifecycle timeline output, got %q", timeline)
 	}
 }
 

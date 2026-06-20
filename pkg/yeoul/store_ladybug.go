@@ -324,8 +324,10 @@ func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
 		})
 		state.Facts[oldID] = oldFact
 		newFact := state.Facts[newID]
+		supersedes := metadataStringIDs(newFact.Metadata["supersedes"])
+		supersedes = append(supersedes, oldID)
 		newFact.Metadata = mergeAnyMap(newFact.Metadata, map[string]any{
-			"supersedes":       oldID,
+			"supersedes":       dedupeStrings(supersedes),
 			"supersede_reason": reason,
 		})
 		state.Facts[newID] = newFact

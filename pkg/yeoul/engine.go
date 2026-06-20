@@ -516,7 +516,7 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 		return newFact
 	}
 	newFact.Metadata = mergeAnyMap(newFact.Metadata, map[string]any{
-		"supersedes":       superseded[0],
+		"supersedes":       superseded,
 		"supersede_reason": "cardinality_one_slot_replaced",
 	})
 	return newFact
@@ -1154,6 +1154,8 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	if err != nil {
 		return nil, err
 	}
+	temporal := req.Temporal
+	temporal.IncludeInactive = true
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
@@ -1169,7 +1171,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	}
 
 	for _, episode := range e.episodes {
-		if episode.SpaceID != spaceID || !matchesScopeForEpisode(episode, req.Scope, e.sources) || !matchesAnchors(req.AnchorIDs, episode.ID, episode.SourceID) {
+		if episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, temporal) || !matchesScopeForEpisode(episode, req.Scope, e.sources) || !matchesAnchors(req.AnchorIDs, episode.ID, episode.SourceID) {
 			continue
 		}
 		event := TimelineEvent{
@@ -1180,14 +1182,14 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 			Timestamp:  chooseTime(episode.ObservedAt, episode.IngestedAt),
 			Summary:    summarize(episode.Content),
 		}
-		if !timelineEventVisible(event, req.Temporal) {
+		if !timelineEventVisible(event, temporal) {
 			continue
 		}
 		addIfAllowed(event)
 	}
 	for _, fact := range e.facts {
-		factRecord := e.factVersionAt(fact, req.Temporal)
-		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) || !matchesAnchors(req.AnchorIDs, append([]string{factRecord.SubjectID, factRecord.ObjectID, factRecord.ID}, factRecord.SupportingEpisodeIDs...)...) {
+		factRecord := e.factVersionAt(fact, temporal)
+		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, temporal) || !matchesAnchors(req.AnchorIDs, append([]string{factRecord.SubjectID, factRecord.ObjectID, factRecord.ID}, factRecord.SupportingEpisodeIDs...)...) {
 			continue
 		}
 		createdEvent := TimelineEvent{
@@ -1198,7 +1200,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 			Timestamp:  chooseTime(factRecord.ObservedAt, factRecord.CreatedAt),
 			Summary:    factRecord.Predicate,
 		}
-		if timelineEventVisible(createdEvent, req.Temporal) {
+		if timelineEventVisible(createdEvent, temporal) {
 			addIfAllowed(createdEvent)
 		}
 		if factRecord.Status == factStatusSuperseded {
@@ -1207,10 +1209,10 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 				EventType:  "fact_superseded",
 				RecordType: "fact",
 				RecordID:   factRecord.ID,
-				Timestamp:  chooseTime(factRecord.ValidTo, factRecord.UpdatedAt),
+				Timestamp:  factRecord.UpdatedAt,
 				Summary:    factRecord.Predicate,
 			}
-			if timelineEventVisible(event, req.Temporal) {
+			if timelineEventVisible(event, temporal) {
 				addIfAllowed(event)
 			}
 		}
@@ -1223,7 +1225,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 				Timestamp:  chooseTime(factRecord.RetractedAt, factRecord.UpdatedAt),
 				Summary:    factRecord.RetractionReason,
 			}
-			if timelineEventVisible(event, req.Temporal) {
+			if timelineEventVisible(event, temporal) {
 				addIfAllowed(event)
 			}
 		}
@@ -1320,11 +1322,22 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 				}
 			}
 		}
-		if previousID, _ := factRecord.Metadata["supersedes"].(string); previousID != "" && maxDepth >= 1 {
-			if previousFact, ok := e.facts[previousID]; ok && previousFact.SpaceID == spaceID {
-				previousRecord := e.factVersionAt(previousFact, req.Temporal)
-				if previousRecord != nil && addNode(ProvenanceNode{ID: previousRecord.ID, Type: "Fact", Label: previousRecord.Predicate, Meta: factProvenanceMeta(*previousRecord)}, 1) {
-					addEdge(ProvenanceEdge{ID: "prov:" + fact.ID + ":" + previousFact.ID + ":supersedes", Type: "SUPERSEDES", FromID: fact.ID, ToID: previousFact.ID}, 1)
+		previousIDs := map[string]bool{}
+		for _, previousID := range metadataStringIDs(factRecord.Metadata["supersedes"]) {
+			previousIDs[previousID] = true
+		}
+		for _, candidate := range e.facts {
+			if previousID, _ := candidate.Metadata["superseded_by"].(string); previousID == factRecord.ID {
+				previousIDs[candidate.ID] = true
+			}
+		}
+		if len(previousIDs) > 0 && maxDepth >= 1 {
+			for previousID := range previousIDs {
+				if previousFact, ok := e.facts[previousID]; ok && previousFact.SpaceID == spaceID {
+					previousRecord := e.factVersionAt(previousFact, req.Temporal)
+					if previousRecord != nil && addNode(ProvenanceNode{ID: previousRecord.ID, Type: "Fact", Label: previousRecord.Predicate, Meta: factProvenanceMeta(*previousRecord)}, 1) {
+						addEdge(ProvenanceEdge{ID: "prov:" + fact.ID + ":" + previousFact.ID + ":supersedes", Type: "SUPERSEDES", FromID: fact.ID, ToID: previousFact.ID}, 1)
+					}
 				}
 			}
 		}
@@ -1666,7 +1679,19 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 	}
 	appliedAt := e.now()
 	for _, fact := range e.facts {
-		revision := newFactRevision("seed:"+fact.ID, fact, "migration_seed", chooseTime(fact.UpdatedAt, chooseTime(fact.CreatedAt, appliedAt)))
+		if fact.Status != factStatusActive && !fact.CreatedAt.IsZero() && fact.UpdatedAt.After(fact.CreatedAt) {
+			initial := fact
+			initial.Status = factStatusActive
+			initial.UpdatedAt = fact.CreatedAt
+			initial.RetractedAt = time.Time{}
+			initial.RetractionReason = ""
+			initial.Metadata = stripFactLifecycleMetadata(initial.Metadata)
+			revision := newFactRevision("seed:"+fact.ID+":initial", initial, "migration_seed_initial", fact.CreatedAt)
+			if _, ok := e.factRevisions[revision.ID]; !ok {
+				e.factRevisions[revision.ID] = revision
+			}
+		}
+		revision := newFactRevision("seed:"+fact.ID+":current", fact, "migration_seed", chooseTime(fact.UpdatedAt, chooseTime(fact.CreatedAt, appliedAt)))
 		if _, ok := e.factRevisions[revision.ID]; !ok {
 			e.factRevisions[revision.ID] = revision
 		}
@@ -1685,6 +1710,20 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 			"entity_count": len(e.entities),
 		},
 	}
+}
+
+func stripFactLifecycleMetadata(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := cloneAnyMap(src)
+	for key := range reservedFactMetadataKeys {
+		delete(out, key)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func newFactRevision(id string, fact Fact, kind string, txTime time.Time) FactRevision {
@@ -1787,7 +1826,9 @@ func factProvenanceMeta(fact Fact) map[string]any {
 	if fact.RetractionReason != "" {
 		meta["retraction_reason"] = fact.RetractionReason
 	}
-	if supersedes, _ := fact.Metadata["supersedes"].(string); supersedes != "" {
+	if supersedes := metadataStringIDs(fact.Metadata["supersedes"]); len(supersedes) == 1 {
+		meta["supersedes"] = supersedes[0]
+	} else if len(supersedes) > 1 {
 		meta["supersedes"] = supersedes
 	}
 	if supersededBy, _ := fact.Metadata["superseded_by"].(string); supersededBy != "" {
@@ -1797,6 +1838,29 @@ func factProvenanceMeta(fact Fact) map[string]any {
 		meta["supersede_reason"] = reason
 	}
 	return meta
+}
+
+func metadataStringIDs(value any) []string {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil
+		}
+		return []string{typed}
+	case []string:
+		return dedupeStrings(typed)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return dedupeStrings(out)
+	default:
+		return nil
+	}
 }
 
 type entityHistorySnapshot struct {

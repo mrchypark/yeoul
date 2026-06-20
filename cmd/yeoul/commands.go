@@ -2307,6 +2307,7 @@ Usage:
 	if err != nil {
 		return err
 	}
+	payload = importableExportPayload(payload)
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
@@ -2903,6 +2904,44 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 	sort.Slice(payload.EntityRevisions, func(i, j int) bool { return payload.EntityRevisions[i].ID < payload.EntityRevisions[j].ID })
 	sort.Slice(payload.FactRevisions, func(i, j int) bool { return payload.FactRevisions[i].ID < payload.FactRevisions[j].ID })
 	return payload, nil
+}
+
+func importableExportPayload(payload *exportFile) *exportFile {
+	if payload == nil {
+		return nil
+	}
+	out := *payload
+	out.EntityRevisions = nil
+	out.FactRevisions = nil
+	out.Facts = make([]yeoul.FactInput, 0, len(payload.Facts))
+	for _, fact := range payload.Facts {
+		if fact.Status != "" && fact.Status != "active" {
+			continue
+		}
+		fact.Status = ""
+		fact.Metadata = stripExportFactLifecycleMetadata(fact.Metadata)
+		out.Facts = append(out.Facts, fact)
+	}
+	return &out
+}
+
+func stripExportFactLifecycleMetadata(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		switch key {
+		case "superseded_by", "supersedes", "supersede_reason", "duplicate_of", "_history":
+			continue
+		default:
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func queryRowsAllowMissing(store *lstore.Store, query string) ([]map[string]any, error) {

@@ -508,7 +508,57 @@ func TestLadybugDriverSeedsRevisionMigrationForLegacyState(t *testing.T) {
 
 	assertRowCount(t, raw, "MATCH (m:YeoulMigration {id: 'bitemporal_revision_seed_v1'}) RETURN m.id", 1)
 	assertRowCount(t, raw, "MATCH (r:EntityRevision {id: 'seed:entity:legacy'}) RETURN r.id", 1)
-	assertRowCount(t, raw, "MATCH (r:FactRevision {id: 'seed:fact-legacy'}) RETURN r.id", 1)
+	assertRowCount(t, raw, "MATCH (r:FactRevision {id: 'seed:fact-legacy:current'}) RETURN r.id", 1)
+}
+
+func TestLadybugDriverPreservesMultipleSupersedesOnReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "yeoul.lbug")
+	eng, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatalf("open ladybug engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "multi supersede", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "multi supersede"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	oldA, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old a: %v", err)
+	}
+	oldB, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old b", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old b: %v", err)
+	}
+	newFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", Cardinality: factCardinalityOne, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert new: %v", err)
+	}
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
+
+	reopened, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath})
+	if err != nil {
+		t.Fatalf("reopen ladybug engine: %v", err)
+	}
+	defer func() { _ = reopened.Close(ctx) }()
+	got, err := reopened.GetFact(ctx, newFact.ID)
+	if err != nil {
+		t.Fatalf("get new fact: %v", err)
+	}
+	ids := metadataStringIDs(got.Metadata["supersedes"])
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen[oldA.ID] || !seen[oldB.ID] {
+		t.Fatalf("expected all superseded facts after reopen, got %#v", got.Metadata)
+	}
 }
 
 func assertSingleStringResult(t *testing.T, store *lstore.Store, query, want string) {

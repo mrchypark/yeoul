@@ -1604,6 +1604,193 @@ func TestCardinalityOneCorrectionKeepsTransactionHistory(t *testing.T) {
 	}
 }
 
+func TestLegacyBitemporalSeedPreservesHistoricalActiveFact(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	createdAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+	asOfBeforeSupersede := createdAt.Add(time.Minute)
+
+	rawEng.applyState(persistedState{
+		Version: 1,
+		Sources: map[string]Source{
+			"src:legacy": {ID: "src:legacy", SpaceID: "default", Kind: "note", CreatedAt: createdAt},
+		},
+		Episodes: map[string]Episode{
+			"ep:legacy": {ID: "ep:legacy", SpaceID: "default", Kind: "note", Content: "legacy", SourceID: "src:legacy", IngestedAt: createdAt},
+		},
+		Entities: map[string]Entity{
+			"entity:legacy": {ID: "entity:legacy", SpaceID: "default", Type: "Thing", CanonicalName: "Legacy", CreatedAt: createdAt, UpdatedAt: createdAt},
+		},
+		Facts: map[string]Fact{
+			"fact:legacy": {
+				ID:                   "fact:legacy",
+				SpaceID:              "default",
+				Predicate:            "HAS_STATE",
+				SubjectID:            "entity:legacy",
+				ValueText:            "legacy state",
+				Status:               factStatusSuperseded,
+				CreatedAt:            createdAt,
+				UpdatedAt:            updatedAt,
+				SupportingEpisodeIDs: []string{"ep:legacy"},
+				Metadata:             map[string]any{"superseded_by": "fact:new", "keep": "yes"},
+			},
+		},
+	})
+
+	historical, err := eng.LookupFacts(ctx, FactLookupRequest{
+		SubjectIDs: []string{"entity:legacy"},
+		Temporal:   TemporalFilter{AsOf: &asOfBeforeSupersede},
+	})
+	if err != nil {
+		t.Fatalf("historical lookup: %v", err)
+	}
+	if len(historical.Facts) != 1 || historical.Facts[0].ID != "fact:legacy" || historical.Facts[0].Status != factStatusActive {
+		t.Fatalf("expected seeded active historical fact, got %#v", historical.Facts)
+	}
+	if _, ok := rawEng.factRevisions["seed:fact:legacy:initial"]; !ok {
+		t.Fatalf("expected initial seed revision, got %#v", rawEng.factRevisions)
+	}
+	if _, ok := historical.Facts[0].Metadata["superseded_by"]; ok {
+		t.Fatalf("expected lifecycle metadata stripped from historical seed, got %#v", historical.Facts[0].Metadata)
+	}
+}
+
+func TestTimelineAsOfUsesEpisodeIngestKnowledgeTime(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	observedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ingestedAt := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+	asOfBeforeIngest := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	rawEng.applyState(persistedState{
+		Version: 1,
+		Sources: map[string]Source{
+			"src:late": {ID: "src:late", SpaceID: "default", Kind: "note", CreatedAt: ingestedAt},
+		},
+		Episodes: map[string]Episode{
+			"ep:late": {ID: "ep:late", SpaceID: "default", Kind: "note", Content: "known later", SourceID: "src:late", ObservedAt: observedAt, IngestedAt: ingestedAt},
+		},
+	})
+
+	timeline, err := eng.Timeline(ctx, TimelineRequest{Temporal: TemporalFilter{AsOf: &asOfBeforeIngest}})
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	if timelineHasEvent(timeline.Events, "evt:ep:late") {
+		t.Fatalf("expected as_of before ingest to hide episode, got %#v", timeline.Events)
+	}
+}
+
+func TestTimelineIncludesLifecycleEventsByDefaultAtTransactionTime(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	rawEng.now = func() time.Time {
+		now = now.Add(time.Second)
+		return now
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "backdated correction", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "timeline lifecycle"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	oldFact, err := eng.AssertFact(ctx, FactInput{Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old: %v", err)
+	}
+	validFrom := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	_, err = eng.SupersedeFact(ctx, oldFact.ID, FactInput{Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", ValidFrom: validFrom, SupportingEpisodeIDs: []string{episode.EpisodeID}}, "backdated")
+	if err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	oldStored, err := eng.GetFact(ctx, oldFact.ID)
+	if err != nil {
+		t.Fatalf("get old: %v", err)
+	}
+
+	timeline, err := eng.Timeline(ctx, TimelineRequest{AnchorIDs: []string{entity.ID}})
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	var superseded TimelineEvent
+	for _, event := range timeline.Events {
+		if event.EventID == "evt:"+oldFact.ID+":superseded" {
+			superseded = event
+			break
+		}
+	}
+	if superseded.EventID == "" {
+		t.Fatalf("expected default timeline to include superseded event, got %#v", timeline.Events)
+	}
+	if !superseded.Timestamp.Equal(oldStored.UpdatedAt) || superseded.Timestamp.Equal(validFrom) {
+		t.Fatalf("expected superseded event at transaction time %s, got %s", oldStored.UpdatedAt, superseded.Timestamp)
+	}
+}
+
+func TestCardinalityOneProvenanceIncludesAllAutoSupersededFacts(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "many replaced", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "multi replace"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	oldA, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old a: %v", err)
+	}
+	oldB, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old b", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old b: %v", err)
+	}
+	newFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", Cardinality: factCardinalityOne, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert new: %v", err)
+	}
+	if got := metadataStringIDs(newFact.Metadata["supersedes"]); !slices.Contains(got, oldA.ID) || !slices.Contains(got, oldB.ID) {
+		t.Fatalf("expected replacement to record all superseded facts, got %#v", newFact.Metadata)
+	}
+
+	prov, err := eng.Provenance(ctx, ProvenanceRequest{
+		Kind:     "fact",
+		ID:       newFact.ID,
+		Temporal: TemporalFilter{IncludeInactive: true},
+	})
+	if err != nil {
+		t.Fatalf("provenance: %v", err)
+	}
+	edges := map[string]bool{}
+	for _, edge := range prov.Edges {
+		if edge.Type == "SUPERSEDES" && edge.FromID == newFact.ID {
+			edges[edge.ToID] = true
+		}
+	}
+	if !edges[oldA.ID] || !edges[oldB.ID] {
+		t.Fatalf("expected provenance edges to both old facts, got %#v", prov.Edges)
+	}
+}
+
 func TestFactSupportRejectsCrossSpaceEpisodeSource(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
