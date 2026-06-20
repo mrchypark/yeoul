@@ -62,6 +62,7 @@ type EntityInput struct {
 	Namespace     string         `json:"namespace,omitempty"`
 	Type          string         `json:"type"`
 	CanonicalName string         `json:"canonical_name"`
+	StableKey     string         `json:"stable_key,omitempty"`
 	Aliases       []string       `json:"aliases,omitempty"`
 	Metadata      map[string]any `json:"metadata,omitempty"`
 }
@@ -79,6 +80,7 @@ type FactInput struct {
 	ValidTo              time.Time      `json:"valid_to,omitempty"`
 	ObservedAt           time.Time      `json:"observed_at,omitempty"`
 	SupportingEpisodeIDs []string       `json:"supporting_episode_ids,omitempty"`
+	Cardinality          string         `json:"cardinality,omitempty"`
 	Metadata             map[string]any `json:"metadata,omitempty"`
 }
 
@@ -136,6 +138,50 @@ type Fact struct {
 	Metadata             map[string]any `json:"metadata,omitempty"`
 }
 
+type MigrationWatermark struct {
+	ID        string         `json:"id"`
+	AppliedAt time.Time      `json:"applied_at"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+type FactRevision struct {
+	ID                   string         `json:"id"`
+	FactID               string         `json:"fact_id"`
+	SpaceID              string         `json:"space_id,omitempty"`
+	RevisionKind         string         `json:"revision_kind"`
+	TxTime               time.Time      `json:"tx_time"`
+	Predicate            string         `json:"predicate"`
+	SubjectID            string         `json:"subject_id"`
+	ObjectID             string         `json:"object_id,omitempty"`
+	ValueText            string         `json:"value_text,omitempty"`
+	Confidence           float64        `json:"confidence,omitempty"`
+	Status               string         `json:"status"`
+	ValidFrom            time.Time      `json:"valid_from,omitempty"`
+	ValidTo              time.Time      `json:"valid_to,omitempty"`
+	ObservedAt           time.Time      `json:"observed_at,omitempty"`
+	CreatedAt            time.Time      `json:"created_at"`
+	UpdatedAt            time.Time      `json:"updated_at"`
+	RetractedAt          time.Time      `json:"retracted_at,omitempty"`
+	RetractionReason     string         `json:"retraction_reason,omitempty"`
+	SupportingEpisodeIDs []string       `json:"supporting_episode_ids,omitempty"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+}
+
+type EntityRevision struct {
+	ID            string         `json:"id"`
+	EntityID      string         `json:"entity_id"`
+	SpaceID       string         `json:"space_id,omitempty"`
+	RevisionKind  string         `json:"revision_kind"`
+	TxTime        time.Time      `json:"tx_time"`
+	Namespace     string         `json:"namespace,omitempty"`
+	Type          string         `json:"type"`
+	CanonicalName string         `json:"canonical_name"`
+	Aliases       []string       `json:"aliases,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
 type EpisodeResult struct {
 	EpisodeID string `json:"episode_id"`
 	SourceID  string `json:"source_id,omitempty"`
@@ -143,9 +189,12 @@ type EpisodeResult struct {
 }
 
 type BatchInput struct {
-	Episodes []EpisodeInput `json:"episodes,omitempty"`
-	Entities []EntityInput  `json:"entities,omitempty"`
-	Facts    []FactInput    `json:"facts,omitempty"`
+	Episodes             []EpisodeInput   `json:"episodes,omitempty"`
+	Entities             []EntityInput    `json:"entities,omitempty"`
+	Facts                []FactInput      `json:"facts,omitempty"`
+	EntityRevisions      []EntityRevision `json:"entity_revisions,omitempty"`
+	FactRevisions        []FactRevision   `json:"fact_revisions,omitempty"`
+	AllowLifecycleFields bool             `json:"-"`
 }
 
 type BatchResult struct {
@@ -180,6 +229,7 @@ type ScopeFilter struct {
 
 type TemporalFilter struct {
 	AsOf            *time.Time `json:"as_of,omitempty"`
+	ValidAt         *time.Time `json:"valid_at,omitempty"`
 	ObservedFrom    *time.Time `json:"observed_from,omitempty"`
 	ObservedTo      *time.Time `json:"observed_to,omitempty"`
 	ValidFrom       *time.Time `json:"valid_from,omitempty"`

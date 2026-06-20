@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	json "github.com/goccy/go-json"
+	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
 func TestMain(m *testing.M) {
@@ -479,6 +481,45 @@ func TestRaxProjectionChunkIDsMapBackToRecords(t *testing.T) {
 	}
 }
 
+func TestRaxProjectionIncludesRevisionText(t *testing.T) {
+	projections, manifest := buildProjectionArtifacts("test.lbug", &exportFile{
+		Entities: []yeoul.EntityInput{{
+			ID:            "project:rev",
+			SpaceID:       "default",
+			Type:          "Project",
+			CanonicalName: "Current Name",
+		}},
+		Facts: []yeoul.FactInput{{
+			ID:        "fact-rev",
+			SpaceID:   "default",
+			Predicate: "HAS_STATUS",
+			SubjectID: "project:rev",
+			ValueText: "beta",
+			Status:    "active",
+		}},
+		EntityRevisions: []yeoul.EntityRevision{{
+			EntityID:      "project:rev",
+			CanonicalName: "Old Name",
+		}},
+		FactRevisions: []yeoul.FactRevision{{
+			FactID:    "fact-rev",
+			Predicate: "HAS_STATUS",
+			SubjectID: "project:rev",
+			ValueText: "alpha",
+		}},
+	})
+	if manifest.ProjectionCount != 2 {
+		t.Fatalf("expected current projection count only, got %d", manifest.ProjectionCount)
+	}
+	byID := map[string]projectionDocument{}
+	for _, projection := range projections {
+		byID[projection.ProjectionID] = projection
+	}
+	if !strings.Contains(byID["fact:fact-rev"].SearchText, "alpha") || !strings.Contains(byID["entity:project:rev"].SearchText, "Old Name") {
+		t.Fatalf("expected revision text in projections, got %#v", byID)
+	}
+}
+
 func TestParseRaxDocIDsAcceptsHitsAndStringIDs(t *testing.T) {
 	for _, input := range [][]byte{
 		[]byte(`[{"doc_id":"episode:one","preview":null}]`),
@@ -688,6 +729,32 @@ func TestCLIAdminExportImport(t *testing.T) {
 		"--source-kind", "note",
 		"--source-external-ref", "thread-export",
 	)
+	seedPath := filepath.Join(tmpDir, "seed-export.json")
+	seedPayload := `{
+  "entities": [{"id":"thing:export","type":"Thing","canonical_name":"export"}],
+  "facts": [{
+    "id":"fact-export",
+    "predicate":"HAS_STATE",
+    "subject_id":"thing:export",
+    "value_text":"old export state",
+    "supporting_episode_ids":["ep-export"]
+  }]
+}`
+	if err := os.WriteFile(seedPath, []byte(seedPayload), 0o644); err != nil {
+		t.Fatalf("write seed payload: %v", err)
+	}
+	runCLI("admin", "import", "--confirm", "--db", dbPath, "--in", seedPath)
+	asOfBeforeSupersede := time.Now().UTC().Format(time.RFC3339Nano)
+	time.Sleep(time.Millisecond)
+	updateEntityPath := filepath.Join(tmpDir, "update-entity-export.json")
+	updateEntityPayload := `{
+  "entities": [{"id":"thing:export","type":"Thing","canonical_name":"export renamed"}]
+}`
+	if err := os.WriteFile(updateEntityPath, []byte(updateEntityPayload), 0o644); err != nil {
+		t.Fatalf("write update entity payload: %v", err)
+	}
+	runCLI("admin", "import", "--confirm", "--db", dbPath, "--in", updateEntityPath)
+	runCLI("fact", "supersede", "--confirm", "--db", dbPath, "--id", "fact-export", "--predicate", "HAS_STATE", "--subject-id", "thing:export", "--value-text", "new export state", "--supporting-episodes", "ep-export", "--reason", "test")
 	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
 
 	data, err := os.ReadFile(exportPath)
@@ -697,6 +764,12 @@ func TestCLIAdminExportImport(t *testing.T) {
 	if !strings.Contains(string(data), `"ep-export"`) {
 		t.Fatalf("expected export payload to contain episode id, got %q", string(data))
 	}
+	if !strings.Contains(string(data), `"fact_revisions"`) || !strings.Contains(string(data), `"old export state"`) {
+		t.Fatalf("expected export payload to contain fact revisions, got %q", string(data))
+	}
+	if !strings.Contains(string(data), `"entity_revisions"`) || !strings.Contains(string(data), `"export renamed"`) {
+		t.Fatalf("expected export payload to contain entity revisions, got %q", string(data))
+	}
 
 	importedDB := filepath.Join(tmpDir, "imported.lbug")
 	runCLI("init", "--db", importedDB)
@@ -705,6 +778,39 @@ func TestCLIAdminExportImport(t *testing.T) {
 	search := runCLI("search", "--db", importedDB, "--query", "export me")
 	if !strings.Contains(search, "export me") {
 		t.Fatalf("expected imported search result, got %q", search)
+	}
+	historical := runCLI("search", "--db", importedDB, "--query", "old export state", "--type", "fact", "--as-of", asOfBeforeSupersede, "--json")
+	if !strings.Contains(historical, `"record_id": "fact-export"`) {
+		t.Fatalf("expected imported revision history to support as-of search, got %q", historical)
+	}
+	historicalEntity := runCLI("get", "--db", importedDB, "--kind", "entity", "--id", "thing:export", "--as-of", asOfBeforeSupersede, "--json")
+	if !strings.Contains(historicalEntity, `"canonical_name": "export"`) || strings.Contains(historicalEntity, `"export renamed"`) {
+		t.Fatalf("expected imported entity revision history to support as-of get, got %q", historicalEntity)
+	}
+
+	restorePath := filepath.Join(tmpDir, "restore.json")
+	restorePayload := `{
+  "episodes": [{"id":"ep-restore","kind":"note","content":"restore inactive","source":{"kind":"note","external_ref":"restore"}}],
+  "entities": [{"id":"thing:restore","type":"Thing","canonical_name":"restore"}],
+  "facts": [{
+    "id":"fact-restore",
+    "predicate":"HAS_STATE",
+    "subject_id":"thing:restore",
+    "value_text":"restore inactive",
+    "status":"retracted",
+    "supporting_episode_ids":["ep-restore"],
+    "metadata":{"superseded_by":"fact-later"}
+  }]
+}`
+	if err := os.WriteFile(restorePath, []byte(restorePayload), 0o644); err != nil {
+		t.Fatalf("write restore payload: %v", err)
+	}
+	restoreDB := filepath.Join(tmpDir, "restore.lbug")
+	runCLI("init", "--db", restoreDB)
+	runCLI("admin", "import", "--confirm", "--db", restoreDB, "--in", restorePath)
+	restoredFact := runCLI("fact", "get", "--db", restoreDB, "--id", "fact-restore", "--json")
+	if !strings.Contains(restoredFact, `"status": "retracted"`) || !strings.Contains(restoredFact, `"superseded_by"`) {
+		t.Fatalf("expected admin import to restore lifecycle fields, got %q", restoredFact)
 	}
 }
 
@@ -1004,6 +1110,30 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 	if !strings.Contains(explicitObserved, `"observed_at": "2026-05-29T04:11:00Z"`) || !strings.Contains(explicitObserved, `"observed_at_basis": "explicit"`) {
 		t.Fatalf("expected explicit observed_at, got %q", explicitObserved)
 	}
+	stableKeyFact := runCLI("fact", "assert", "--db", dbPath,
+		"--predicate", "HAS_RENAMED_TOPIC",
+		"--upsert-subject",
+		"--subject-type", "Feature",
+		"--subject-stable-key", "feature-stable-1",
+		"--subject-name", "Renamed topic",
+		"--value-text", "stable key keeps entity identity",
+		"--supporting-episodes", "ep-decision",
+		"--json")
+	if !strings.Contains(stableKeyFact, `"subject_id": "feature:feature-stable-1"`) {
+		t.Fatalf("expected stable key subject id, got %q", stableKeyFact)
+	}
+	stableKeyFact = runCLI("fact", "assert", "--db", dbPath,
+		"--predicate", "HAS_RENAMED_TOPIC_AGAIN",
+		"--upsert-subject",
+		"--subject-type", "Feature",
+		"--subject-stable-key", "feature-stable-1",
+		"--subject-name", "Renamed topic v2",
+		"--value-text", "stable key still keeps entity identity",
+		"--supporting-episodes", "ep-decision",
+		"--json")
+	if !strings.Contains(stableKeyFact, `"subject_id": "feature:feature-stable-1"`) {
+		t.Fatalf("expected stable key subject id after rename, got %q", stableKeyFact)
+	}
 
 	noObservedPayload := `{
   "episodes": [
@@ -1276,5 +1406,207 @@ func TestCLIBenchQueryAndLifecycle(t *testing.T) {
 	lifecycleOutput := runCLI("bench", "lifecycle", "--db", lifecycleDB, "--iterations", "2", "--json")
 	if !strings.Contains(lifecycleOutput, `"supersede_count": 2`) || !strings.Contains(lifecycleOutput, `"retraction_count": 2`) {
 		t.Fatalf("expected lifecycle output, got %q", lifecycleOutput)
+	}
+}
+
+func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	epNote, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-note", Kind: "note", Content: "scoped note", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "note"}})
+	if err != nil {
+		t.Fatalf("ingest note: %v", err)
+	}
+	epBench, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-bench", Kind: "note", Content: "scoped bench", Source: yeoul.SourceInput{Kind: "bench", ExternalRef: "bench"}})
+	if err != nil {
+		t.Fatalf("ingest bench: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "thing:scope", Type: "Thing", CanonicalName: "scope"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	other, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "other:scope", Type: "Other", CanonicalName: "other"})
+	if err != nil {
+		t.Fatalf("upsert other: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-note", Predicate: "HAS_SCOPE", SubjectID: entity.ID, ObjectID: other.ID, ValueText: "scoped note", SupportingEpisodeIDs: []string{epNote.EpisodeID}}); err != nil {
+		t.Fatalf("assert note fact: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-bench", Predicate: "HAS_SCOPE", SubjectID: entity.ID, ValueText: "scoped bench", SupportingEpisodeIDs: []string{epBench.EpisodeID}}); err != nil {
+		t.Fatalf("assert bench fact: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-stale", Predicate: "HAS_SCOPE", SubjectID: entity.ID, ValueText: "obsolete needle", SupportingEpisodeIDs: []string{epNote.EpisodeID}}); err != nil {
+		t.Fatalf("assert stale fact: %v", err)
+	}
+	if _, err := eng.SupersedeFact(ctx, "fact-stale", yeoul.FactInput{ID: "fact-fresh", Predicate: "HAS_SCOPE", SubjectID: entity.ID, ValueText: "fresh value", SupportingEpisodeIDs: []string{epNote.EpisodeID}}, "test"); err != nil {
+		t.Fatalf("supersede stale fact: %v", err)
+	}
+	visibleFact, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-visible", Predicate: "HAS_SCOPE", SubjectID: entity.ID, ValueText: "fresh visible", SupportingEpisodeIDs: []string{epNote.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert visible fact: %v", err)
+	}
+	if _, err := eng.IngestBatch(ctx, yeoul.BatchInput{
+		FactRevisions: []yeoul.FactRevision{{
+			ID:                   "factrev-visible-obsolete",
+			FactID:               "fact-visible",
+			SpaceID:              "default",
+			RevisionKind:         "test",
+			TxTime:               visibleFact.CreatedAt.Add(-time.Second),
+			Predicate:            "HAS_SCOPE",
+			SubjectID:            entity.ID,
+			ValueText:            "antiquequartz",
+			Status:               "active",
+			CreatedAt:            visibleFact.CreatedAt.Add(-time.Second),
+			UpdatedAt:            visibleFact.CreatedAt.Add(-time.Second),
+			SupportingEpisodeIDs: []string{epNote.EpisodeID},
+		}},
+		AllowLifecycleFields: true,
+	}); err != nil {
+		t.Fatalf("inject obsolete revision: %v", err)
+	}
+	if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "thing:duplicate", Type: "Thing", CanonicalName: "scope duplicate", Metadata: map[string]any{"duplicate_of": entity.ID}}); err != nil {
+		t.Fatalf("upsert duplicate entity: %v", err)
+	}
+
+	resp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "scoped",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
+	}, []string{"fact:fact-bench", "fact:fact-note"})
+	if err != nil {
+		t.Fatalf("build rax response: %v", err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].RecordID != "fact-note" {
+		t.Fatalf("expected source scope to keep only fact-note, got %#v", resp.Hits)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "scoped",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
+		Include:   yeoul.Include{SupportingEpisodes: true, RelatedEntities: true},
+	}, []string{"fact:fact-bench", "fact:fact-note"})
+	if err != nil {
+		t.Fatalf("build rax included response: %v", err)
+	}
+	if len(resp.Included.Episodes) != 1 || resp.Included.Episodes[0].ID != "ep-note" {
+		t.Fatalf("expected scoped supporting episode, got %#v", resp.Included.Episodes)
+	}
+	if len(resp.Included.Sources) != 1 || resp.Included.Sources[0].Kind != "note" {
+		t.Fatalf("expected scoped source, got %#v", resp.Included.Sources)
+	}
+	if len(resp.Included.Entities) == 0 {
+		t.Fatalf("expected related entities, got %#v", resp.Included.Entities)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "scoped",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{EntityTypes: []string{"Other"}},
+	}, []string{"fact:fact-note", "fact:fact-bench"})
+	if err != nil {
+		t.Fatalf("build rax entity type response: %v", err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].RecordID != "fact-note" {
+		t.Fatalf("expected entity type scope to keep only fact-note, got %#v", resp.Hits)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "scoped",
+		Types:     []string{"fact"},
+		AnchorIDs: []string{"missing-anchor"},
+	}, []string{"fact:fact-note", "fact:fact-bench"})
+	if err != nil {
+		t.Fatalf("build rax anchor response: %v", err)
+	}
+	if len(resp.Hits) != 0 {
+		t.Fatalf("expected unmatched anchor to filter all rax hits, got %#v", resp.Hits)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "scoped note",
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-bench", "fact:fact-note"})
+	if err != nil {
+		t.Fatalf("build rax rerank response: %v", err)
+	}
+	if len(resp.Hits) < 2 || resp.Hits[0].RecordID != "fact-note" {
+		t.Fatalf("expected core rerank to prefer fact-note, got %#v", resp.Hits)
+	}
+	if !slices.ContainsFunc(resp.Hits[0].Reasons, func(reason string) bool {
+		return strings.HasPrefix(reason, "core_rerank_score:")
+	}) {
+		t.Fatalf("expected core rerank reason, got %#v", resp.Hits[0].Reasons)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "scope",
+		Types:     []string{"entity"},
+	}, []string{"entity:thing:duplicate", "entity:thing:scope"})
+	if err != nil {
+		t.Fatalf("build rax duplicate entity response: %v", err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].RecordID != "thing:scope" {
+		t.Fatalf("expected rax entity search to hide duplicates, got %#v", resp.Hits)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "obsolete needle",
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-stale"})
+	if err != nil {
+		t.Fatalf("build rax stale revision response: %v", err)
+	}
+	if len(resp.Hits) != 0 {
+		t.Fatalf("expected rax stale revision-only match to be filtered, got %#v", resp.Hits)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "obsolete needle",
+		Types:     []string{"fact"},
+		Temporal:  yeoul.TemporalFilter{IncludeInactive: true},
+	}, []string{"fact:fact-stale"})
+	if err != nil {
+		t.Fatalf("build rax inactive revision response: %v", err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].RecordID != "fact-stale" {
+		t.Fatalf("expected include_inactive to keep stale fact, got %#v", resp.Hits)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "antiquequartz",
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-visible"})
+	if err != nil {
+		t.Fatalf("build rax obsolete visible response: %v", err)
+	}
+	if len(resp.Hits) != 0 {
+		t.Fatalf("expected visible record with revision-only text to be filtered, got %#v", resp.Hits)
+	}
+	resp, err = buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "fresh visible",
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-visible"})
+	if err != nil {
+		t.Fatalf("build rax fresh visible response: %v", err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].RecordID != "fact-visible" {
+		t.Fatalf("expected current visible text to pass, got %#v", resp.Hits)
+	}
+}
+
+func TestCLIContext(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "context.lbug")
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "episode", "--db", dbPath, "--id", "ep-context", "--kind", "note", "--content", "context constructor")
+	output := runCLI("context", "--db", dbPath, "--query", "constructor", "--json")
+	if !strings.Contains(output, `"blocks"`) || !strings.Contains(output, `"context constructor"`) {
+		t.Fatalf("expected context blocks, got %q", output)
 	}
 }

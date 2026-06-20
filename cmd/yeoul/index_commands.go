@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -90,7 +89,7 @@ type raxRuntime struct {
 }
 
 const raxChunkMarker = "#chunk:"
-const projectionManifestVersion = 3
+const projectionManifestVersion = 4
 
 func (c cli) runIndex(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
@@ -494,8 +493,13 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 	if limit <= 0 {
 		limit = 10
 	}
-	hits := make([]yeoul.SearchHit, 0, len(docIDs))
+	type candidate struct {
+		hit    yeoul.SearchHit
+		record any
+	}
+	candidates := make([]candidate, 0, len(docIDs))
 	included := yeoul.IncludedRecords{}
+	coreScores := raxCoreRerankScores(ctx, eng, req, len(docIDs)*2)
 	types := compactStrings(req.Types...)
 	if len(types) == 0 {
 		types = []string{"fact", "episode", "entity"}
@@ -524,26 +528,44 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		if err != nil {
 			continue
 		}
-		if !raxRecordPassesFilters(record.Record, req) {
+		if !yeoul.RecordPassesSearchFilters(ctx, eng, record.Record, req) {
 			continue
 		}
+		coreScore, coreMatched := coreScores[recordKey]
+		if !coreMatched {
+			continue
+		}
+		score := 1 / float64(rank+1)
+		reasons := []string{fmt.Sprintf("rax_candidate_rank:%d", rank+1)}
+		score += coreScore
+		reasons = append(reasons, fmt.Sprintf("core_rerank_score:%.6f", coreScore))
 		hit := yeoul.SearchHit{
 			HitID:       "hit_" + id,
 			HitType:     kind,
 			RecordID:    id,
-			Score:       1 / float64(rank+1),
+			Score:       score,
 			MatchedText: raxMatchedText(record.Record),
-			Reasons:     []string{fmt.Sprintf("rax_candidate_rank:%d", rank+1)},
+			Reasons:     reasons,
 		}
 		if req.MinScore != nil && hit.Score < *req.MinScore {
 			continue
 		}
-		hits = append(hits, hit)
-		if len(hits) >= limit {
-			break
+		candidates = append(candidates, candidate{hit: hit, record: record.Record})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].hit.Score == candidates[j].hit.Score {
+			return candidates[i].hit.RecordID < candidates[j].hit.RecordID
 		}
+		return candidates[i].hit.Score > candidates[j].hit.Score
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	hits := make([]yeoul.SearchHit, 0, len(candidates))
+	for _, candidate := range candidates {
+		hits = append(hits, candidate.hit)
 		if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
-			addIncludedRecord(&included, record.Record)
+			addIncludedRecord(ctx, eng, &included, candidate.record, req.Scope, req.Temporal)
 		}
 	}
 	now := time.Now().UTC()
@@ -559,6 +581,24 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		resp.Included = included
 	}
 	return resp, nil
+}
+
+func raxCoreRerankScores(ctx context.Context, eng yeoul.Engine, req yeoul.SearchRequest, limit int) map[string]float64 {
+	if limit <= 0 {
+		limit = 10
+	}
+	coreReq := req
+	coreReq.Page = yeoul.Page{Limit: limit}
+	coreReq.MinScore = nil
+	resp, err := eng.Search(ctx, coreReq)
+	if err != nil {
+		return nil
+	}
+	scores := make(map[string]float64, len(resp.Hits))
+	for _, hit := range resp.Hits {
+		scores[hit.HitType+":"+hit.RecordID] = hit.Score
+	}
+	return scores
 }
 
 func runManagedRaxSearch(ctx context.Context, dbPath, query string, limit int, runtime raxRuntime) ([]string, error) {
@@ -803,20 +843,6 @@ func raxRecordKindID(docID string) (string, string, bool) {
 	return kind, id, true
 }
 
-func raxRecordPassesFilters(record any, req yeoul.SearchRequest) bool {
-	switch value := record.(type) {
-	case *yeoul.Fact:
-		if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, value.Predicate) {
-			return false
-		}
-		return true
-	case *yeoul.Episode, *yeoul.Entity:
-		return len(req.Predicates) == 0
-	default:
-		return false
-	}
-}
-
 func raxMatchedText(record any) string {
 	switch value := record.(type) {
 	case *yeoul.Fact:
@@ -830,12 +856,37 @@ func raxMatchedText(record any) string {
 	}
 }
 
-func addIncludedRecord(included *yeoul.IncludedRecords, record any) {
+func addIncludedRecord(ctx context.Context, eng yeoul.Engine, included *yeoul.IncludedRecords, record any, scope yeoul.ScopeFilter, temporal yeoul.TemporalFilter) {
 	switch value := record.(type) {
 	case *yeoul.Fact:
 		included.Facts = append(included.Facts, *value)
+		if record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Kind: "entity", ID: value.SubjectID, Temporal: temporal}); err == nil {
+			if entity, ok := record.Record.(*yeoul.Entity); ok && yeoul.RecordPassesSearchFilters(ctx, eng, entity, yeoul.SearchRequest{Scope: scope, Temporal: temporal}) {
+				included.Entities = append(included.Entities, *entity)
+			}
+		}
+		if value.ObjectID != "" {
+			if record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Kind: "entity", ID: value.ObjectID, Temporal: temporal}); err == nil {
+				if entity, ok := record.Record.(*yeoul.Entity); ok && yeoul.RecordPassesSearchFilters(ctx, eng, entity, yeoul.SearchRequest{Scope: scope, Temporal: temporal}) {
+					included.Entities = append(included.Entities, *entity)
+				}
+			}
+		}
+		for _, episodeID := range value.SupportingEpisodeIDs {
+			episode, err := eng.GetEpisode(ctx, episodeID)
+			if err != nil || !yeoul.RecordPassesSearchFilters(ctx, eng, episode, yeoul.SearchRequest{Scope: scope}) {
+				continue
+			}
+			included.Episodes = append(included.Episodes, *episode)
+			if source, err := eng.GetSource(ctx, episode.SourceID); err == nil {
+				included.Sources = append(included.Sources, *source)
+			}
+		}
 	case *yeoul.Episode:
 		included.Episodes = append(included.Episodes, *value)
+		if source, err := eng.GetSource(ctx, value.SourceID); err == nil {
+			included.Sources = append(included.Sources, *source)
+		}
 	case *yeoul.Entity:
 		included.Entities = append(included.Entities, *value)
 	}
@@ -844,9 +895,25 @@ func addIncludedRecord(included *yeoul.IncludedRecords, record any) {
 func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionDocument, projectionManifest) {
 	projections := make([]projectionDocument, 0, len(payload.Episodes)+len(payload.Entities)+len(payload.Facts))
 	counts := map[string]int{
-		"episodes": len(payload.Episodes),
-		"entities": len(payload.Entities),
-		"facts":    len(payload.Facts),
+		"episodes":         len(payload.Episodes),
+		"entities":         len(payload.Entities),
+		"facts":            len(payload.Facts),
+		"entity_revisions": len(payload.EntityRevisions),
+		"fact_revisions":   len(payload.FactRevisions),
+	}
+	entityRevisionText := map[string][]string{}
+	for _, revision := range payload.EntityRevisions {
+		text := strings.TrimSpace(strings.Join(compactStrings(revision.CanonicalName, strings.Join(revision.Aliases, " ")), " "))
+		if text != "" {
+			entityRevisionText[revision.EntityID] = append(entityRevisionText[revision.EntityID], text)
+		}
+	}
+	factRevisionText := map[string][]string{}
+	for _, revision := range payload.FactRevisions {
+		text := strings.TrimSpace(strings.Join(compactStrings(revision.Predicate, revision.SubjectID, revision.ObjectID, revision.ValueText), " "))
+		if text != "" {
+			factRevisionText[revision.FactID] = append(factRevisionText[revision.FactID], text)
+		}
 	}
 
 	for _, episode := range payload.Episodes {
@@ -889,7 +956,10 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 		if len(entity.Metadata) > 0 {
 			meta["record_metadata"] = entity.Metadata
 		}
-		text := strings.TrimSpace(strings.Join(compactStrings(entity.CanonicalName, strings.Join(entity.Aliases, " ")), " "))
+		text := projectionTextWithRevisions(
+			strings.TrimSpace(strings.Join(compactStrings(entity.CanonicalName, strings.Join(entity.Aliases, " ")), " ")),
+			entityRevisionText[entity.ID],
+		)
 		projections = append(projections, projectionDocument{
 			ProjectionID: "entity:" + entity.ID,
 			SearchText:   text,
@@ -920,7 +990,10 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 		if len(fact.Metadata) > 0 {
 			meta["record_metadata"] = fact.Metadata
 		}
-		text := strings.TrimSpace(strings.Join(compactStrings(fact.Predicate, fact.SubjectID, fact.ObjectID, fact.ValueText), " "))
+		text := projectionTextWithRevisions(
+			strings.TrimSpace(strings.Join(compactStrings(fact.Predicate, fact.SubjectID, fact.ObjectID, fact.ValueText), " ")),
+			factRevisionText[fact.ID],
+		)
 		doc := projectionDocument{
 			ProjectionID: "fact:" + fact.ID,
 			SearchText:   text,
@@ -948,6 +1021,20 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 	}
 	manifest.ProjectionHash = projectionHash(projections)
 	return projections, manifest
+}
+
+func projectionTextWithRevisions(current string, revisions []string) string {
+	seen := map[string]bool{}
+	parts := make([]string, 0, 1+len(revisions))
+	for _, text := range append([]string{current}, revisions...) {
+		text = strings.TrimSpace(text)
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, " ")
 }
 
 func projectionHash(projections []projectionDocument) string {

@@ -65,6 +65,8 @@ type Engine interface {
 }
 ```
 
+Context construction is outside the core `Engine` interface. Use `pkg/retrieval.BuildContext(searchResponse, options)` to turn one scoped `SearchResponse` into bounded typed context blocks.
+
 ## Read API rule
 
 The embedded read surface must reuse the canonical query models from [query-api.md](./query-api.md).
@@ -144,6 +146,10 @@ Read methods that accept `TemporalFilter` must obey the temporal rules defined i
 ### 4. Lifecycle correctness
 
 `SupersedeFact` and `RetractFact` must preserve historical state rather than overwrite or delete it.
+
+`AssertFact` with `FactInput.Cardinality="one"` automatically supersedes active facts in the same `space_id + subject_id + predicate` slot. Empty cardinality or `"many"` preserves append-only assertion behavior.
+
+`UpsertEntity` may receive `EntityInput.StableKey` when the caller has a durable identity key. When `ID` is omitted, Yeoul derives the entity ID from `namespace + type + stable_key` instead of the mutable canonical name, while storing the key in metadata.
 
 ### 5. Agent boundary
 

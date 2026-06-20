@@ -2,6 +2,7 @@ package yeoul
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,280 @@ func TestLifecycleTransitions(t *testing.T) {
 	}
 }
 
+func TestSearchExpandsFromEntityHitToAdjacentFact(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "ownership note", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:graph-aware", Type: "Project", CanonicalName: "GraphAwareNeedle"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	team, err := eng.UpsertEntity(ctx, EntityInput{ID: "team:alpha", Type: "Team", CanonicalName: "Team Alpha"})
+	if err != nil {
+		t.Fatalf("upsert team: %v", err)
+	}
+	fact, err := eng.AssertFact(ctx, FactInput{
+		ID:                   "fact:graph-aware",
+		Predicate:            "HAS_OWNER",
+		SubjectID:            entity.ID,
+		ObjectID:             team.ID,
+		ValueText:            "owned by team alpha",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	if err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+	secondHop, err := eng.AssertFact(ctx, FactInput{
+		ID:                   "fact:graph-aware-hop2",
+		Predicate:            "HAS_CHANNEL",
+		SubjectID:            team.ID,
+		ValueText:            "slack channel",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	if err != nil {
+		t.Fatalf("assert second-hop fact: %v", err)
+	}
+
+	resp, err := eng.Search(ctx, SearchRequest{QueryText: "GraphAwareNeedle"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !searchHitHasReason(resp.Hits, fact.ID, "graph_expansion") {
+		t.Fatalf("expected adjacent fact graph expansion hit, got %#v", resp.Hits)
+	}
+	if !searchHitHasReason(resp.Hits, secondHop.ID, "graph_expansion_bfs") {
+		t.Fatalf("expected second-hop fact graph expansion hit, got %#v", resp.Hits)
+	}
+}
+
+func TestSparseTermScoreUsesFrequencyAndLength(t *testing.T) {
+	short := sparseTermScore("alpha", "alpha", nil)
+	repeated := sparseTermScore("alpha", "alpha alpha", nil)
+	long := sparseTermScore("alpha", "alpha beta gamma delta epsilon zeta eta theta", nil)
+	if !(repeated > short && short > long) {
+		t.Fatalf("expected sparse score frequency/length behavior, got repeated=%f short=%f long=%f", repeated, short, long)
+	}
+	stats := &sparseCorpusStats{DocCount: 10, DF: map[string]int{"common": 9, "rare": 1}}
+	common := sparseTermScore("common", "common", stats)
+	rare := sparseTermScore("rare", "rare", stats)
+	if rare <= common {
+		t.Fatalf("expected IDF to favor rare term, got rare=%f common=%f", rare, common)
+	}
+}
+
+func TestSemanticSearchUsesVectorSimilarityFallback(t *testing.T) {
+	matched, _, _ := matchSearch(SearchModeKeyword, "observabilty", "observability signal")
+	if matched {
+		t.Fatal("expected keyword search not to match typo")
+	}
+	matched, _, reason := matchSearch(SearchModeSemantic, "observabilty", "observability signal")
+	if !matched || reason != "semantic_vector_similarity" {
+		t.Fatalf("expected semantic vector similarity match, got matched=%v reason=%q", matched, reason)
+	}
+	matched, _, reason = matchSearch(SearchModeHybrid, "observabilty", "observability signal")
+	if !matched || reason != "hybrid_vector_similarity" {
+		t.Fatalf("expected hybrid vector similarity match, got matched=%v reason=%q", matched, reason)
+	}
+}
+
+func TestDefaultSearchUsesHybridVectorSimilarity(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	if _, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "observability signal", Source: SourceInput{Kind: "note"}}); err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	resp, err := eng.Search(ctx, SearchRequest{QueryText: "observabilty", Types: []string{"episode"}})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(resp.Hits) != 1 || !slices.Contains(resp.Hits[0].Reasons, "hybrid_vector_similarity") {
+		t.Fatalf("expected default hybrid vector hit, got %#v", resp.Hits)
+	}
+}
+
+func searchHitHasReason(hits []SearchHit, recordID, reason string) bool {
+	for _, hit := range hits {
+		if hit.RecordID != recordID {
+			continue
+		}
+		return slices.Contains(hit.Reasons, reason)
+	}
+	return false
+}
+
+func TestAssertFactRejectsLifecycleBypass(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "lifecycle bypass", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "target"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+
+	_, err = eng.AssertFact(ctx, FactInput{
+		Predicate:            "HAS_STATUS",
+		SubjectID:            entity.ID,
+		Status:               factStatusRetracted,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	if err == nil || !strings.Contains(err.Error(), "lifecycle-managed") {
+		t.Fatalf("expected lifecycle status rejection, got %v", err)
+	}
+
+	_, err = eng.AssertFact(ctx, FactInput{
+		Predicate:            "HAS_METADATA",
+		SubjectID:            entity.ID,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+		Metadata:             map[string]any{"superseded_by": "fact:later"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "lifecycle-managed") {
+		t.Fatalf("expected lifecycle metadata rejection, got %v", err)
+	}
+
+	_, err = eng.IngestBatch(ctx, BatchInput{Facts: []FactInput{{
+		Predicate:            "HAS_BATCH_STATUS",
+		SubjectID:            entity.ID,
+		Status:               factStatusRetracted,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "lifecycle-managed") {
+		t.Fatalf("expected batch lifecycle status rejection, got %v", err)
+	}
+}
+
+func TestSupersedeFactRejectsUnrelatedReplacement(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "owner changed", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	task, _ := eng.UpsertEntity(ctx, EntityInput{ID: "task:supersede", Type: "Task", CanonicalName: "Supersede"})
+	owner, _ := eng.UpsertEntity(ctx, EntityInput{ID: "person:supersede", Type: "Person", CanonicalName: "Owner"})
+	oldFact, err := eng.AssertFact(ctx, FactInput{
+		Predicate:            "OWNED_BY",
+		SubjectID:            task.ID,
+		ObjectID:             owner.ID,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	if err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+	_, err = eng.SupersedeFact(ctx, oldFact.ID, FactInput{
+		Predicate:            "HAS_STATUS",
+		SubjectID:            task.ID,
+		ValueText:            "unrelated",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}, "bad replacement")
+	if err == nil || !strings.Contains(err.Error(), "subject and predicate") {
+		t.Fatalf("expected unrelated replacement rejection, got %v", err)
+	}
+}
+
+func TestAssertFactCardinalityOneAutoSupersedesSlot(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	current := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	rawEng.now = func() time.Time {
+		current = current.Add(time.Microsecond)
+		return current
+	}
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "slot changed", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	task, err := eng.UpsertEntity(ctx, EntityInput{ID: "task:auto-slot", Type: "Task", CanonicalName: "Auto Slot"})
+	if err != nil {
+		t.Fatalf("upsert task: %v", err)
+	}
+	ownerA, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-a", Type: "Person", CanonicalName: "A"})
+	if err != nil {
+		t.Fatalf("upsert owner A: %v", err)
+	}
+	ownerB, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-b", Type: "Person", CanonicalName: "B"})
+	if err != nil {
+		t.Fatalf("upsert owner B: %v", err)
+	}
+	oldFact, err := eng.AssertFact(ctx, FactInput{
+		ID:                   "fact-auto-old",
+		Predicate:            "OWNED_BY",
+		SubjectID:            task.ID,
+		ObjectID:             ownerA.ID,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+		Cardinality:          "one",
+	})
+	if err != nil {
+		t.Fatalf("assert old fact: %v", err)
+	}
+	beforeReplacement := oldFact.CreatedAt.Add(time.Nanosecond)
+	newFact, err := eng.AssertFact(ctx, FactInput{
+		ID:                   "fact-auto-new",
+		Predicate:            "OWNED_BY",
+		SubjectID:            task.ID,
+		ObjectID:             ownerB.ID,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+		Cardinality:          "one",
+	})
+	if err != nil {
+		t.Fatalf("assert replacement fact: %v", err)
+	}
+	oldStored, err := eng.GetFact(ctx, oldFact.ID)
+	if err != nil {
+		t.Fatalf("get old fact: %v", err)
+	}
+	if oldStored.Status != factStatusSuperseded {
+		t.Fatalf("expected old fact superseded, got %q", oldStored.Status)
+	}
+	if supersededBy, _ := oldStored.Metadata["superseded_by"].(string); supersededBy != newFact.ID {
+		t.Fatalf("expected superseded_by %q, got %#v", newFact.ID, oldStored.Metadata)
+	}
+
+	historical, err := eng.LookupFacts(ctx, FactLookupRequest{
+		Meta:       QueryMeta{SpaceID: "default"},
+		SubjectIDs: []string{task.ID},
+		Temporal:   TemporalFilter{AsOf: &beforeReplacement},
+	})
+	if err != nil {
+		t.Fatalf("historical lookup: %v", err)
+	}
+	if len(historical.Facts) != 1 || historical.Facts[0].ID != oldFact.ID {
+		t.Fatalf("expected old fact historically, got %#v", historical.Facts)
+	}
+	currentFacts, err := eng.LookupFacts(ctx, FactLookupRequest{
+		Meta:       QueryMeta{SpaceID: "default"},
+		SubjectIDs: []string{task.ID},
+	})
+	if err != nil {
+		t.Fatalf("current lookup: %v", err)
+	}
+	if len(currentFacts.Facts) != 1 || currentFacts.Facts[0].ID != newFact.ID {
+		t.Fatalf("expected new fact currently, got %#v", currentFacts.Facts)
+	}
+}
+
 func TestHistoricalFactReadBeforeSupersedeAndRetract(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
@@ -276,6 +551,170 @@ func TestHistoricalFactReadBeforeSupersedeAndRetract(t *testing.T) {
 	if len(mid.Facts) != 1 || mid.Facts[0].ID != transition.NewFactID {
 		t.Fatalf("expected new fact after supersede, got %#v", mid.Facts)
 	}
+	midWithInactive, err := eng.LookupFacts(ctx, FactLookupRequest{
+		Meta:       QueryMeta{SpaceID: "default"},
+		SubjectIDs: []string{project.ID},
+		Temporal:   TemporalFilter{AsOf: &afterSupersedeBeforeRetract, IncludeInactive: true},
+	})
+	if err != nil {
+		t.Fatalf("historical inactive lookup after supersede: %v", err)
+	}
+	foundOld := false
+	foundNew := false
+	for _, fact := range midWithInactive.Facts {
+		foundOld = foundOld || fact.ID == oldFact.ID
+		foundNew = foundNew || fact.ID == transition.NewFactID
+	}
+	if len(midWithInactive.Facts) != 2 || !foundOld || !foundNew {
+		t.Fatalf("expected include_inactive as_of to keep old and new facts, got %#v", midWithInactive.Facts)
+	}
+	graph, err := eng.Neighborhood(ctx, NeighborhoodRequest{
+		Meta:      QueryMeta{SpaceID: "default"},
+		AnchorIDs: []string{project.ID},
+		MaxHops:   1,
+		Temporal:  TemporalFilter{AsOf: &beforeTransition},
+	})
+	if err != nil {
+		t.Fatalf("historical neighborhood: %v", err)
+	}
+	if !graphHasNode(graph.Nodes, oldFact.ID) || graphHasNode(graph.Nodes, transition.NewFactID) {
+		t.Fatalf("expected historical neighborhood to contain old fact only, got %#v", graph.Nodes)
+	}
+	prov, err := eng.Provenance(ctx, ProvenanceRequest{
+		Meta:     QueryMeta{SpaceID: "default"},
+		Kind:     "entity",
+		ID:       project.ID,
+		Temporal: TemporalFilter{AsOf: &beforeTransition},
+	})
+	if err != nil {
+		t.Fatalf("historical provenance: %v", err)
+	}
+	if !provenanceHasNode(prov.Nodes, oldFact.ID) || provenanceHasNode(prov.Nodes, transition.NewFactID) {
+		t.Fatalf("expected historical provenance to contain old fact only, got %#v", prov.Nodes)
+	}
+	timeline, err := eng.Timeline(ctx, TimelineRequest{
+		Meta:      QueryMeta{SpaceID: "default"},
+		AnchorIDs: []string{project.ID},
+		Temporal:  TemporalFilter{AsOf: &afterSupersedeBeforeRetract},
+	})
+	if err != nil {
+		t.Fatalf("historical timeline: %v", err)
+	}
+	if !timelineHasEvent(timeline.Events, "evt:"+transition.NewFactID+":created") || timelineHasEvent(timeline.Events, "evt:"+transition.NewFactID+":retracted") {
+		t.Fatalf("expected timeline to include new creation but not future retraction, got %#v", timeline.Events)
+	}
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.factRevisions) < 4 {
+		t.Fatalf("expected append-only fact revisions, got %d", len(rawEng.factRevisions))
+	}
+}
+
+func graphHasNode(nodes []GraphNode, id string) bool {
+	for _, node := range nodes {
+		if node.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func provenanceHasNode(nodes []ProvenanceNode, id string) bool {
+	for _, node := range nodes {
+		if node.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func timelineHasEvent(events []TimelineEvent, id string) bool {
+	for _, event := range events {
+		if event.EventID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestTemporalFilterSeparatesKnowledgeAndDomainValidity(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	current := time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC)
+	rawEng.now = func() time.Time {
+		current = current.Add(time.Second)
+		return current
+	}
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{
+		ID:         "ep-bitemporal",
+		Kind:       "note",
+		Content:    "learned in June",
+		ObservedAt: time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC),
+		Source:     SourceInput{Kind: "note"},
+	})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "thing:bitemporal", Type: "Thing", CanonicalName: "Bitemporal"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{
+		ID:                   "fact-bitemporal",
+		Predicate:            "HAS_DOMAIN_VALIDITY",
+		SubjectID:            entity.ID,
+		ValueText:            "domain valid in February",
+		ValidFrom:            time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
+		ValidTo:              time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC),
+		ObservedAt:           time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC),
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}); err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+
+	beforeKnowledge := time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC)
+	search, err := eng.Search(ctx, SearchRequest{
+		QueryText: "February",
+		Types:     []string{"fact"},
+		Temporal:  TemporalFilter{AsOf: &beforeKnowledge},
+	})
+	if err != nil {
+		t.Fatalf("knowledge search: %v", err)
+	}
+	if len(search.Hits) != 0 {
+		t.Fatalf("expected knowledge_as_of before ingest to hide fact, got %#v", search.Hits)
+	}
+
+	validAt := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+	search, err = eng.Search(ctx, SearchRequest{
+		QueryText: "February",
+		Types:     []string{"fact"},
+		Temporal:  TemporalFilter{ValidAt: &validAt},
+	})
+	if err != nil {
+		t.Fatalf("valid-at search: %v", err)
+	}
+	if len(search.Hits) != 1 || search.Hits[0].RecordID != "fact-bitemporal" {
+		t.Fatalf("expected valid_at to match fact domain time, got %#v", search.Hits)
+	}
+
+	april := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
+	search, err = eng.Search(ctx, SearchRequest{
+		QueryText: "February",
+		Types:     []string{"fact"},
+		Temporal:  TemporalFilter{ValidAt: &april},
+	})
+	if err != nil {
+		t.Fatalf("valid-at after interval search: %v", err)
+	}
+	if len(search.Hits) != 0 {
+		t.Fatalf("expected valid_at after interval to hide fact, got %#v", search.Hits)
+	}
 }
 
 func TestEntityVersionAtUsesHistorySnapshots(t *testing.T) {
@@ -318,6 +757,77 @@ func TestEntityVersionAtUsesHistorySnapshots(t *testing.T) {
 	}
 	if historical.CanonicalName != "Original" {
 		t.Fatalf("expected historical canonical name, got %q", historical.CanonicalName)
+	}
+	rawEng := eng.(*engine)
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.entityRevisions) < 2 {
+		t.Fatalf("expected append-only entity revisions, got %d", len(rawEng.entityRevisions))
+	}
+}
+
+func TestUpsertEntityStableKeySurvivesRename(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	first, err := eng.UpsertEntity(ctx, EntityInput{
+		Namespace:     "default",
+		Type:          "Project",
+		CanonicalName: "Old Name",
+		StableKey:     "project-123",
+	})
+	if err != nil {
+		t.Fatalf("upsert first entity: %v", err)
+	}
+	beforeRename := time.Now().UTC()
+	time.Sleep(time.Millisecond)
+	second, err := eng.UpsertEntity(ctx, EntityInput{
+		Namespace:     "default",
+		Type:          "Project",
+		CanonicalName: "New Name",
+		StableKey:     "project-123",
+	})
+	if err != nil {
+		t.Fatalf("upsert renamed entity: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected stable key to keep entity id %q, got %q", first.ID, second.ID)
+	}
+	if second.CanonicalName != "New Name" {
+		t.Fatalf("expected renamed canonical name, got %q", second.CanonicalName)
+	}
+	record, err := eng.GetRecord(ctx, GetRecordRequest{
+		Kind:     "entity",
+		ID:       first.ID,
+		Temporal: TemporalFilter{AsOf: &beforeRename},
+	})
+	if err != nil {
+		t.Fatalf("get historical entity: %v", err)
+	}
+	historical := record.Record.(*Entity)
+	if historical.CanonicalName != "Old Name" {
+		t.Fatalf("expected historical name, got %q", historical.CanonicalName)
+	}
+	if got, _ := second.Metadata["stable_key"].(string); got != "project-123" {
+		t.Fatalf("expected stable key metadata, got %#v", second.Metadata)
+	}
+}
+
+func TestUpsertEntityRejectsIdentityFieldChange(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:immutable", Namespace: "default", Type: "Project", CanonicalName: "Immutable"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	_, err = eng.UpsertEntity(ctx, EntityInput{ID: entity.ID, Namespace: "default", Type: "Person", CanonicalName: "Immutable"})
+	if err == nil || !strings.Contains(err.Error(), "type is immutable") {
+		t.Fatalf("expected immutable type rejection, got %v", err)
 	}
 }
 
@@ -493,7 +1003,7 @@ func TestQueryFiltersAndPagination(t *testing.T) {
 		Kind:       "note",
 		Content:    "Yeoul also stores benchmarks.",
 		ObservedAt: time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC),
-		Source:     SourceInput{Kind: "note", ExternalRef: "thread-2"},
+		Source:     SourceInput{Kind: "bench", ExternalRef: "thread-2"},
 	})
 	if err != nil {
 		t.Fatalf("ingest ep2: %v", err)
@@ -538,6 +1048,55 @@ func TestQueryFiltersAndPagination(t *testing.T) {
 		ObservedAt:           time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatalf("assert fact-2: %v", err)
+	}
+
+	sourceScopedSearch, err := eng.Search(ctx, SearchRequest{
+		Meta:      QueryMeta{SpaceID: "default"},
+		QueryText: "Yeoul",
+		Types:     []string{"fact"},
+		Scope:     ScopeFilter{SourceIDs: []string{ep1.SourceID}, SourceKinds: []string{"note"}},
+	})
+	if err != nil {
+		t.Fatalf("source scoped search: %v", err)
+	}
+	if len(sourceScopedSearch.Hits) != 1 || sourceScopedSearch.Hits[0].RecordID != "fact-1" {
+		t.Fatalf("expected source scope to keep only fact-1, got %#v", sourceScopedSearch.Hits)
+	}
+	sourceScopedIncluded, err := eng.Search(ctx, SearchRequest{
+		Meta:      QueryMeta{SpaceID: "default"},
+		QueryText: "Yeoul",
+		Types:     []string{"fact"},
+		Scope:     ScopeFilter{SourceKinds: []string{"note"}},
+		Include:   Include{SupportingEpisodes: true},
+	})
+	if err != nil {
+		t.Fatalf("source scoped included search: %v", err)
+	}
+	if len(sourceScopedIncluded.Included.Episodes) != 1 || sourceScopedIncluded.Included.Episodes[0].ID != ep1.EpisodeID {
+		t.Fatalf("expected included support to respect source scope, got %#v", sourceScopedIncluded.Included.Episodes)
+	}
+	entityTypeScopedSearch, err := eng.Search(ctx, SearchRequest{
+		Meta:      QueryMeta{SpaceID: "default"},
+		QueryText: "Yeoul",
+		Types:     []string{"fact"},
+		Scope:     ScopeFilter{EntityTypes: []string{"Database"}},
+	})
+	if err != nil {
+		t.Fatalf("entity type scoped search: %v", err)
+	}
+	if len(entityTypeScopedSearch.Hits) != 1 || entityTypeScopedSearch.Hits[0].RecordID != "fact-1" {
+		t.Fatalf("expected entity type scope to keep only fact-1, got %#v", entityTypeScopedSearch.Hits)
+	}
+
+	sourceScopedFacts, err := eng.LookupFacts(ctx, FactLookupRequest{
+		Meta:  QueryMeta{SpaceID: "default"},
+		Scope: ScopeFilter{SourceKinds: []string{"note"}},
+	})
+	if err != nil {
+		t.Fatalf("source scoped lookup: %v", err)
+	}
+	if len(sourceScopedFacts.Facts) != 1 || sourceScopedFacts.Facts[0].ID != "fact-1" {
+		t.Fatalf("expected source scope to keep only fact-1, got %#v", sourceScopedFacts.Facts)
 	}
 
 	searchPage1, err := eng.Search(ctx, SearchRequest{
@@ -591,6 +1150,18 @@ func TestQueryFiltersAndPagination(t *testing.T) {
 			t.Fatalf("timeline included future event: %#v", event)
 		}
 	}
+	sourceScopedTimeline, err := eng.Timeline(ctx, TimelineRequest{
+		Meta:       QueryMeta{SpaceID: "default"},
+		AnchorIDs:  []string{project.ID},
+		EventTypes: []string{"fact_created"},
+		Scope:      ScopeFilter{SourceKinds: []string{"note"}},
+	})
+	if err != nil {
+		t.Fatalf("source scoped timeline: %v", err)
+	}
+	if len(sourceScopedTimeline.Events) != 1 || sourceScopedTimeline.Events[0].RecordID != "fact-1" {
+		t.Fatalf("expected source scope to keep only fact-1 timeline event, got %#v", sourceScopedTimeline.Events)
+	}
 
 	provenance, err := eng.Provenance(ctx, ProvenanceRequest{
 		Meta:     QueryMeta{SpaceID: "default"},
@@ -618,6 +1189,20 @@ func TestQueryFiltersAndPagination(t *testing.T) {
 	}
 	if len(hood.Nodes) < 3 {
 		t.Fatalf("expected expanded neighborhood, got %#v", hood)
+	}
+	sourceScopedHood, err := eng.Neighborhood(ctx, NeighborhoodRequest{
+		Meta:      QueryMeta{SpaceID: "default"},
+		AnchorIDs: []string{project.ID},
+		MaxHops:   2,
+		Scope:     ScopeFilter{SourceKinds: []string{"note"}},
+	})
+	if err != nil {
+		t.Fatalf("source scoped neighborhood: %v", err)
+	}
+	for _, node := range sourceScopedHood.Nodes {
+		if node.ID == "fact-2" {
+			t.Fatalf("source scoped neighborhood included filtered fact: %#v", sourceScopedHood.Nodes)
+		}
 	}
 }
 
@@ -694,6 +1279,42 @@ func TestIngestBatchIsAtomic(t *testing.T) {
 	}
 }
 
+func TestIngestBatchRevisionImportRequiresRestoreMode(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+
+	_, err = eng.IngestBatch(ctx, BatchInput{
+		EntityRevisions: []EntityRevision{{ID: "entityrev:restore", EntityID: "entity:restore"}},
+	})
+	if err == nil {
+		t.Fatal("expected revision import without restore mode to fail")
+	}
+
+	result, err := eng.IngestBatch(ctx, BatchInput{
+		EntityRevisions:      []EntityRevision{{ID: "entityrev:restore", EntityID: "entity:restore"}},
+		FactRevisions:        []FactRevision{{ID: "factrev:restore", FactID: "fact:restore"}},
+		AllowLifecycleFields: true,
+	})
+	if err != nil {
+		t.Fatalf("restore revision batch: %v", err)
+	}
+	if len(result.EntityIDs) != 0 || len(result.FactIDs) != 0 {
+		t.Fatalf("expected revision-only import to leave record id result empty, got %#v", result)
+	}
+	rawEng := eng.(*engine)
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if _, ok := rawEng.entityRevisions["entityrev:restore"]; !ok {
+		t.Fatal("expected entity revision restored")
+	}
+	if _, ok := rawEng.factRevisions["factrev:restore"]; !ok {
+		t.Fatal("expected fact revision restored")
+	}
+}
+
 func TestAssertFactRequiresSupportingEpisode(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
@@ -765,6 +1386,9 @@ func (s *countingStore) Load() (*persistedState, error) {
 	state.Episodes = defaultEpisodes(state.Episodes)
 	state.Entities = defaultEntities(state.Entities)
 	state.Facts = defaultFacts(state.Facts)
+	state.FactRevisions = defaultFactRevisions(state.FactRevisions)
+	state.EntityRevisions = defaultEntityRevisions(state.EntityRevisions)
+	state.MigrationWatermarks = defaultMigrationWatermarks(state.MigrationWatermarks)
 	return &state, nil
 }
 

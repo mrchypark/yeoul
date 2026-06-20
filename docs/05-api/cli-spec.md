@@ -83,6 +83,19 @@ yeoul search --db ./yeoul.lbug --entity project:yeoul --window 30d
 - falls back to core Yeoul search in `auto` mode only for source-tree or development runs where the bundled runtime has not been staged
 - fails on rax errors only when `--backend rax` is explicitly requested
 
+### `yeoul context`
+Build a bounded, factual context bundle from one scoped search response.
+
+#### Example
+```bash
+yeoul context --db ./yeoul.lbug --query "recent decisions about rax" --json
+```
+
+#### Behavior
+- uses canonical Yeoul search first, then formats typed context blocks
+- does not mix standalone provenance snapshots into the bundle
+- enforces block and text limits with `--max-blocks` and `--max-text-runes`
+
 ### `yeoul index`
 Manage derived retrieval projections.
 
