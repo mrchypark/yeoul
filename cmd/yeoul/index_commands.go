@@ -28,6 +28,7 @@ type projectionManifest struct {
 	ProjectionHash  string         `json:"projection_hash,omitempty"`
 	ProjectionFile  string         `json:"projection_file,omitempty"`
 	ProjectionCount int            `json:"projection_count"`
+	RaxRuntime      string         `json:"rax_runtime,omitempty"`
 	Counts          map[string]int `json:"counts"`
 	BuiltAt         time.Time      `json:"built_at"`
 }
@@ -349,10 +350,16 @@ func (r raxRuntime) String() string {
 }
 
 func lookupRaxRuntime(explicitLib, explicitBin string) (raxRuntime, bool) {
-	if path, ok := lookupRaxLibrary(explicitLib); ok {
+	if path := strings.TrimSpace(explicitLib); path != "" {
 		return raxRuntime{Kind: "ffi", Path: path}, true
 	}
-	if path, ok := lookupRaxBinary(explicitBin); ok {
+	if path := strings.TrimSpace(explicitBin); path != "" {
+		return raxRuntime{Kind: "cli", Path: path}, true
+	}
+	if path, ok := lookupRaxLibrary(""); ok {
+		return raxRuntime{Kind: "ffi", Path: path}, true
+	}
+	if path, ok := lookupRaxBinary(""); ok {
 		return raxRuntime{Kind: "cli", Path: path}, true
 	}
 	return raxRuntime{}, false
@@ -482,14 +489,29 @@ func runRaxPrimarySearch(ctx context.Context, eng yeoul.Engine, dbPath string, r
 	if limit <= 0 {
 		limit = 10
 	}
-	if _, err := decodeRaxCursor(req.Page.Cursor); err != nil {
+	cursor := strings.TrimSpace(req.Page.Cursor)
+	if raxPrimaryHasPostFilters(req) && strings.HasPrefix(cursor, "offset:") {
+		return eng.Search(ctx, req)
+	}
+	if _, err := decodeRaxCursor(cursor); err != nil {
 		return nil, err
 	}
-	docIDs, err := runManagedRaxSearch(ctx, dbPath, req.QueryText, limit+1000, runtime)
+	fetchLimit := raxPrimaryFetchLimit(limit)
+	docIDs, err := runManagedRaxSearch(ctx, dbPath, req.QueryText, fetchLimit, runtime)
 	if err != nil {
 		return nil, err
 	}
-	return buildRaxPrimarySearchResponse(ctx, eng, req, docIDs)
+	if raxPrimaryShouldFallbackToCore(req, len(docIDs), fetchLimit) {
+		if cursor != "" {
+			return nil, fmt.Errorf("cursor_invalid: filtered rax cursor cannot continue after core fallback; restart search")
+		}
+		return eng.Search(ctx, req)
+	}
+	resp, err := buildRaxPrimarySearchResponse(ctx, eng, req, docIDs)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req yeoul.SearchRequest, docIDs []string) (*yeoul.SearchResponse, error) {
@@ -691,7 +713,7 @@ func ensureManagedRaxStore(ctx context.Context, dbPath string, runtime raxRuntim
 	if err != nil {
 		return "", err
 	}
-	if ok, err := managedRaxStoreFresh(root, storePath, dbPath); err != nil {
+	if ok, err := managedRaxStoreFresh(root, storePath, dbPath, runtime); err != nil {
 		return "", err
 	} else if !ok {
 		payload, err := exportDatabase(ctx, dbPath)
@@ -704,6 +726,39 @@ func ensureManagedRaxStore(ctx context.Context, dbPath string, runtime raxRuntim
 		}
 	}
 	return storePath, nil
+}
+
+func raxPrimaryFetchLimit(limit int) int {
+	if limit <= 0 {
+		limit = 10
+	}
+	return limit + 1000
+}
+
+func raxPrimaryShouldFallbackToCore(req yeoul.SearchRequest, fetched, fetchLimit int) bool {
+	if fetched < fetchLimit || !raxPrimaryHasPostFilters(req) {
+		return false
+	}
+	return true
+}
+
+func raxPrimaryHasPostFilters(req yeoul.SearchRequest) bool {
+	return len(req.Types) > 0 ||
+		len(req.AnchorIDs) > 0 ||
+		len(req.Predicates) > 0 ||
+		len(req.Scope.GroupIDs) > 0 ||
+		len(req.Scope.SourceKinds) > 0 ||
+		len(req.Scope.SourceIDs) > 0 ||
+		len(req.Scope.EntityTypes) > 0 ||
+		len(req.Scope.FactStatus) > 0 ||
+		req.MinScore != nil ||
+		req.Temporal.AsOf != nil ||
+		req.Temporal.ValidAt != nil ||
+		req.Temporal.ObservedFrom != nil ||
+		req.Temporal.ObservedTo != nil ||
+		req.Temporal.ValidFrom != nil ||
+		req.Temporal.ValidTo != nil ||
+		req.Temporal.IncludeInactive
 }
 
 func parseRaxDocIDs(output []byte) ([]string, error) {
@@ -739,7 +794,7 @@ func parseRaxDocIDs(output []byte) ([]string, error) {
 	return docIDs, nil
 }
 
-func managedRaxStoreFresh(root, storePath, dbPath string) (bool, error) {
+func managedRaxStoreFresh(root, storePath, dbPath string, runtime raxRuntime) (bool, error) {
 	if _, err := os.Stat(storePath); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -760,6 +815,7 @@ func managedRaxStoreFresh(root, storePath, dbPath string) (bool, error) {
 	// ponytail: file stat avoids exporting the DB on every search; use a DB
 	// revision if Ladybug exposes one.
 	return manifest.Version == projectionManifestVersion &&
+		manifest.RaxRuntime == runtime.String() &&
 		manifest.DatabaseSize > 0 &&
 		manifest.DatabaseSize == stat.Size() &&
 		!manifest.DatabaseModTime.IsZero() &&
@@ -767,36 +823,64 @@ func managedRaxStoreFresh(root, storePath, dbPath string) (bool, error) {
 }
 
 func rebuildManagedRaxStore(ctx context.Context, root, storePath string, runtime raxRuntime, projections []projectionDocument, manifest projectionManifest) error {
-	if err := os.Remove(storePath); err != nil && !os.IsNotExist(err) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
-	if runtime.Kind == "ffi" {
-		manifest.ProjectionFile = ""
-		if _, err := writeProjectionManifest(root, manifest); err != nil {
-			return err
+	manifest.RaxRuntime = runtime.String()
+	manifest.ProjectionFile = ""
+	tempStorePath, err := tempRaxStorePath(root)
+	if err != nil {
+		return err
+	}
+	removeTempStore := true
+	defer func() {
+		if removeTempStore {
+			os.Remove(tempStorePath)
 		}
-		_ = os.Remove(filepath.Join(root, "projection.ndjson"))
+	}()
+	if runtime.Kind == "ffi" {
 		jsonl, err := raxRawDocumentsJSONL(projections)
 		if err != nil {
 			return err
 		}
-		if _, err := raxFFIIngestDocs(runtime.Path, storePath, jsonl); err != nil {
+		if _, err := raxFFIIngestDocs(runtime.Path, tempStorePath, jsonl); err != nil {
 			return fmt.Errorf("rax ingest failed: %w", err)
 		}
-		return nil
+	} else {
+		rawDocsPath, err := writeTemporaryRaxRawDocuments(root, projections)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(rawDocsPath)
+		if _, err := raxIngestDocs(ctx, runtime, tempStorePath, rawDocsPath); err != nil {
+			return fmt.Errorf("rax ingest failed: %w", err)
+		}
 	}
-	if _, _, err := writeProjectionArtifacts(root, projections, manifest); err != nil {
+	if err := replaceProjectionFile(tempStorePath, storePath); err != nil {
 		return err
 	}
-	rawDocsPath, err := writeTemporaryRaxRawDocuments(root, projections)
-	if err != nil {
+	removeTempStore = false
+	_ = os.Remove(filepath.Join(root, "projection.ndjson"))
+	if _, err := writeProjectionManifest(root, manifest); err != nil {
 		return err
-	}
-	defer os.Remove(rawDocsPath)
-	if _, err := raxIngestDocs(ctx, runtime, storePath, rawDocsPath); err != nil {
-		return fmt.Errorf("rax ingest failed: %w", err)
 	}
 	return nil
+}
+
+func tempRaxStorePath(root string) (string, error) {
+	temp, err := os.CreateTemp(root, ".projection-*.rax")
+	if err != nil {
+		return "", err
+	}
+	path := temp.Name()
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func raxIngestDocs(ctx context.Context, runtime raxRuntime, storePath, rawDocsPath string) ([]byte, error) {

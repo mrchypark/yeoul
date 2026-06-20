@@ -48,6 +48,10 @@ func runFakeRax() int {
 		_, _ = os.Stdout.WriteString(`[{"doc_id":"fact:fact-index"}]`)
 		return 0
 	}
+	if os.Getenv("YEOUL_FAKE_RAX_FAIL_INGEST") == "1" {
+		_, _ = os.Stderr.WriteString("fake ingest failure\n")
+		return 2
+	}
 	for i, arg := range args {
 		if arg == "--store" && i+1 < len(args) {
 			if err := os.WriteFile(args[i+1], []byte("fake rax store"), 0o644); err != nil {
@@ -95,6 +99,32 @@ func TestLookupRaxRuntimeFindsBundledFFI(t *testing.T) {
 	}
 	if got.Kind != "ffi" || got.Path != raxPath {
 		t.Fatalf("expected bundled rax ffi path %q, got %#v", raxPath, got)
+	}
+}
+
+func TestLookupRaxRuntimeExplicitBinOverridesBundledFFI(t *testing.T) {
+	t.Setenv("YEOUL_RAX_LIB", "")
+	t.Setenv("YEOUL_RAX_BIN", "")
+	exePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	bundledLibPath := filepath.Join(filepath.Dir(exePath), raxLibraryName())
+	if err := os.WriteFile(bundledLibPath, []byte("fake ffi"), 0o644); err != nil {
+		t.Skipf("cannot stage bundled rax ffi fixture beside test executable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(bundledLibPath) })
+
+	explicitBinPath := filepath.Join(t.TempDir(), raxExecutableName())
+	if err := os.WriteFile(explicitBinPath, []byte("fake cli"), 0o755); err != nil {
+		t.Fatalf("write fake cli: %v", err)
+	}
+	got, ok := lookupRaxRuntime("", explicitBinPath)
+	if !ok {
+		t.Fatalf("expected explicit rax bin runtime to resolve")
+	}
+	if got.Kind != "cli" || got.Path != explicitBinPath {
+		t.Fatalf("expected explicit cli path %q, got %#v", explicitBinPath, got)
 	}
 }
 
@@ -937,6 +967,116 @@ func TestCLIIngestFileAndBatchAliases(t *testing.T) {
 	}
 }
 
+func TestManagedRaxFreshnessIncludesRuntimeIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	root := filepath.Join(tmpDir, "rax")
+	storePath := filepath.Join(root, "projection.rax")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("db"), 0o644); err != nil {
+		t.Fatalf("write db: %v", err)
+	}
+	if err := os.WriteFile(storePath, []byte("store"), 0o644); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	stat, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat db: %v", err)
+	}
+	manifest := projectionManifest{
+		Version:         projectionManifestVersion,
+		DatabaseSize:    stat.Size(),
+		DatabaseModTime: stat.ModTime(),
+		ProjectionCount: 1,
+		RaxRuntime:      "cli:/old/rax",
+		BuiltAt:         time.Now().UTC(),
+	}
+	if _, err := writeProjectionManifest(root, manifest); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	ok, err := managedRaxStoreFresh(root, storePath, dbPath, raxRuntime{Kind: "cli", Path: "/old/rax"})
+	if err != nil || !ok {
+		t.Fatalf("expected matching runtime cache fresh, ok=%v err=%v", ok, err)
+	}
+	ok, err = managedRaxStoreFresh(root, storePath, dbPath, raxRuntime{Kind: "cli", Path: "/new/rax"})
+	if err != nil {
+		t.Fatalf("freshness check: %v", err)
+	}
+	if ok {
+		t.Fatal("expected runtime mismatch to mark managed rax cache stale")
+	}
+}
+
+func TestRebuildManagedRaxStoreKeepsOldCacheOnIngestFailure(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	root := filepath.Join(tmpDir, "rax")
+	storePath := filepath.Join(root, "projection.rax")
+	argsPath := filepath.Join(tmpDir, "rax-args.txt")
+	projectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.WriteFile(storePath, []byte("old store"), 0o644); err != nil {
+		t.Fatalf("write old store: %v", err)
+	}
+	oldManifest := projectionManifest{Version: projectionManifestVersion, ProjectionCount: 1, RaxRuntime: "cli:/old", BuiltAt: time.Now().UTC()}
+	if _, err := writeProjectionManifest(root, oldManifest); err != nil {
+		t.Fatalf("write old manifest: %v", err)
+	}
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", argsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", projectionPath)
+	t.Setenv("YEOUL_FAKE_RAX_FAIL_INGEST", "1")
+
+	err := rebuildManagedRaxStore(ctx, root, storePath, raxRuntime{Kind: "cli", Path: os.Args[0]}, []projectionDocument{{
+		ProjectionID: "fact:new",
+		SearchText:   "new text",
+	}}, projectionManifest{Version: projectionManifestVersion, ProjectionCount: 1, BuiltAt: time.Now().UTC()})
+	if err == nil {
+		t.Fatal("expected rebuild failure")
+	}
+	storeData, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	if string(storeData) != "old store" {
+		t.Fatalf("expected old store preserved, got %q", string(storeData))
+	}
+	gotManifest, err := readProjectionManifest(root)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if gotManifest.RaxRuntime != oldManifest.RaxRuntime {
+		t.Fatalf("expected old manifest preserved, got %#v", gotManifest)
+	}
+}
+
+func TestRaxPrimaryFallbackDecisionForFilteredTruncation(t *testing.T) {
+	req := yeoul.SearchRequest{
+		QueryText: "needle",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
+		Page:      yeoul.Page{Limit: 1},
+	}
+	if !raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+		t.Fatal("expected filtered full fetch to fall back to core")
+	}
+	if raxPrimaryShouldFallbackToCore(req, 20, 1001) {
+		t.Fatal("did not expect fallback when rax did not hit fetch cap")
+	}
+	req.Page.Cursor = "key:1:fact:fact-1"
+	if !raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+		t.Fatal("expected filtered cursor page at fetch cap to fall back to core")
+	}
+	req = yeoul.SearchRequest{QueryText: "needle", Page: yeoul.Page{Limit: 1}}
+	if raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+		t.Fatal("did not expect fallback without post-filters")
+	}
+}
+
 func TestCLITimelineProvenanceAndFactLookup(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -1625,6 +1765,19 @@ func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
 	}
 	if len(resp.Hits) != 1 || resp.Hits[0].RecordID != "fact-visible" {
 		t.Fatalf("expected current visible text to pass, got %#v", resp.Hits)
+	}
+
+	resp, err = runRaxPrimarySearch(ctx, eng, "", yeoul.SearchRequest{
+		QueryText: "scoped",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
+		Page:      yeoul.Page{Limit: 1, Cursor: "offset:1"},
+	}, "", os.Args[0])
+	if err != nil {
+		t.Fatalf("expected filtered rax offset cursor to continue through core fallback: %v", err)
+	}
+	if len(resp.Hits) == 0 {
+		t.Fatalf("expected core fallback offset page, got %#v", resp.Hits)
 	}
 }
 
