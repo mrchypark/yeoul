@@ -22,6 +22,15 @@ Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local exp
 
 ## Default loop
 
+Yeoul can be used in the same role Graphiti plays for agents, but the operations are explicit rather than hidden inside an LLM extraction pipeline:
+
+- episode ingest maps to `yeoul ingest episode`
+- extraction maps to deliberate `yeoul fact assert` only when the subject, predicate, value, and provenance are clear
+- automatic invalidation maps to `--cardinality one`, `yeoul fact supersede`, or `yeoul fact retract`
+- graph-aware context construction maps to `yeoul search --include-related`, `yeoul context`, `yeoul timeline`, `yeoul provenance`, and `yeoul neighborhood`
+
+Do not pretend that Yeoul silently extracted a graph. Search, record context/evidence episodes, assert decision facts, and update lifecycle explicitly.
+
 ### 1. Recall before advising
 
 Before recommending a direction, interpreting status, or resolving a tradeoff:
@@ -62,14 +71,24 @@ During implementation, review, or debugging:
 
 ### 4. Capture durable outcomes at the end of a cycle
 
-When a decision, fix, status change, or correction becomes clear, store a source episode even if the user did not explicitly ask to save it. Then decide whether the episode contains stable structured state that should be promoted to a fact.
+When a decision, fix, status change, or correction becomes clear, store a self-contained context/evidence episode even if the user did not explicitly ask to save it. Then assert the decision or durable state as a fact when the subject and predicate are clear.
+
+Treat a message as a decision candidate when it does any of these:
+
+- chooses between options, tradeoffs, tools, architectures, policies, defaults, or priorities
+- accepts or rejects a recommendation
+- changes a previous direction
+- states a stable rule, constraint, preference, or operating policy
+- produces a durable conclusion that future work should reuse
+
+Do not record open brainstorming, low-confidence guesses, or temporary execution details as decisions. If the decision is implicit but likely durable, restate it and record only when the direction is clear.
 
 For decisions, do not save only the conclusion when richer context is available.
-Prefer a compact decision record that preserves how the choice was made.
+Prefer a compact decision context episode that preserves how the choice was made.
 Prefer the most reusable abstraction that is still true.
 If the current project choice is one example of a broader pattern, store the broader pattern as the main decision and keep the project-specific detail as the current application.
 
-Recommended decision template:
+Recommended decision context episode template:
 
 ```text
 Topic: <the question or subject>
@@ -88,20 +107,28 @@ Current application:
 - <how this decision applies in the current project>
 Revisit when:
 - <condition that would change the decision>
+Owner/status:
+- <owner and proposed|active|validated|superseded|retracted>
+Evidence:
+- <supporting conversation, document, PR, test, benchmark, or source episode>
+Observed at:
+- <when this decision became known>
+Valid from:
+- <when this decision starts applying, if different>
 ```
 
 ```bash
 yeoul ingest episode --db "$YEOUL_DB" \
-  --kind decision_note \
+  --kind decision_context \
   --source-kind codex_thread \
   --source-external-ref local-thread \
   --observed-at 2026-04-17T00:00:00Z \
-  --content "Decision: adopt proactive Yeoul usage for repository decision support. Search memory before recommendations and capture durable outcomes after decision or implementation cycles."
+  --content "Topic: proactive Yeoul usage for repository decision support. Context: decisions should remain reusable across sessions. Options: wait for explicit save requests, or proactively search and record durable outcomes. Decision: use proactive Yeoul memory. Why: it preserves prior decisions and catches conflicts. Tradeoffs: requires judgment to avoid low-signal records."
 ```
 
-Use a plain-text episode when you want a reliable source record first.
+Use the episode for context and evidence, not as the lifecycle record for the decision. Then assert the decision as a fact.
 
-Example decision note content:
+Example decision context content:
 
 ```text
 Topic: default Yeoul database location for normal work.
@@ -121,6 +148,12 @@ Current application:
 - Yeoul should default to $HOME/.local/share/yeoul/work-memory.lbug for normal work
 Revisit when:
 - CLI support for stronger per-project space selection or scoped retrieval becomes available
+Owner/status:
+- default repository agent behavior / active
+Evidence:
+- local agent instruction discussion
+Observed at:
+- 2026-04-17T00:00:00Z
 ```
 
 Generalization example:
@@ -148,10 +181,10 @@ Current application:
 - fall back to single-node vind plus replica pod deletion chaos when needed
 ```
 
-### 5. Promote structured state when clear
+### 5. Assert the decision fact when clear
 
 Plain-text episode ingest does not automatically create entities or facts from free text.
-Use fact lifecycle commands when the subject, predicate, and supporting episode are clear.
+Use fact lifecycle commands for the decision statement, status, owner, and other durable state when the subject, predicate, and supporting episode are clear.
 
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
@@ -176,7 +209,7 @@ yeoul fact assert --db "$YEOUL_DB" \
 
 When `--observed-at` is omitted, `fact assert` inherits the first non-empty `observed_at` from the supporting episodes, then falls back to system time. Use an explicit `--observed-at` when the fact was observed at a different time. The CLI records the choice in metadata such as `observed_at_basis=system_time_default`.
 
-Do not stop at episode-only for confirmed decisions, stable constraints, ownership/status/dependency changes, or corrections that future agents should retrieve through `fact lookup`, `timeline`, `provenance`, or conflict checks. Keep episode-only when the content is ambiguous, exploratory, or lacks a stable subject and predicate.
+Do not stop at episode-only for confirmed decisions, stable constraints, ownership/status/dependency changes, or corrections that future agents should retrieve through `fact lookup`, `timeline`, `provenance`, or conflict checks. Keep episode-only when the content is context, evidence, ambiguous, exploratory, or lacks a stable subject and predicate.
 
 When a state changes, prefer superseding instead of overwriting:
 
@@ -189,6 +222,19 @@ yeoul fact supersede --confirm --db "$YEOUL_DB" \
   --supporting-episodes ep_000010 \
   --reason "status changed"
 ```
+
+For one-current-value slots, let the CLI supersede older active facts in the same slot:
+
+```bash
+yeoul fact assert --db "$YEOUL_DB" \
+  --predicate HAS_STATUS \
+  --upsert-subject --subject-type Project --subject-name Yeoul --subject-stable-key project:yeoul \
+  --value-text "ready for review" \
+  --cardinality one \
+  --supporting-episodes ep_000011
+```
+
+Use `--as-of` when asking what was known at a point in time. Use `--valid-at` when asking whether a fact's domain validity covered a point in time.
 
 ## Save heuristics
 

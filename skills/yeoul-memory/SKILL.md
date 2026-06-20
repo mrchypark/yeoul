@@ -65,7 +65,7 @@ Do not store:
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
 - prefer storing at the end of a decision, implementation, review, or correction cycle
-- after storing the source episode, promote stable decisions, status, ownership, and dependency relationships to facts when the subject can be named
+- store self-contained context and evidence as an episode, then assert stable decisions, status, ownership, and dependency relationships as facts when the subject can be named
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
 ## Falsifiable change contracts
@@ -94,7 +94,7 @@ After evaluation:
 - use lifecycle operations for state changes when a fact already exists
 - roll back at the planned unit when the falsification condition or regression threshold is met
 
-When recording a decision, prefer storing more than the conclusion alone.
+When recording decision context, prefer storing more than the conclusion alone.
 Include, when available:
 - `Topic`: the decision topic or question
 - `Context`: the background or context
@@ -112,8 +112,8 @@ Do not let a one-off tool name, environment name, or implementation detail becom
 
 ## Write rules
 
-- Use `ingest episode` or `ingest file` for source episodes.
-- Use `fact assert` when subject and supporting episodes are clear.
+- Use `ingest episode` or `ingest file` for context and evidence episodes.
+- Use `fact assert` for decision statements and durable state when subject and supporting episodes are clear.
 - Prefer `fact assert --upsert-subject --subject-type TYPE --subject-name NAME` when the fact subject is clear but the entity has not been created yet.
 - Pass `fact assert --observed-at RFC3339` when the fact observation time differs from the supporting episode time; otherwise the CLI inherits the first non-empty supporting episode `observed_at`, then falls back to system time with `observed_at_basis=system_time_default`.
 - Use `fact supersede --confirm` for state changes rather than overwriting.

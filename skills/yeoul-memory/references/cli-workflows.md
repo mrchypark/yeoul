@@ -55,9 +55,9 @@ yeoul ingest episode --db "$YEOUL_DB" \
   --source-external-ref decision-log
 ```
 
-Use episode ingest as the provenance step, not always the final memory shape. If the episode contains a confirmed decision, stable constraint, status change, ownership change, dependency relation, or correction that future agents should retrieve through fact lookup, continue with structured promotion.
+Use episode ingest as the context/evidence step, not the decision lifecycle record. If the episode supports a confirmed decision, stable constraint, status change, ownership change, dependency relation, or correction that future agents should retrieve through fact lookup, continue with structured fact assertion.
 
-For decisions, prefer recording structured context instead of only the conclusion:
+For decisions, record self-contained context before asserting the decision fact:
 
 ```text
 Topic: default Yeoul database location for normal work
@@ -146,7 +146,7 @@ yeoul ingest file --db "$YEOUL_DB" \
   --source-external-ref notes/decision.txt
 ```
 
-## Promote clear state to a fact
+## Assert clear state as a fact
 
 When the subject entity already exists, assert the fact directly:
 
@@ -183,7 +183,7 @@ yeoul fact assert --db "$YEOUL_DB" \
   --supporting-episodes ep_000001
 ```
 
-Keep episode-only when the content is ambiguous, exploratory, or lacks a stable subject and predicate.
+Keep episode-only when the content is context, evidence, ambiguous, exploratory, or lacks a stable subject and predicate.
 
 ## Record lifecycle changes
 
