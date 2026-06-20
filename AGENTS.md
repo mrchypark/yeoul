@@ -4,9 +4,9 @@ Use the `yeoul-memory` skill when a task depends on prior decisions, constraints
 
 When working with repository memory in normal use, use a single user-level Yeoul database instead of a project-local database file.
 Default path: `$HOME/.local/share/yeoul/work-memory.lbug`
-For this repository, scope global-memory searches and episode writes with group ID `project:yeoul`; scope fact writes with repo-qualified entity namespace `repo:mrchypark/yeoul`, stable keys, or canonical project subject ID `repo:mrchypark-yeoul:project:yeoul`.
+For this repository, scope global-memory searches and episode writes with group ID `project:yeoul`; scope new global fact writes with repo-qualified entity namespace `repo:mrchypark/yeoul`, stable keys, or preferred project subject ID `repo:mrchypark-yeoul:project:yeoul`.
 This is an agent fail-closed convention, not a storage-layer security boundary. If a command cannot carry `--group-id`, encode the repository scope in the subject ID or namespace/stable-key and do not imply runtime enforcement.
-If the user, harness, or repo instructions provide a specific Yeoul binary or database path, treat them as the memory target. Run that exact binary path in every command; do not run `command -v yeoul`, `yeoul --help`, `file $(command -v yeoul)`, or any bare `yeoul` fallback unless no binary path was provided.
+If the user, harness, or repo instructions provide a specific Yeoul binary path, run that exact binary in every command; do not run `command -v yeoul`, `yeoul --help`, `file $(command -v yeoul)`, or any bare `yeoul` fallback. If only a database path is provided, use the normal Yeoul CLI with that exact `--db` value.
 
 Project-local `./yeoul.lbug` is only for quickstart examples, isolated tests, or temporary debugging.
 Prefer the workflows documented in `skills/yeoul-memory/SKILL.md` and `skills/yeoul-memory/references/cli-workflows.md`.
@@ -82,7 +82,7 @@ Do not treat every message as durable memory. Prefer quality over quantity.
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
 - never store prohibited sensitive data even with confirmation; redact or omit it
-- before implicit writes to the global database, confirm exact scope/fact text unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped
+- before implicit writes to the global database, ask only when required scope, fact text, or decision fields are unclear; otherwise write the completed non-sensitive repo-scoped record proactively
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - store self-contained decision context and evidence as an episode, then record the decision statement, status, ownership, or dependency as facts when the subject can be named
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary

@@ -23,8 +23,8 @@ Graphiti performs episode ingest, extraction, invalidation, and context construc
 6. Use `--as-of` for knowledge/lifecycle time and `--valid-at` for domain validity; do not mix what was known then with what was true then.
 7. Use repository-qualified namespaces plus `--subject-stable-key` or `--object-stable-key` when writing to the global database.
 8. Treat `--backend auto` as the default search path; rax is a derived retrieval index, not canonical truth.
-9. In this repository, scope global-memory searches and episode writes with `--group-id project:yeoul`; scope fact writes with canonical project subject ID `repo:mrchypark-yeoul:project:yeoul` or repo namespace `repo:mrchypark/yeoul` plus stable keys. This is an agent fail-closed convention, not a storage-layer security boundary.
-10. If a harness provides a specific Yeoul binary or DB path, run that exact binary and DB in every memory command; do not run `command -v yeoul`, `yeoul --help`, or any bare `yeoul` fallback unless no binary path was provided.
+9. In this repository, scope global-memory searches and episode writes with `--group-id project:yeoul`; scope new fact writes with preferred project subject ID `repo:mrchypark-yeoul:project:yeoul` or repo namespace `repo:mrchypark/yeoul` plus stable keys. This is an agent fail-closed convention, not a storage-layer security boundary.
+10. If a harness provides a specific Yeoul binary, run that exact binary and DB in every memory command; do not run `command -v yeoul`, `yeoul --help`, or any bare `yeoul` fallback. If only a DB path is provided, use the normal Yeoul CLI with that exact `--db` value.
 
 Do not pretend that an LLM silently extracted a graph. If the agent infers a decision, fact, contradiction, or replacement, state it briefly and record it with explicit Yeoul commands.
 Do not treat the episode itself as the decision record. Use episodes for context/evidence and facts for decision statements, status, ownership, and lifecycle.
@@ -39,7 +39,7 @@ Use Yeoul as a global decision record. Treat a conversation turn as a decision c
 4. The user states a stable rule, constraint, preference, or operating policy.
 5. The work produces a durable conclusion that future tasks should reuse.
 
-Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped.
+Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, ask only when required scope, fact text, or decision fields are unclear; otherwise write the completed non-sensitive repo-scoped record proactively.
 
 Do not record open brainstorming, low-confidence guesses, or temporary execution details as decisions. If the decision is implicit but likely durable, restate it and ask or proceed only when the user's direction is clear.
 

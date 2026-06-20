@@ -18,7 +18,7 @@ Default path:
 
 Project-local `./yeoul.lbug` is only for quickstarts, isolated tests, or temporary debugging.
 
-If the user, harness, or repo instructions provide a specific Yeoul binary or database path, treat them as the memory target. Run that exact binary path in every command; do not run `command -v yeoul`, `yeoul --help`, `file $(command -v yeoul)`, or any bare `yeoul` fallback unless no binary path was provided.
+If the user, harness, or repo instructions provide a specific Yeoul binary path, run that exact binary in every command; do not run `command -v yeoul`, `yeoul --help`, `file $(command -v yeoul)`, or any bare `yeoul` fallback. If only a database path is provided, use the normal Yeoul CLI with that exact `--db` value.
 
 ## Search first
 
@@ -69,7 +69,7 @@ Do not store:
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
 - never store prohibited sensitive data even with confirmation; redact or omit it
-- before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped
+- before implicit writes to the global database, ask only when required scope, fact text, or decision fields are unclear; otherwise write the completed non-sensitive repo-scoped record proactively
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - store self-contained context and evidence as an episode, then assert stable decisions, status, ownership, and dependency relationships as facts when the subject can be named
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary

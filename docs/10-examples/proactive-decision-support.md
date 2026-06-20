@@ -21,8 +21,8 @@ mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
 Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
-`$YEOUL_GROUP` scopes searches and episode writes. `fact assert` does not take `--group-id`; use `$YEOUL_PROJECT_ID` or repo namespace `repo:mrchypark/yeoul` plus stable keys for fact subjects instead.
-If a harness provides a specific Yeoul binary or DB path, run that exact binary and DB in every memory command; do not run `command -v yeoul`, `yeoul --help`, or any bare `yeoul` fallback unless no binary path was provided.
+`$YEOUL_GROUP` scopes searches and episode writes. `fact assert` does not take `--group-id`; use `$YEOUL_PROJECT_ID` or repo namespace `repo:mrchypark/yeoul` plus stable keys for new fact subjects instead. Existing memory may still contain legacy subjects such as `project:yeoul`, so search broadly before relying on an entity-specific timeline.
+If a harness provides a specific Yeoul binary, run that exact binary and DB in every memory command; do not run `command -v yeoul`, `yeoul --help`, or any bare `yeoul` fallback. If only a DB path is provided, use the normal Yeoul CLI with that exact `--db` value.
 
 ## Default loop
 
@@ -79,7 +79,7 @@ During implementation, review, or debugging:
 
 When a decision, fix, status change, or correction becomes clear, store a self-contained context/evidence episode even if the user did not explicitly ask to save it. Then assert the decision or durable state as a fact when the subject and predicate are clear.
 
-Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped.
+Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, ask only when required scope, fact text, or decision fields are unclear; otherwise write the completed non-sensitive repo-scoped record proactively.
 
 Treat a message as a decision candidate when it does any of these:
 
