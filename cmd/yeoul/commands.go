@@ -585,7 +585,7 @@ Usage:
 func (c cli) runSearch(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--mode hybrid|keyword|semantic] [--entity ID] [--predicate PREDS] [--min-score N]
+  yeoul search --db PATH --query TEXT [--backend auto|core|rax] [--rax-lib PATH] [--rax-bin PATH] [--type fact,episode,entity] [--mode hybrid|keyword|semantic] [--entity ID] [--predicate PREDS] [--min-score N]
       [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--from RFC3339] [--to RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--cursor CURSOR]
       [--policy-path PATH] [--recipe NAME] [--limit N] [--include-related] [--json]
 `)
@@ -593,6 +593,9 @@ Usage:
 	fs := newFlagSet("search")
 	var dbPath string
 	var query string
+	var backend string
+	var raxLib string
+	var raxBin string
 	var typesRaw string
 	var mode string
 	var entityID string
@@ -615,6 +618,9 @@ Usage:
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&query, "query", "", "query text")
+	fs.StringVar(&backend, "backend", "auto", "search backend: auto, core, rax")
+	fs.StringVar(&raxLib, "rax-lib", "", "rax FFI library path")
+	fs.StringVar(&raxBin, "rax-bin", "", "rax CLI binary path")
 	fs.StringVar(&typesRaw, "type", "", "comma-separated hit types")
 	fs.StringVar(&mode, "mode", "hybrid", "search mode: hybrid, keyword, semantic")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
@@ -656,6 +662,10 @@ Usage:
 		return err
 	}
 	if strings.TrimSpace(query) == "" {
+		return &usageError{message: usage}
+	}
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend != "auto" && backend != "core" && backend != "rax" {
 		return &usageError{message: usage}
 	}
 	temporal, err := parseTemporalFlagsFull(asOfRaw, validAtRaw, fromRaw, toRaw, validFromRaw, validToRaw, includeInactive)
@@ -705,12 +715,23 @@ Usage:
 	if err != nil {
 		return err
 	}
-	resp, err := eng.Search(ctx, req)
+	var resp *yeoul.SearchResponse
+	if backend == "rax" {
+		resp, err = runRaxPrimarySearch(ctx, eng, dbPath, req, raxLib, raxBin)
+	} else {
+		resp, err = eng.Search(ctx, req)
+	}
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return err
+	}
+	if backend != "rax" {
+		resp, err = maybeRerankSearchWithRax(ctx, dbPath, query, backend, raxLib, raxBin, limit, resp)
+		if err != nil {
+			return err
+		}
 	}
 
 	if jsonOut {
@@ -2512,17 +2533,23 @@ Usage:
 func (c cli) runBenchQuery(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul bench query --db PATH --query TEXT [--entity ID] [--fact ID] [--iterations N] [--json]
+  yeoul bench query --db PATH --query TEXT [--backend auto|core|rax] [--rax-lib PATH] [--rax-bin PATH] [--entity ID] [--fact ID] [--iterations N] [--json]
 `)
 	fs := newFlagSet("bench query")
 	var dbPath string
 	var query string
+	var backend string
+	var raxLib string
+	var raxBin string
 	var entityID string
 	var factID string
 	var iterations int
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&query, "query", "", "query text")
+	fs.StringVar(&backend, "backend", "auto", "search backend: auto, core, rax")
+	fs.StringVar(&raxLib, "rax-lib", "", "rax FFI library path")
+	fs.StringVar(&raxBin, "rax-bin", "", "rax CLI binary path")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
 	fs.StringVar(&factID, "fact", "", "fact ID for provenance")
 	fs.IntVar(&iterations, "iterations", 10, "number of iterations")
@@ -2539,6 +2566,10 @@ Usage:
 	}
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
+	}
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend != "auto" && backend != "core" && backend != "rax" {
+		return &usageError{message: usage}
 	}
 	eng, err := openReadEngine(ctx, dbPath)
 	if err != nil {
@@ -2565,6 +2596,28 @@ Usage:
 		"timeline":     {},
 		"provenance":   {},
 	}
+	var benchRaxRuntime raxRuntime
+	var benchRaxStorePath string
+	var benchRaxSearcher *raxFFISearcher
+	if backend == "rax" {
+		var ok bool
+		benchRaxRuntime, ok = lookupRaxRuntime(raxLib, raxBin)
+		if !ok {
+			return fmt.Errorf("rax search failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
+		}
+		if benchRaxRuntime.Kind == "ffi" {
+			var err error
+			benchRaxStorePath, err = ensureManagedRaxStore(ctx, dbPath, benchRaxRuntime)
+			if err != nil {
+				return err
+			}
+			benchRaxSearcher, err = openRaxFFISearcher(benchRaxRuntime.Path, benchRaxStorePath)
+			if err != nil {
+				return err
+			}
+			defer benchRaxSearcher.close()
+		}
+	}
 	for i := 0; i < iterations; i++ {
 		start := time.Now()
 		searchReq := yeoul.SearchRequest{
@@ -2572,8 +2625,32 @@ Usage:
 			AnchorIDs: compactStrings(entityID),
 			Page:      yeoul.Page{Limit: 10},
 		}
-		if _, err := eng.Search(ctx, searchReq); err != nil {
-			return err
+		if backend == "rax" {
+			if benchRaxSearcher != nil {
+				output, err := benchRaxSearcher.searchText(benchRaxStorePath, searchReq.QueryText, searchReq.Page.Limit*4)
+				if err != nil {
+					return fmt.Errorf("rax search failed: %w", err)
+				}
+				docIDs, err := parseRaxDocIDs(output)
+				if err != nil {
+					return err
+				}
+				if _, err := buildRaxPrimarySearchResponse(ctx, eng, searchReq, docIDs); err != nil {
+					return err
+				}
+			} else {
+				if _, err := runRaxPrimarySearch(ctx, eng, dbPath, searchReq, raxLib, raxBin); err != nil {
+					return err
+				}
+			}
+		} else {
+			searchResp, err := eng.Search(ctx, searchReq)
+			if err != nil {
+				return err
+			}
+			if _, err := maybeRerankSearchWithRax(ctx, dbPath, query, backend, raxLib, raxBin, 10, searchResp); err != nil {
+				return err
+			}
 		}
 		metrics["search"] = append(metrics["search"], time.Since(start))
 

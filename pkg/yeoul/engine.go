@@ -2055,7 +2055,7 @@ func matchesScopeForEpisode(episode Episode, scope ScopeFilter, sources map[stri
 }
 
 // RecordPassesSearchFilters applies Yeoul's canonical search post-filter to records
-// returned by derived indexes.
+// returned by derived indexes such as rax.
 func RecordPassesSearchFilters(ctx context.Context, eng Engine, record any, req SearchRequest) bool {
 	switch value := record.(type) {
 	case *Fact:
