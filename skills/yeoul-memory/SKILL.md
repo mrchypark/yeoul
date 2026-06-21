@@ -63,6 +63,14 @@ Default behavior:
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
+## Episode and fact boundary
+
+Episodes are source records. Use them to preserve background, evidence, context, and provenance.
+Facts are promoted claims. Promote only confirmed decisions or durable rules that need fact lookup.
+Do not promote every episode to a fact.
+Keep status, progress, benchmark results, implementation logs, review notes, and exploratory context as episodes unless they contain a reusable decision or rule.
+Every decision fact must have at least one supporting episode.
+
 When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
 - `Topic`: the decision topic or question

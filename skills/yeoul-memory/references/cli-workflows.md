@@ -63,6 +63,8 @@ yeoul ingest episode --db "$YEOUL_DB" \
 
 Use episode ingest as the context/evidence step, not the decision lifecycle record. If the episode supports a confirmed decision, stable constraint, status change, ownership change, dependency relation, or correction that future agents should retrieve through fact lookup, continue with structured fact assertion.
 
+Episode content should preserve the background, evidence, context, and source needed to understand the memory later. Do not reduce it to only the final decision when supporting context is available.
+
 Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped.
 
 For decisions, record self-contained context before asserting the decision fact:
@@ -155,7 +157,9 @@ yeoul ingest file --db "$YEOUL_DB" \
   --source-external-ref notes/decision.txt
 ```
 
-## Assert clear state as a fact
+## Assert clear decisions or rules as facts
+
+Facts are promoted claims, not a copy of every episode. Assert a fact only when it is a confirmed decision or durable rule with a stable subject and at least one supporting episode. Keep status, progress, benchmark results, implementation logs, review notes, and exploratory context episode-only unless they contain a reusable decision or rule.
 
 When the subject entity already exists, assert the fact directly:
 
@@ -194,7 +198,7 @@ yeoul fact assert --db "$YEOUL_DB" \
   --supporting-episodes ep_000001
 ```
 
-Keep episode-only when the content is context, evidence, ambiguous, exploratory, or lacks a stable subject and predicate.
+Keep episode-only when the content is context, evidence, ambiguous, exploratory, status/progress, implementation detail, benchmark output, review note, or lacks a stable subject and predicate.
 
 ## Record lifecycle changes
 

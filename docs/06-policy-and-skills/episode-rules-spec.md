@@ -1,5 +1,17 @@
 version: 1
 
+episode_role:
+  summary: Episodes preserve source context, evidence, background, and provenance.
+  fact_promotion:
+    promote_only: ["confirmed decisions", "durable rules"]
+    require_supporting_episode: true
+    keep_episode_only:
+      - status/progress updates without a reusable decision
+      - benchmark results without a durable decision
+      - implementation logs without a durable rule
+      - review notes without a reusable decision
+      - exploratory or ambiguous context
+
 promote_to_episode:
   - name: decision
     when:
