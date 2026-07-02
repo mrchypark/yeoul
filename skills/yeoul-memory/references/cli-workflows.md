@@ -160,7 +160,7 @@ yeoul ingest file --db "$YEOUL_DB" \
   --source-external-ref notes/decision.txt
 ```
 
-## Assert clear decisions or rules as facts
+## Assert clear durable claims as facts
 
 Facts are promoted claims, not a copy of every episode. Assert a fact only when it is a confirmed durable claim with a stable subject and at least one supporting episode. Keep raw status, progress, benchmark results, implementation logs, review notes, and exploratory context episode-only unless they establish durable state, a reusable conclusion, or a rule.
 

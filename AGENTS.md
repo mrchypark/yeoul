@@ -69,7 +69,7 @@ Default behavior:
 ## Fact extraction loop
 
 For every substantive exchange, look for fact candidates that should be retrievable later.
-Fact candidates include confirmed decisions, durable rules or constraints, current status, owners, corrections or retractions, repeated problems and resolutions, and validated evaluation or benchmark conclusions.
+Fact candidates include confirmed decisions, durable rules or constraints, current status, owners, corrections or retractions, repeated problems and resolutions, dependencies or relationships, stable preferences, definitions or terminology, and validated evaluation or benchmark conclusions.
 First decide whether the exchange contains a fact-worthy claim or only episode-worthy context.
 If it is fact-worthy but missing the subject, claim, scope, time/status, or supporting context needed for a reliable fact, ask a focused clarification instead of asserting a weak fact.
 
