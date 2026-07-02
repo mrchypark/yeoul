@@ -64,6 +64,8 @@ yeoul ingest episode --db "$YEOUL_DB" \
 Use episode ingest as the context/evidence step, not the decision lifecycle record. If the episode supports a confirmed decision, stable constraint, status change, ownership change, dependency relation, or correction that future agents should retrieve through fact lookup, continue with structured fact assertion.
 
 Episode content should preserve the background, evidence, context, and source needed to understand the memory later. Do not reduce it to only the final decision when supporting context is available.
+Match episode detail to the fact type: decisions need context/options/why/tradeoffs; status needs previous/new state and as-of time; corrections need wrong/right/reason; benchmarks need setup/metric/result/decision impact; ownership needs owner/scope; rules need scope/exceptions.
+First decide whether the exchange contains a fact-worthy claim or only episode-worthy context. If it is fact-worthy but missing the subject, claim, scope, time/status, or supporting context needed for a reliable fact, ask a focused clarification instead of asserting a weak fact.
 
 Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped.
 
@@ -90,6 +92,7 @@ Revisit when:
 
 Prefer the most reusable abstraction that is still true.
 If the current project choice is only one example of a broader rule, store the broader rule as the main decision and keep the project-specific detail under `Current application`.
+For decisions shaped like "use X for Y", do not make `X` the whole fact unless the user gave the reusable selection criterion or explicitly said the exact tool choice is the durable rule. Store the selection criterion as the fact and keep `X for Y` under `Current application`; if the criterion is missing, ask or keep it episode-only.
 
 ## Store a falsifiable change contract
 
@@ -159,7 +162,7 @@ yeoul ingest file --db "$YEOUL_DB" \
 
 ## Assert clear decisions or rules as facts
 
-Facts are promoted claims, not a copy of every episode. Assert a fact only when it is a confirmed decision or durable rule with a stable subject and at least one supporting episode. Keep status, progress, benchmark results, implementation logs, review notes, and exploratory context episode-only unless they contain a reusable decision or rule.
+Facts are promoted claims, not a copy of every episode. Assert a fact only when it is a confirmed durable claim with a stable subject and at least one supporting episode. Keep raw status, progress, benchmark results, implementation logs, review notes, and exploratory context episode-only unless they establish durable state, a reusable conclusion, or a rule.
 
 When the subject entity already exists, assert the fact directly:
 

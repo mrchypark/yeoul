@@ -66,13 +66,21 @@ Default behavior:
 - prefer storing at the end of a decision, implementation, review, or correction cycle
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
+## Fact extraction loop
+
+For every substantive exchange, look for fact candidates that should be retrievable later.
+Fact candidates include confirmed decisions, durable rules or constraints, current status, owners, corrections or retractions, repeated problems and resolutions, and validated evaluation or benchmark conclusions.
+First decide whether the exchange contains a fact-worthy claim or only episode-worthy context.
+If it is fact-worthy but missing the subject, claim, scope, time/status, or supporting context needed for a reliable fact, ask a focused clarification instead of asserting a weak fact.
+
 ## Episode and fact boundary
 
 Episodes are source records. Use them to preserve background, evidence, context, and provenance.
-Facts are promoted claims. Promote only confirmed decisions or durable rules that need fact lookup.
+Facts are promoted claims. Promote confirmed durable claims that need fact lookup.
 Do not promote every episode to a fact.
-Keep status, progress, benchmark results, implementation logs, review notes, and exploratory context as episodes unless they contain a reusable decision or rule.
-Every decision fact must have at least one supporting episode.
+Keep raw progress, benchmark results, implementation logs, review notes, and exploratory context as episodes unless they establish durable state, a reusable conclusion, or a rule.
+Every fact must have at least one supporting episode.
+Episode content should fit the fact type: decisions need context/options/why/tradeoffs; status needs previous/new state and as-of time; corrections need wrong/right/reason; benchmarks need setup/metric/result/decision impact; ownership needs owner/scope; rules need scope/exceptions.
 
 When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
@@ -87,6 +95,7 @@ Include, when available:
 
 Prefer the most reusable abstraction that is still true.
 If a project-specific choice is only one application of a broader rule, store the broader rule as the main decision and treat the project-specific detail as an example or current application.
+For decisions shaped like "use X for Y", do not make `X` the whole fact unless the user gave the reusable selection criterion or explicitly said the exact tool choice is the durable rule. Store the selection criterion as the fact and keep `X for Y` as `Current application`; if the criterion is missing, ask or keep it episode-only.
 Do not let a product name, environment name, or one-off implementation detail become the main decision unless that specificity is itself what will matter later.
 
 ## Write rules
