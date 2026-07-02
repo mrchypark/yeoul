@@ -2054,13 +2054,21 @@ Usage:
 	}
 	_, err = fmt.Fprintf(
 		c.stdout,
-		"path: %s\nentity_types: %d\npredicates: %d\nrecipes: %d\n",
+		"path: %s\nentity_types: %d\npredicates: %d\nfact_candidates: %d\nrecipes: %d\n",
 		pack.Path,
 		len(pack.Ontology.EntityTypes),
 		len(pack.Ontology.Predicates),
+		len(factPromotionCandidates(pack)),
 		len(pack.SearchRecipes.Recipes),
 	)
 	return err
+}
+
+func factPromotionCandidates(pack *policy.Pack) []string {
+	if pack == nil || pack.EpisodeRules.FactPromotion == nil {
+		return nil
+	}
+	return pack.EpisodeRules.FactPromotion.Candidates
 }
 
 func (c cli) runPolicyListRecipes(args []string) error {

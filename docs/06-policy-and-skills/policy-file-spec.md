@@ -29,3 +29,12 @@ policies/
 
 Core must run without policy files.
 Policy files enhance behavior but do not define storage correctness.
+
+## `episode_rules.yaml`
+
+`episode_rules.yaml` may declare:
+- `fact_promotion`: durable claim classes that can become facts, required clarification fields, and episode-only exclusions.
+- `promote_to_episode`: incoming event patterns that should be preserved as source episodes.
+- `drop`: low-signal event patterns that should be skipped.
+
+`fact_promotion` is optional for backward compatibility. When present, `require_supporting_episode` must be `true` because facts are promoted claims backed by episodes.

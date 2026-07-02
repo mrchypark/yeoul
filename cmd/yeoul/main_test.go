@@ -10,6 +10,7 @@ import (
 	"time"
 
 	json "github.com/goccy/go-json"
+	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
@@ -350,6 +351,18 @@ func TestCLIPolicyValidateAndListRecipes(t *testing.T) {
 	validate := runCLI("policy", "validate", "--path", packPath, "--json")
 	if !strings.Contains(validate, `"valid": true`) {
 		t.Fatalf("expected valid policy pack, got %q", validate)
+	}
+
+	show := runCLI("policy", "show", "--path", packPath, "--json")
+	var pack policy.Pack
+	if err := json.Unmarshal([]byte(show), &pack); err != nil {
+		t.Fatalf("unmarshal policy show output: %v\noutput=%s", err, show)
+	}
+	if pack.EpisodeRules.FactPromotion == nil {
+		t.Fatalf("expected fact promotion in policy show output, got %#v", pack.EpisodeRules)
+	}
+	if !slices.Contains(pack.EpisodeRules.FactPromotion.Candidates, "stable preferences") {
+		t.Fatalf("expected stable preferences candidate, got %v", pack.EpisodeRules.FactPromotion.Candidates)
 	}
 
 	recipes := runCLI("policy", "list-recipes", "--path", packPath)

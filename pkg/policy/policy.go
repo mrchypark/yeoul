@@ -38,9 +38,18 @@ type DedupRule struct {
 }
 
 type EpisodeRules struct {
-	Version          int           `yaml:"version" json:"version"`
-	PromoteToEpisode []EpisodeRule `yaml:"promote_to_episode" json:"promote_to_episode,omitempty"`
-	Drop             []EpisodeRule `yaml:"drop" json:"drop,omitempty"`
+	Version          int            `yaml:"version" json:"version"`
+	FactPromotion    *FactPromotion `yaml:"fact_promotion" json:"fact_promotion,omitempty"`
+	PromoteToEpisode []EpisodeRule  `yaml:"promote_to_episode" json:"promote_to_episode,omitempty"`
+	Drop             []EpisodeRule  `yaml:"drop" json:"drop,omitempty"`
+}
+
+type FactPromotion struct {
+	PromoteOnly                      []string `yaml:"promote_only" json:"promote_only,omitempty"`
+	Candidates                       []string `yaml:"candidates" json:"candidates,omitempty"`
+	RequireSupportingEpisode         bool     `yaml:"require_supporting_episode" json:"require_supporting_episode"`
+	ClarificationRequiredWhenMissing []string `yaml:"clarification_required_when_missing" json:"clarification_required_when_missing,omitempty"`
+	KeepEpisodeOnly                  []string `yaml:"keep_episode_only" json:"keep_episode_only,omitempty"`
 }
 
 type EpisodeRule struct {
@@ -137,6 +146,15 @@ func ValidatePack(path string) (*ValidationResult, error) {
 	if pack.EpisodeRules.Version != 1 {
 		addIssue("episode_rules.yaml must declare version: 1")
 	}
+	if pack.EpisodeRules.FactPromotion != nil {
+		validateNonEmptyList(addIssue, "fact_promotion.promote_only", pack.EpisodeRules.FactPromotion.PromoteOnly)
+		validateNonEmptyList(addIssue, "fact_promotion.candidates", pack.EpisodeRules.FactPromotion.Candidates)
+		validateNonEmptyList(addIssue, "fact_promotion.clarification_required_when_missing", pack.EpisodeRules.FactPromotion.ClarificationRequiredWhenMissing)
+		validateNonEmptyList(addIssue, "fact_promotion.keep_episode_only", pack.EpisodeRules.FactPromotion.KeepEpisodeOnly)
+		if !pack.EpisodeRules.FactPromotion.RequireSupportingEpisode {
+			addIssue("episode_rules.yaml fact_promotion.require_supporting_episode must be true")
+		}
+	}
 	for _, rule := range append(append([]EpisodeRule{}, pack.EpisodeRules.PromoteToEpisode...), pack.EpisodeRules.Drop...) {
 		if strings.TrimSpace(rule.Name) == "" {
 			addIssue("episode rule name must not be empty")
@@ -159,6 +177,19 @@ func ValidatePack(path string) (*ValidationResult, error) {
 	}
 
 	return result, nil
+}
+
+func validateNonEmptyList(addIssue func(string), field string, values []string) {
+	if len(values) == 0 {
+		addIssue(fmt.Sprintf("episode_rules.yaml %s must not be empty", field))
+		return
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			addIssue(fmt.Sprintf("episode_rules.yaml %s must not contain empty values", field))
+			return
+		}
+	}
 }
 
 func loadYAML(path string, out any) error {
