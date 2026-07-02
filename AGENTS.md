@@ -78,9 +78,9 @@ If it is fact-worthy but missing the subject, claim, scope, time/status, or supp
 Episodes are source records. Use them to preserve background, evidence, context, and provenance.
 Facts are promoted claims. Promote confirmed durable claims that need fact lookup.
 Do not promote every episode to a fact.
-Keep raw progress, benchmark results, implementation logs, review notes, and exploratory context as episodes unless they establish durable state, a reusable conclusion, or a rule.
+Keep raw progress, benchmark results, implementation logs, review notes, and exploratory context as episodes unless they establish durable state, a reusable conclusion, a rule, a relationship, a stable preference, or a definition.
 Every fact must have at least one supporting episode.
-Episode content should fit the fact type: decisions need context/options/why/tradeoffs; status needs previous/new state and as-of time; corrections need wrong/right/reason; benchmarks need setup/metric/result/decision impact; ownership needs owner/scope; rules need scope/exceptions.
+Episode content should fit the fact type: decisions need context/options/why/tradeoffs; status needs previous/new state and as-of time; corrections need wrong/right/reason; benchmarks need setup/metric/result/decision impact; ownership needs owner/scope; dependencies/relationships need subject/object/relation/evidence; preferences need holder/scope/default; definitions need term/scope/meaning; repeated problems need symptom/root cause/resolution; rules need scope/exceptions.
 
 When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
