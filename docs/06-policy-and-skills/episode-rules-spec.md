@@ -1,7 +1,7 @@
 version: 1
 
-episode_role:
-  summary: Episodes preserve source context, evidence, background, and provenance.
+# Episodes preserve source context, evidence, background, and provenance.
+# Facts are promoted durable claims backed by supporting episodes.
 
 fact_promotion:
   promote_only:
