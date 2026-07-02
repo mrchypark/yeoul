@@ -49,8 +49,12 @@ Store memory only when the content is likely to matter later:
 - explicit decisions
 - stable constraints
 - ownership or status changes
+- confirmed dependencies or relationships
 - corrections or retractions
 - repeated problems and resolutions
+- stable preferences
+- definitions or terminology
+- validated evaluation or benchmark conclusions
 
 Do not store:
 - acknowledgements

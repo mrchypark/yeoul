@@ -52,6 +52,10 @@ Write to Yeoul only when the conversation contains durable information such as:
 - a status change
 - a correction with a reason
 - a repeated problem and its resolution
+- a dependency or relationship
+- a stable preference
+- a definition or terminology
+- a validated evaluation or benchmark conclusion
 
 Do not store:
 - brainstorming that is still unsettled

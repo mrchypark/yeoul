@@ -35,7 +35,7 @@ Longer behavioral instructions tailored to a class of agent or workflow.
 Allowed or preferred entity types, predicates, dedup keys, and exclusivity rules.
 
 ### `episode_rules.yaml`
-Rules that determine which incoming events should become episodes.
+Rules that determine fact candidates, which incoming events should become episodes, and which low-signal events should be dropped.
 
 ### `search_recipes.yaml`
 Named retrieval patterns.

@@ -352,6 +352,11 @@ func TestCLIPolicyValidateAndListRecipes(t *testing.T) {
 		t.Fatalf("expected valid policy pack, got %q", validate)
 	}
 
+	show := runCLI("policy", "show", "--path", packPath, "--json")
+	if !strings.Contains(show, `"fact_promotion"`) || !strings.Contains(show, `"stable preferences"`) {
+		t.Fatalf("expected fact promotion in policy show output, got %q", show)
+	}
+
 	recipes := runCLI("policy", "list-recipes", "--path", packPath)
 	if !strings.Contains(recipes, "recent_context") || !strings.Contains(recipes, "project_memory") {
 		t.Fatalf("expected recipe list output, got %q", recipes)
