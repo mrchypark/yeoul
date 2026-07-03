@@ -15,7 +15,8 @@ When a message contains:
 - a clear owner assignment
 - a status change
 - a confirmed dependency or relationship
-remember it by writing an episode to Yeoul.
+remember it by writing a context/evidence episode to Yeoul.
+When the subject entity and predicate are clear, assert or supersede a fact supported by that episode.
 
 ## Retrieval behavior
 When querying memory:
