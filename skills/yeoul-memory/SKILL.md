@@ -21,11 +21,13 @@ Project-local `./yeoul.lbug` is only for quickstarts, isolated tests, or tempora
 Search Yeoul before answering when:
 - the user asks what was decided before
 - the task depends on prior project constraints or status
+- you are about to start non-trivial work and prior memory may change the plan, tools, or output shape
 - a new fact may conflict with existing memory
 - you need provenance or change history
 
 Prefer:
-- `yeoul search` for broad recall
+- `yeoul search` with the `recent_context` recipe for broad recall
+- `yeoul search` with the `preflight_briefing` recipe before non-trivial work
 - `yeoul fact lookup` for subject/predicate checks
 - `yeoul timeline` for change history
 - `yeoul provenance` for explanation
