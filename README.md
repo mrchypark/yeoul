@@ -73,7 +73,7 @@ brew install yeoul
 
 Yeoul keeps agent behavior outside the core engine, so each coding assistant needs its own registration step.
 
-- Codex: use repository `AGENTS.md` and, optionally, install the reusable skill into `~/.codex/skills/yeoul-memory`
+- Codex: use repository `AGENTS.md` and, optionally, install the reusable skill into `~/.codex/skills/yeoul-memory`; see [`agent-pack/integrations/codex/install.md`](./agent-pack/integrations/codex/install.md)
 - Gemini CLI: use repository `GEMINI.md` and optional `.gemini/commands/*.toml`
 - Claude Code: use repository `CLAUDE.md` and optional `.claude/commands/*.md`
 

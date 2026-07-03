@@ -18,6 +18,8 @@ Replace `<DB_PATH>` below with your actual Yeoul database path, or document your
 
 Codex understands repository guidance through `AGENTS.md`. In the local Codex runtime, reusable skills are also loaded from `~/.codex/skills/<skill-name>`.
 
+For the full Codex placement guide, including the CLI, user-level database, reusable skill, repository `AGENTS.md`, and optional policy pack layout, see [`codex/install.md`](./codex/install.md).
+
 ### 1. Install the reusable Yeoul skill for Codex
 
 ```bash
