@@ -19,14 +19,7 @@ recipes:
     filters:
       fact_status: active
     expand:
-      hops: 2
       entity_types: [Project, Task, Repository, File, Issue, Document, Person, Decision]
-    ranking:
-      graph_distance: 0.3
-      recency: 0.25
-      semantic_similarity: 0.2
-      provenance: 0.15
-      confidence: 0.1
 
   project_memory:
     description: Retrieve project-level context.
