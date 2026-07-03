@@ -49,7 +49,7 @@ You should see:
 
 Plain-text episode ingest stores the source episode and makes it searchable, but it does not automatically materialize entities or facts from free text.
 To populate entities or facts, ingest structured JSON or use explicit fact lifecycle commands such as `yeoul fact assert`.
-If the subject entity is clear but does not exist yet, `yeoul fact assert --upsert-subject --subject-type TYPE --subject-name NAME` can create or update it while asserting the fact.
+For example, `yeoul fact assert --db ./yeoul.lbug --predicate DECIDED --upsert-subject --subject-type Project --subject-name Yeoul --value-text "Use Ladybug for storage" --supporting-episodes ep_000001` creates or updates the subject while asserting a fact.
 Use `--observed-at RFC3339` when the fact observation time should be explicit; otherwise `fact assert` inherits the first non-empty `observed_at` from its supporting episodes, then falls back to system time.
 
 ## Next steps

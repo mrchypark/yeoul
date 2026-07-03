@@ -16,7 +16,7 @@ When a message contains:
 - a status change
 - a confirmed dependency or relationship
 remember it by writing a context/evidence episode to Yeoul.
-When the subject entity and predicate are clear, assert or supersede a fact supported by that episode.
+When the subject, claim, scope/time-status, and supporting context are clear, assert or supersede a fact supported by that episode; otherwise ask a focused clarification or keep it episode-only.
 
 ## Retrieval behavior
 When querying memory:

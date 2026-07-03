@@ -19,8 +19,8 @@ When a conversation produces durable memory:
 
 1. Search first with `yeoul search`, `yeoul fact lookup`, `yeoul timeline`, or `yeoul provenance`.
 2. Store self-contained context with `yeoul ingest episode`.
-3. Assert the durable claim with `yeoul fact assert --supporting-episodes ...` only when the subject and predicate are clear.
-4. Use `--cardinality one` only when active facts in the same subject/predicate slot should be replaced.
+3. Assert the durable claim with `yeoul fact assert --supporting-episodes ...` only when the subject, claim, scope/time-status, and supporting context are clear; otherwise ask a focused clarification or keep it episode-only.
+4. Use `--cardinality one` only when overlapping active facts in the same subject/predicate slot should be replaced.
 5. Use `yeoul fact supersede` or `yeoul fact retract` for lifecycle changes instead of editing old facts.
 6. Use `--as-of` for knowledge/lifecycle time and `--valid-at` for domain validity.
 7. Treat `rax` as a derived retrieval index; Ladybug-backed Yeoul records remain canonical.
