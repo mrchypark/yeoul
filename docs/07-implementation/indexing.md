@@ -58,6 +58,18 @@ Where enabled, full-text search should be used for:
 Vector search should remain optional and additive.
 It should not replace entity, fact, and provenance-oriented retrieval.
 
+## Derived retrieval runtime
+
+When Yeoul uses an external retrieval runtime such as `rax`, the indexing boundary is a projection layer.
+
+That means:
+- Ladybug-backed Yeoul records remain canonical
+- projection records are rebuilt from canonical records
+- retrieval runtime indexes may be dropped and rebuilt without losing memory truth
+- final search responses should hydrate canonical Yeoul records before provenance or lifecycle-sensitive output is returned
+
+Explicit index commands keep `projection.ndjson` for inspection. Managed search cache rebuilds can stream the same projection into the bundled rax FFI runtime and keep only Yeoul's manifest plus the derived `.rax` store.
+
 ## Benchmark responsibility
 Any new index addition should include:
 - expected target query

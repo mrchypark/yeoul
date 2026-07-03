@@ -71,8 +71,46 @@ Run retrieval queries.
 #### Examples
 ```bash
 yeoul search --db ./yeoul.lbug --query "recent decisions about ladybug"
+yeoul search --db ./yeoul.lbug --query "recent decisions about rax" --backend rax
 yeoul search --db ./yeoul.lbug --entity project:yeoul --window 30d
 ```
+
+#### Behavior
+- defaults to `--backend auto`
+- keeps Ladybug-backed Yeoul records as canonical truth
+- may use the bundled rax FFI runtime as a derived retrieval signal
+- falls back to core Yeoul search in `auto` mode when the rax runtime is unavailable
+- fails on rax errors when `--backend rax` is explicitly requested
+
+### `yeoul context`
+Build a bounded, factual context bundle from one scoped search response.
+
+#### Example
+```bash
+yeoul context --db ./yeoul.lbug --query "recent decisions about rax" --json
+```
+
+### `yeoul index`
+Manage derived retrieval projections.
+
+#### Subcommands
+- `build`
+- `rebuild`
+- `verify`
+- `status`
+- `publish-rax`
+
+#### Examples
+```bash
+yeoul index build --db ./yeoul.lbug --root ~/.local/share/yeoul/index
+yeoul index verify --db ./yeoul.lbug --root ~/.local/share/yeoul/index
+yeoul index publish-rax --root ~/.local/share/yeoul/index --store ~/.local/share/yeoul/rax/projection.rax
+```
+
+#### Behavior
+- treats the index as a derived artifact, not canonical truth
+- rebuilds or validates projection state against the Ladybug-backed Yeoul database
+- can publish Yeoul-owned projections into a rax FFI-backed `.rax` retrieval index
 
 ### `yeoul neighborhood`
 Expand around an entity or fact.

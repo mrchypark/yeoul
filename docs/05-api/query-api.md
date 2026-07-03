@@ -81,6 +81,7 @@ type ScopeFilter struct {
 
 type TemporalFilter struct {
     AsOf        *time.Time `json:"as_of,omitempty"`
+    ValidAt     *time.Time `json:"valid_at,omitempty"`
     ObservedFrom *time.Time `json:"observed_from,omitempty"`
     ObservedTo   *time.Time `json:"observed_to,omitempty"`
     ValidFrom    *time.Time `json:"valid_from,omitempty"`
@@ -106,9 +107,10 @@ type Include struct {
 
 - `space_id` partitions multiple logical memory spaces in one Yeoul database. Default: `default`.
 - `group_ids` are application-level partitions such as project, thread, workspace, or customer account.
-- `as_of` means "evaluate the memory state as of this timestamp".
+- `as_of` means "evaluate the Yeoul knowledge and lifecycle state as of this timestamp".
+- `valid_at` means "evaluate domain-world validity at this timestamp"; do not infer it from `as_of`.
 - `observed_*` filters refer to source-world observation time.
-- `valid_*` filters refer to fact validity intervals.
+- `valid_from` and `valid_to` filters refer to fact validity interval overlap.
 - `include_inactive=false` means the engine should prefer active facts only.
 - Pagination must be cursor-based for result sets that are not naturally singleton.
 
@@ -228,7 +230,8 @@ type IncludedRecords struct {
 
 ### Semantics
 
-- `mode=hybrid` is the default and may combine keyword, vector, and graph-aware reranking.
+- `mode=hybrid` is the default and may combine sparse text matching, graph-aware expansion, and backend rerank signals when available.
+- `mode=semantic` may use sparse token relevance plus a dependency-free character n-gram vector fallback for near-text matches.
 - `anchor_ids` bias results toward graph-local context without exposing raw traversal details.
 - `types` restrict the result set; default is `fact, episode, entity`.
 - `predicates` act as a soft filter when searching facts.
@@ -431,9 +434,10 @@ All query families inherit Yeoul temporal semantics.
 
 1. `as_of` is a point-in-time read.
 2. If `as_of` is set, `include_inactive=false` means only records active at that time are visible.
-3. `observed_from`/`observed_to` filter by when information was observed in the source world.
-4. `valid_from`/`valid_to` filter by the fact validity interval.
-5. Timeline queries may ignore `as_of` when the caller explicitly wants historical events over a range.
+3. If `as_of` and `include_inactive=true` are both set, lifecycle-inactive fact revisions known by that time may also be returned.
+4. `observed_from`/`observed_to` filter by when information was observed in the source world.
+5. `valid_at`, `valid_from`, and `valid_to` filter by domain validity time.
+6. Timeline queries may ignore `as_of` when the caller explicitly wants historical events over a range.
 
 ## Ranking semantics
 

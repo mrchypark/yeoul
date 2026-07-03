@@ -144,6 +144,12 @@ Read methods that accept `TemporalFilter` must obey the temporal rules defined i
 ### 4. Lifecycle correctness
 
 `SupersedeFact` and `RetractFact` must preserve historical state rather than overwrite or delete it.
+`AssertFact` with `FactInput.Cardinality = "one"` supersedes active facts in the same `space_id + subject_id + predicate` slot when their validity intervals overlap. Empty cardinality or `"many"` preserves append-only assertion behavior.
+`UpsertEntity` may use `EntityInput.StableKey` when the caller has a durable identity key; generated IDs should come from namespace, type, and stable key rather than mutable display names.
+
+### 4.1 Context construction
+
+Context construction is outside the core `Engine` interface. Use `pkg/retrieval.BuildContext(searchResponse, options)` to turn one scoped `SearchResponse` into bounded typed context blocks.
 
 ### 5. Agent boundary
 
