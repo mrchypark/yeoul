@@ -366,7 +366,7 @@ func TestCLIPolicyValidateAndListRecipes(t *testing.T) {
 	}
 
 	recipes := runCLI("policy", "list-recipes", "--path", packPath)
-	if !strings.Contains(recipes, "recent_context") || !strings.Contains(recipes, "project_memory") {
+	if !strings.Contains(recipes, "recent_context") || !strings.Contains(recipes, "preflight_briefing") || !strings.Contains(recipes, "project_memory") {
 		t.Fatalf("expected recipe list output, got %q", recipes)
 	}
 }

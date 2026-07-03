@@ -33,6 +33,17 @@ yeoul search --db "$YEOUL_DB" \
   --include-related
 ```
 
+Before non-trivial work, use the preflight recipe to retrieve active context that may change the plan:
+
+```bash
+yeoul search --db "$YEOUL_DB" \
+  --query "what should I check before working on release automation?" \
+  --group-id "$YEOUL_GROUP" \
+  --policy-path ./agent-pack \
+  --recipe preflight_briefing \
+  --include-related
+```
+
 ## Check whether a fact already exists
 
 ```bash

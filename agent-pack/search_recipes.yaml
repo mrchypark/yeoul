@@ -13,6 +13,14 @@ recipes:
       graph_distance: 0.2
       confidence: 0.1
 
+  preflight_briefing:
+    description: Retrieve active context an agent should check before starting non-trivial work.
+    strategy: neighborhood
+    filters:
+      fact_status: active
+    expand:
+      entity_types: [Project, Task, Repository, File, Issue, Document, Person, Decision]
+
   project_memory:
     description: Retrieve project-level context.
     strategy: neighborhood
