@@ -25,26 +25,31 @@ case "${target_os}/${target_arch}" in
   darwin/amd64)
     assets=("liblbug-osx-x86_64.tar.gz" "liblbug-osx-universal.tar.gz")
     dest_dir="${module_dir}/lib/dynamic/darwin"
+    cgo_dir="${module_dir}/lib"
     runtime_files=("liblbug.dylib" "liblbug.0.dylib")
     ;;
   darwin/arm64)
     assets=("liblbug-osx-arm64.tar.gz" "liblbug-osx-universal.tar.gz")
     dest_dir="${module_dir}/lib/dynamic/darwin"
+    cgo_dir="${module_dir}/lib"
     runtime_files=("liblbug.dylib" "liblbug.0.dylib")
     ;;
   linux/amd64)
     assets=("liblbug-linux-x86_64.tar.gz")
     dest_dir="${module_dir}/lib/dynamic/linux-amd64"
+    cgo_dir="${module_dir}/lib"
     runtime_files=("liblbug.so" "liblbug.so.0")
     ;;
   linux/arm64)
     assets=("liblbug-linux-aarch64.tar.gz")
     dest_dir="${module_dir}/lib/dynamic/linux-arm64"
+    cgo_dir="${module_dir}/lib"
     runtime_files=("liblbug.so" "liblbug.so.0")
     ;;
   windows/amd64)
     assets=("liblbug-windows-x86_64.zip")
     dest_dir="${module_dir}/lib/dynamic/windows"
+    cgo_dir="${module_dir}/lib"
     runtime_files=("lbug_shared.dll" "lbug_shared.lib")
     ;;
   *)
@@ -61,7 +66,7 @@ if [[ "${module_version}" =~ -[0-9]{14}-[0-9a-f]{12}$ ]]; then
   release_ref="latest"
 fi
 
-mkdir -p "${dest_dir}"
+mkdir -p "${dest_dir}" "${cgo_dir}"
 
 asset=""
 archive_path=""
@@ -113,12 +118,13 @@ for runtime_file in "${runtime_files[@]}"; do
     exit 1
   fi
   cp -L "${found_file}" "${dest_dir}/${runtime_file}"
+  cp -L "${found_file}" "${cgo_dir}/${runtime_file}"
 done
 
-if [[ ! -f "${module_dir}/lbug.h" ]]; then
+if [[ ! -f "${cgo_dir}/lbug.h" ]]; then
   header_file="$(find "${temp_dir}" \( -type f -o -type l \) -name 'lbug.h' -print -quit || true)"
   if [[ -n "${header_file}" ]]; then
-    cp -L "${header_file}" "${module_dir}/lbug.h"
+    cp -L "${header_file}" "${cgo_dir}/lbug.h"
   fi
 fi
 

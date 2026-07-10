@@ -105,7 +105,7 @@ stage_rax_runtime() {
 case "${target_os}/${target_arch}" in
   linux/amd64)
     mkdir -p "${runtime_root}"
-    src_dir="${module_dir}/lib/dynamic/linux-amd64"
+    src_dir="${module_dir}/lib"
     cp "${src_dir}/liblbug.so" "${runtime_root}/liblbug.so"
     cp "${src_dir}/liblbug.so" "${runtime_root}/liblbug.so.0"
     if command -v patchelf >/dev/null 2>&1 && ldd "${binary_path}" 2>/dev/null | grep -q 'liblbug'; then
@@ -114,7 +114,7 @@ case "${target_os}/${target_arch}" in
     ;;
   linux/arm64)
     mkdir -p "${runtime_root}"
-    src_dir="${module_dir}/lib/dynamic/linux-arm64"
+    src_dir="${module_dir}/lib"
     cp "${src_dir}/liblbug.so" "${runtime_root}/liblbug.so"
     cp "${src_dir}/liblbug.so" "${runtime_root}/liblbug.so.0"
     if command -v patchelf >/dev/null 2>&1 && ldd "${binary_path}" 2>/dev/null | grep -q 'liblbug'; then
@@ -123,7 +123,7 @@ case "${target_os}/${target_arch}" in
     ;;
   darwin/amd64 | darwin/arm64)
     mkdir -p "${runtime_root}"
-    src_dir="${module_dir}/lib/dynamic/darwin"
+    src_dir="${module_dir}/lib"
     cp "${src_dir}/liblbug.dylib" "${runtime_root}/liblbug.dylib"
     cp "${src_dir}/liblbug.dylib" "${runtime_root}/liblbug.0.dylib"
     if otool -L "${binary_path}" 2>/dev/null | grep -q 'liblbug'; then
@@ -134,7 +134,7 @@ case "${target_os}/${target_arch}" in
   windows/amd64)
     runtime_root="dist/runtime/${target_os}_${target_arch}/bin"
     mkdir -p "${runtime_root}"
-    src_dir="${module_dir}/lib/dynamic/windows"
+    src_dir="${module_dir}/lib"
     cp "${src_dir}/lbug_shared.dll" "${runtime_root}/lbug_shared.dll"
     ;;
   *)

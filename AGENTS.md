@@ -27,6 +27,9 @@ Prefer:
 - `yeoul timeline` for change history
 - `yeoul provenance` for explanation and supporting context
 
+Before planning, bulk exploration, implementation, review, or a final answer for non-trivial Yeoul repo work, run the `preflight_briefing` workflow from `skills/yeoul-memory/references/cli-workflows.md`.
+Prompt-injected memory summaries do not count as a Yeoul search. If `preflight_briefing` is missing, list recipes, use `recent_context` once as a fallback, and report that the policy pack is stale.
+
 Default behavior:
 - proactively search before recommendations, design choices, prioritization, status interpretation, or conflict resolution
 - proactively search when the user refers to "before", "again", "still", "last time", "current status", or similar continuity cues

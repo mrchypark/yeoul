@@ -71,13 +71,13 @@ jobs:
           module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
           case "${{ matrix.goos }}/${{ matrix.goarch }}" in
             darwin/*)
-              export DYLD_LIBRARY_PATH="${module_dir}/lib/dynamic/darwin${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+              export DYLD_LIBRARY_PATH="${module_dir}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
               ;;
             linux/amd64)
-              export LD_LIBRARY_PATH="${module_dir}/lib/dynamic/linux-amd64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+              export LD_LIBRARY_PATH="${module_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
               ;;
             linux/arm64)
-              export LD_LIBRARY_PATH="${module_dir}/lib/dynamic/linux-arm64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+              export LD_LIBRARY_PATH="${module_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
               ;;
           esac
           go test ./...
@@ -133,7 +133,7 @@ jobs:
 
       - name: Run tests
         run: |
-          export PATH="$(go list -f '{{.Dir}}' -m github.com/LadybugDB/go-ladybug)/lib/dynamic/windows:$PATH"
+          export PATH="$(go list -f '{{.Dir}}' -m github.com/LadybugDB/go-ladybug)/lib:$PATH"
           go test ./...
 
   release-unix:

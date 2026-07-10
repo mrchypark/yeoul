@@ -25,6 +25,8 @@ Search Yeoul before answering when:
 - a new fact may conflict with existing memory
 - you need provenance or change history
 
+For Yeoul repo work, and for any non-trivial task where prior context might matter, run the `preflight_briefing` search from `references/cli-workflows.md` before planning, bulk exploration, implementation, or a final answer. Injected skill text, remembered summaries in the prompt, and prior conversation context do not count as a Yeoul search.
+
 Prefer:
 - `yeoul search` with the `recent_context` recipe for broad recall
 - `yeoul search` with the `preflight_briefing` recipe before non-trivial work
@@ -36,6 +38,7 @@ Prefer:
 Default behavior:
 - proactively search before recommendations, design choices, prioritization, status interpretation, or conflict resolution
 - proactively search when the user refers to earlier decisions, previous attempts, current status, or continuity across work
+- if `preflight_briefing` is unavailable, validate/list recipes, use `recent_context` once as a fallback, and say the policy pack needs syncing
 - skip lookup only when the task is clearly self-contained and prior memory is unlikely to matter
 
 When a decision is required:

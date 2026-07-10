@@ -10,11 +10,12 @@ For normal work, prefer a single user-level database rather than a project-local
 export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
 export YEOUL_GROUP="project:yeoul"
 export YEOUL_PROJECT_ID="repo:mrchypark-yeoul:project:yeoul"
+export YEOUL_REPOSITORY_ID="repo:mrchypark-yeoul:repository:yeoul"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
 Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
-`$YEOUL_GROUP` scopes searches and episode writes. `fact assert` does not take `--group-id`; use `$YEOUL_PROJECT_ID` or repo namespace `repo:mrchypark/yeoul` plus stable keys for fact subjects instead.
+`$YEOUL_GROUP` scopes searches and episode writes. Use `$YEOUL_PROJECT_ID` for broad project continuity and `$YEOUL_REPOSITORY_ID` for repo-specific fact lookups. `fact assert` does not take `--group-id`; use an existing subject ID or upsert with repo namespace `repo:mrchypark/yeoul` plus stable keys.
 
 ## Search current context
 
@@ -33,16 +34,18 @@ yeoul search --db "$YEOUL_DB" \
   --include-related
 ```
 
-Before non-trivial work, use the preflight recipe to retrieve active context that may change the plan:
+Before non-trivial Yeoul repo work, run this preflight before planning, bulk exploration, implementation, or a final answer:
 
 ```bash
 yeoul search --db "$YEOUL_DB" \
-  --query "what should I check before working on release automation?" \
+  --query "what should I check before working on this task?" \
   --group-id "$YEOUL_GROUP" \
   --policy-path ./agent-pack \
   --recipe preflight_briefing \
   --include-related
 ```
+
+If `preflight_briefing` is missing, run `yeoul policy list-recipes --path ./agent-pack`, use `recent_context` once as a fallback, and report that the policy pack is stale.
 
 ## Check whether a fact already exists
 
