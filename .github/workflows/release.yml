@@ -36,6 +36,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate Yeoul memory guidance contract
+        if: matrix.goos == 'linux'
+        run: sh scripts/ci/check-yeoul-memory-guidance.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -65,6 +69,28 @@ jobs:
         env:
           RELEASE_TARGET: "${{ matrix.goos }}-${{ matrix.goarch }}"
         run: goreleaser build --snapshot --clean --single-target
+
+      - name: Smoke Yeoul memory guidance
+        if: matrix.goos == 'linux'
+        run: |
+          yeoul_bin=
+          for candidate in "$PWD"/dist/*/bin/yeoul; do
+            [ -x "${candidate}" ] || continue
+            if [ -n "${yeoul_bin}" ]; then
+              printf 'multiple Yeoul binaries found: %s and %s\n' "${yeoul_bin}" "${candidate}" >&2
+              exit 1
+            fi
+            yeoul_bin=${candidate}
+          done
+          if [ -z "${yeoul_bin}" ]; then
+            printf 'no built Yeoul binary found under dist/*/bin/yeoul\n' >&2
+            exit 1
+          fi
+          module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
+          runtime_dir="$PWD/dist/runtime/${{ matrix.goos }}_${{ matrix.goarch }}/lib"
+          export LD_LIBRARY_PATH="${module_dir}/lib:${runtime_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+          export YEOUL_BIN="${yeoul_bin}"
+          scripts/ci/smoke-yeoul-memory-guidance.sh
 
       - name: Run tests
         run: |

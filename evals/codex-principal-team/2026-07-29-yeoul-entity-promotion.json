@@ -1,0 +1,57 @@
+{
+  "task": "Improve Codex entity-rich Yeoul memory guidance from session evidence",
+  "large_model_actions": 9,
+  "small_model_actions": 0,
+  "external_review_calls": 0,
+  "external_review_adopted": 0,
+  "skills_used": [
+    "codex-principal-team",
+    "yeoul-memory",
+    "harvest-work-patterns",
+    "skillopt-skill-optimization",
+    "review-workflow"
+  ],
+  "new_skills": [],
+  "scripts_used": [
+    "scripts/ci/check-yeoul-memory-guidance.sh",
+    "scripts/ci/smoke-yeoul-memory-guidance.sh"
+  ],
+  "new_scripts": [
+    "scripts/ci/check-yeoul-memory-guidance.sh",
+    "scripts/ci/smoke-yeoul-memory-guidance.sh"
+  ],
+  "manual_activities": [
+    "integrated audit findings and fixed two final documentation inconsistencies",
+    "reported the cross-repository installed-skill synchronization dependency"
+  ],
+  "failures": [
+    "the first smoke attempt was rejected before execution because its cleanup used rm -rf",
+    "the first review found a non-fail-fast documented smoke, an absent project ID, grep-only CI coverage, and inconsistent privacy wording"
+  ],
+  "rework_items": [
+    "extracted one fail-closed disposable-database smoke and wired it after the Linux build",
+    "restored project:yeoul continuity and unified privacy guidance",
+    "corrected the rax repository namespace and aligned the evaluation privacy boundary"
+  ],
+  "tests_run": [
+    "SkillOpt selection: 41/100 baseline, 94/100 candidate, 100/100 slow update",
+    "SkillOpt held-out: 100/100 with no hard failures or regressions",
+    "Yeoul memory guidance content contract",
+    "normal installed-wrapper disposable-database smoke",
+    "forced-failure smoke retention probe",
+    "yeoul policy validate --path ./agent-pack --json",
+    "sh -n for both POSIX scripts",
+    "actionlint .github/workflows/release.yml",
+    "git diff --check",
+    "independent fix confirmation and full re-review with no actionable findings"
+  ],
+  "follow_up_candidates": [
+    "sync the accepted canonical repo skill one-way into the external skills repository and restart Codex",
+    "review the existing duplicate Repository entity cluster before any confirmed merge",
+    "measure future object-backed fact rate, lifecycle use, and episode disposition on a later session cohort"
+  ],
+  "parent_patch_count": 1,
+  "builder_patch_count": 2,
+  "worker_patch_count": 0,
+  "user_requested_delegation": false
+}

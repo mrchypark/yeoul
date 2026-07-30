@@ -9,13 +9,13 @@ For normal work, prefer a single user-level database rather than a project-local
 ```bash
 export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
 export YEOUL_GROUP="project:yeoul"
-export YEOUL_PROJECT_ID="repo:mrchypark-yeoul:project:yeoul"
-export YEOUL_REPOSITORY_ID="repo:mrchypark-yeoul:repository:yeoul"
+export YEOUL_PROJECT_ID="project:yeoul"
+export YEOUL_REPOSITORY_ID="repo:mrchypark-yeoul:repository:mrchypark-yeoul"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
 Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
-`$YEOUL_GROUP` scopes searches and episode writes. Use `$YEOUL_PROJECT_ID` for broad project continuity and `$YEOUL_REPOSITORY_ID` for repo-specific fact lookups. `fact assert` does not take `--group-id`; use an existing subject ID or upsert with repo namespace `repo:mrchypark/yeoul` plus stable keys.
+`$YEOUL_GROUP` scopes searches and episode writes. `$YEOUL_PROJECT_ID` preserves the current established project subject ID in the user database; apply the canonical namespace and stable-key conventions below to newly upserted entities. Use `$YEOUL_PROJECT_ID` for broad project continuity and `$YEOUL_REPOSITORY_ID` for repo-specific fact lookups. `fact assert` does not take `--group-id`; use an existing subject ID or upsert with repo namespace `repo:mrchypark/yeoul` plus stable keys.
 
 ## Search current context
 
@@ -52,7 +52,7 @@ If `preflight_briefing` is missing, run `yeoul policy list-recipes --path ./agen
 ```bash
 yeoul fact lookup --db "$YEOUL_DB" \
   --subject-id "$YEOUL_PROJECT_ID" \
-  --predicate USES_STORAGE_ENGINE \
+  --predicate DECIDED \
   --group-id "$YEOUL_GROUP" \
   --include-inactive
 ```
@@ -81,7 +81,11 @@ Episode content should preserve the background, evidence, context, and source ne
 Match episode detail to the fact type: decisions need context/options/why/tradeoffs; status needs previous/new state and as-of time; corrections need wrong/right/reason; benchmarks need setup/metric/result/decision impact; ownership needs owner/scope; dependencies/relationships need subject/object/relation/evidence; preferences need holder/scope/default; definitions need term/scope/meaning; repeated problems need symptom/root cause/resolution; rules need scope/exceptions.
 First decide whether the exchange contains a fact-worthy claim or only episode-worthy context. If it is fact-worthy but missing the subject, claim, scope, time/status, or supporting context needed for a reliable fact, ask a focused clarification instead of asserting a weak fact.
 
-Do not store secrets, credentials, personal/customer data, or verbatim private content, even with confirmation; redact or omit it. Before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped.
+Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win. Before implicit writes to the global database, confirm exact fact text and scope unless the user explicitly requested the write in the current turn and the content is non-sensitive and repo-scoped.
+
+Before the final answer for a substantive cycle, classify the outcome as no memory, episode-only context, a new durable fact, or a lifecycle change. For an authorized confirmed durable claim, do not stop after episode ingest because an entity is missing. Select the subject namespace, type, canonical name, and stable key; the predicate; and either a reusable object entity or `value_text`. This checkpoint does not make every episode a fact.
+
+Read-only searches and memory-action planning may be delegated. A delegated agent must not write a shared or user-level database unless the user, repository policy, or owning agent explicitly delegated that exact write scope. Neither Yeoul Core nor policy YAML automatically extracts entities or promotes facts.
 
 For decisions, record self-contained context before asserting the decision fact:
 
@@ -162,7 +166,7 @@ Action:
 Status: reverted
 ```
 
-Use `fact supersede --confirm` only when a previously asserted current-status fact needs a lifecycle update. Keep the original contract and outcome episodes as provenance.
+Use `fact supersede --confirm` only when a previously asserted current-status fact needs a lifecycle update. Keep the original contract and outcome episodes as provenance. A `SUPERSEDES` assertion never substitutes for `fact supersede`. Use `--as-of` for what Yeoul knew then and `--valid-at` for what was true then.
 
 For file-backed content:
 
@@ -182,38 +186,50 @@ When the subject entity already exists, assert the fact directly:
 
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
-  --predicate HAS_DECISION \
+  --predicate DECIDED \
   --subject-id "$YEOUL_PROJECT_ID" \
-  --value-text "Yeoul uses one user-level database for normal work" \
+  --upsert-object \
+  --object-namespace repo:mrchypark/yeoul \
+  --object-type Decision \
+  --object-name "Use one user-level Yeoul database" \
+  --object-stable-key user-level-database-default \
   --observed-at 2026-04-17T00:00:00Z \
   --supporting-episodes ep_000003
 ```
 
-When the subject is clear but the entity has not been created yet, let the CLI create or update it before asserting the fact:
+When the subject is clear but the entity has not been created yet, let the CLI create or update the subject and a reusable object atomically:
 
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
-  --predicate HAS_DECISION \
+  --predicate DECIDED \
   --upsert-subject \
   --subject-namespace repo:mrchypark/yeoul \
   --subject-type Project \
   --subject-name Yeoul \
   --subject-stable-key yeoul \
-  --value-text "Yeoul uses one user-level database for normal work" \
+  --upsert-object \
+  --object-namespace repo:mrchypark/yeoul \
+  --object-type Decision \
+  --object-name "Use one user-level Yeoul database" \
+  --object-stable-key user-level-database-default \
   --supporting-episodes ep_000003
 ```
 
 If `--observed-at` is omitted, `fact assert` uses the first non-empty `observed_at` from the supporting episodes, then falls back to system time. Pass `--observed-at` explicitly when the fact observation time differs from the episode time. The CLI records the basis in metadata, for example `observed_at_basis=system_time_default`.
 
-For relationships, the object can be upserted in the same command:
+For another relationship, the object can be upserted in the same command:
 
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
-  --predicate USES_STORAGE_ENGINE \
+  --predicate DEPENDS_ON \
   --upsert-subject --subject-namespace repo:mrchypark/yeoul --subject-type Project --subject-name Yeoul --subject-stable-key yeoul \
-  --upsert-object --object-namespace repo:mrchypark/yeoul --object-type Database --object-name Ladybug --object-stable-key ladybug \
+  --upsert-object --object-namespace repo:mrchypark/rax --object-type Repository --object-name mrchypark/rax --object-stable-key mrchypark/rax \
   --supporting-episodes ep_000001
 ```
+
+Use a named referent as an object entity when future work should reuse, filter, or traverse it. Use `value_text` for a scalar, status, short conclusion, or opaque text. Do not create an entity for every noun.
+
+Select namespace, type, canonical name, and stable key explicitly. For Repository entities, use namespace `repo:<owner>/<repo>` and stable key `<owner>/<repo>` without repeating the namespace. Prefer real external IDs for other durable entities. Ontology patterns include `Project DECIDED Decision`, `Person OWNS Repository` or `Task`, component `DEPENDS_ON` component, and record `MENTIONED_IN Document`; a domain pack may use `Role` as the owner type when it declares that type.
 
 Keep episode-only when the content is only context, evidence, ambiguous, exploratory, raw status/progress, implementation detail, benchmark output, or review note and does not establish a durable claim. If it appears fact-worthy but lacks a stable subject/predicate or required context, ask a focused clarification before asserting.
 
@@ -234,6 +250,19 @@ yeoul fact retract --confirm --db "$YEOUL_DB" \
   --id fact_bad \
   --reason "incorrect extraction"
 ```
+
+## Verify a completed write
+
+After writing, read the structured memory back before reporting completion:
+
+```bash
+yeoul fact lookup --db "$YEOUL_DB" --subject-id "$YEOUL_PROJECT_ID" --predicate DECIDED --include-inactive --json
+yeoul provenance --db "$YEOUL_DB" --fact fact_001 --max-depth 2 --json
+yeoul neighborhood --db "$YEOUL_DB" --fact fact_001 --hops 1 --json
+yeoul timeline --db "$YEOUL_DB" --fact fact_001 --descending --json
+```
+
+Use `fact lookup` and `provenance` for every fact write, `neighborhood` for relationships, and `timeline` for lifecycle changes. Use `yeoul context` when a bounded agent-ready retrieval bundle is needed.
 
 ## Safe maintenance
 

@@ -65,12 +65,16 @@ Do not store:
 - acknowledgements or low-signal chat
 - unsupported guesses
 - duplicate summaries of the same event
+- secrets, credentials, or private keys
+
+Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win.
 
 Do not treat every message as durable memory. Prefer quality over quantity.
 
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
 - prefer storing at the end of a decision, implementation, review, or correction cycle
+- before the final answer, classify the outcome as no memory, episode-only context, a new durable fact, or a lifecycle change
 - if the outcome is still ambiguous, defer writing until the state is clear instead of recording a weak summary
 
 ## Fact extraction loop
@@ -108,10 +112,15 @@ Do not let a product name, environment name, or one-off implementation detail be
 ## Write rules
 
 Use `ingest episode` or `ingest file` for source records.
-Use `fact assert` only when the subject and supporting episode are clear.
+For an authorized confirmed durable claim, do not stop after episode ingest because an entity is missing. Select the subject namespace, type, canonical name, and stable key; reuse matching entities or use `fact assert --upsert-subject` and `--upsert-object`.
+Use object entities for reusable named referents and `value_text` for scalar or opaque text. For a Repository entity, use namespace `repo:<owner>/<repo>` and stable key `<owner>/<repo>` without repeating the namespace; prefer real external IDs for other durable entities.
 Do not overwrite old facts when the state changes.
 Prefer lifecycle operations such as `fact supersede` and `fact retract` with an explicit reason.
+A `SUPERSEDES` assertion never substitutes for `fact supersede`. Use `--as-of` for knowledge time and `--valid-at` for domain-valid time.
 Preserve provenance when storing or summarizing memory.
+After writing, verify with `fact lookup` and `provenance`; use `neighborhood` for relationships and `timeline` for lifecycle changes.
+
+Subagents may search and propose memory actions, but only the owning agent may perform confirmed repo-scoped shared-database writes unless that exact write scope was explicitly delegated. Read-only or no-write instructions always win, and neither Yeoul Core nor policy YAML performs automatic entity extraction or fact promotion.
 
 ## Response rules
 
