@@ -63,9 +63,14 @@ Store memory only when the content is likely to matter later:
 
 Do not store:
 - acknowledgements
+- brainstorming that is still unsettled
 - low-signal chatter
 - unsupported guesses
+- duplicate summaries of the same event
 - destructive corrections without a reason
+- secrets, credentials, or private keys
+
+Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win.
 
 Default behavior:
 - when a durable outcome becomes clear, treat it as a memory-write candidate even if the user did not explicitly ask to save it
@@ -88,6 +93,17 @@ Keep raw progress, benchmark results, implementation logs, review notes, and exp
 Every fact must have at least one supporting episode.
 Episode content should fit the fact type: decisions need context/options/why/tradeoffs; status needs previous/new state and as-of time; corrections need wrong/right/reason; benchmarks need setup/metric/result/decision impact; ownership needs owner/scope; dependencies/relationships need subject/object/relation/evidence; preferences need holder/scope/default; definitions need term/scope/meaning; repeated problems need symptom/root cause/resolution; rules need scope/exceptions.
 
+## Structured-memory checkpoint
+
+At the end of a substantive decision, implementation, review, or correction cycle, and before the final answer, classify the outcome as no memory, episode-only context, a new durable fact, or a lifecycle change.
+
+1. Keep transient, ambiguous, exploratory, or unsupported material episode-only or do not store it.
+2. For a confirmed durable claim, do not stop after episode ingest merely because an entity is missing. Preserve the supporting episode, then select the subject namespace, type, canonical name, and stable key; the predicate; and either a reusable object entity or a text value.
+3. Check for an existing entity, active subject/predicate facts, and possible conflicts before creating or changing structured memory.
+4. If the write is authorized, complete the fact or lifecycle operation and read it back. If it is not authorized, give the owning agent the exact proposed memory action instead.
+
+This checkpoint does not require every episode to become a fact.
+
 When recording a decision, prefer storing more than the conclusion alone.
 Include, when available:
 - `Topic`: the decision topic or question
@@ -108,10 +124,25 @@ Do not let a one-off tool name, environment name, or implementation detail becom
 ## Write rules
 
 - Use `ingest episode` or `ingest file` for source episodes.
-- Use `fact assert` only when subject and supporting episodes are clear.
+- Use `fact assert` for a confirmed durable claim when its subject, predicate, scope, and supporting episodes are clear.
+- A missing entity is not a reason to stop at episode-only. Reuse an existing entity when identity matches; otherwise use `fact assert --upsert-subject` and, for a relationship target, `--upsert-object`.
+- Model a named referent as an object entity when future work should reuse, filter, or traverse it. Use `value_text` for a scalar, status, short conclusion, or opaque text. Do not create an entity for every noun.
+- Use one canonical identity scheme inside a scope. For a Repository entity, use namespace `repo:<owner>/<repo>` and stable key `<owner>/<repo>` without repeating the namespace. Prefer real external IDs for other durable entities; examples include file=`<owner>/<repo>:<path>` and issue=`<owner>/<repo>#<number>`.
+- Prefer ontology patterns when they fit: `Project DECIDED Decision`, `Person OWNS Repository` or `Task`, component `DEPENDS_ON` component, and record `MENTIONED_IN Document`. A domain pack may use `Role` as the owner type when it declares that type.
 - Use `fact supersede --confirm` for state changes rather than overwriting.
 - Use `fact retract --confirm` only with an explicit reason.
+- A `SUPERSEDES` assertion never substitutes for `fact supersede`.
+- Use `--cardinality one` only when overlapping active facts in the same subject/predicate slot should be replaced.
+- Use `--as-of` for what Yeoul knew then and `--valid-at` for what was true then.
+- After writing, verify with `fact lookup` and `provenance`; use `neighborhood` for relationships and `timeline` for lifecycle changes. Use `context` when a bounded agent-ready retrieval bundle is needed.
 - Use `admin compact` as dry-run first; treat apply as maintenance, not normal editing.
+
+## Authority and delegation
+
+- Read-only search, lookup, timeline, provenance, neighborhood, and planning may be delegated.
+- A delegated agent may propose a memory action, but must not write a shared or user-level database unless the user, repository policy, or owning agent explicitly delegated that exact write scope.
+- The owning agent validates the exact scope, subject, predicate, object or value, supporting episode, and lifecycle operation before a shared write. Proactive non-sensitive repo-scoped writes are allowed only when current instructions authorize them and all required fields are clear; otherwise ask.
+- Read-only or no-write instructions always win. Neither Yeoul Core nor policy YAML automatically extracts entities or promotes facts; these remain agent decisions.
 
 ## Response rules
 

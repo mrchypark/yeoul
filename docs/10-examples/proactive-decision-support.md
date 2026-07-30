@@ -20,6 +20,10 @@ mkdir -p "$(dirname "$YEOUL_DB")"
 
 Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
 
+## Privacy and authority
+
+Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win.
+
 ## Default loop
 
 ### 1. Recall before advising
@@ -62,7 +66,7 @@ During implementation, review, or debugging:
 
 ### 4. Capture durable outcomes at the end of a cycle
 
-When a decision, fix, status change, or correction becomes clear, store a source episode even if the user did not explicitly ask to save it.
+When a decision, fix, status change, or correction becomes clear, store its source episode, then classify the outcome as episode-only context, a new durable fact, or a lifecycle change. For an authorized confirmed durable claim, do not stop after episode ingest merely because an entity is missing. This does not require every episode to become a fact.
 
 For decisions, do not save only the conclusion when richer context is available.
 Prefer a compact decision record that preserves how the choice was made.
@@ -151,15 +155,25 @@ Current application:
 ### 5. Promote structured state only when clear
 
 Plain-text episode ingest does not automatically create entities or facts from free text.
-Use fact lifecycle commands only when the subject and supporting episode are clear.
+When the subject and supporting episode are clear, select namespace, type, canonical name, and stable key explicitly. Reuse matching entities or create the subject and reusable relationship object atomically:
 
 ```bash
 yeoul fact assert --db "$YEOUL_DB" \
-  --predicate HAS_STATUS \
-  --subject-id project_yeoul \
-  --value-text "active" \
+  --predicate DEPENDS_ON \
+  --upsert-subject \
+  --subject-namespace repo:mrchypark/yeoul \
+  --subject-type Project \
+  --subject-name Yeoul \
+  --subject-stable-key yeoul \
+  --upsert-object \
+  --object-namespace repo:mrchypark/rax \
+  --object-type Repository \
+  --object-name mrchypark/rax \
+  --object-stable-key mrchypark/rax \
   --supporting-episodes ep_000001
 ```
+
+For Repository entities, use namespace `repo:<owner>/<repo>` and stable key `<owner>/<repo>` without repeating the namespace. Prefer real external IDs for other durable entities. Use an object entity for a named referent future work should reuse or traverse; use `value_text` for a scalar, status, short conclusion, or opaque text.
 
 When a state changes, prefer superseding instead of overwriting:
 
@@ -172,6 +186,17 @@ yeoul fact supersede --confirm --db "$YEOUL_DB" \
   --supporting-episodes ep_000010 \
   --reason "status changed"
 ```
+
+A `SUPERSEDES` assertion never substitutes for `fact supersede`. Use `--as-of` for what Yeoul knew then and `--valid-at` for what was true then.
+
+Before reporting completion:
+
+1. Use `fact lookup` to confirm the active subject/predicate state.
+2. Use `provenance` to confirm the supporting episode and source.
+3. Use `neighborhood` to confirm relationship endpoints.
+4. Use `timeline` after supersede or retract operations.
+
+Subagents may search and propose memory actions, but must not write a shared database without explicit authority for that write scope. Neither Yeoul Core nor policy YAML performs automatic extraction or promotion.
 
 ## Save heuristics
 

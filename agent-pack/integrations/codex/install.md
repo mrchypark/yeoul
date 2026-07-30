@@ -20,6 +20,8 @@ Use this layout for normal Codex work:
 - `skills/yeoul-memory/` is the Codex skill. Install it under `~/.codex/skills/` when you want Codex to discover Yeoul behavior globally.
 - `agent-pack/` is the Yeoul policy pack. Keep it in a repository or shared policy location when you want CLI policy validation, ontology, episode rules, or search recipes.
 
+The repository's `skills/yeoul-memory/` directory is the canonical distributable source. Treat installed copies as derived artifacts: update them one-way from this directory, then restart Codex. Do not edit the installed copy independently.
+
 ## 1. Install the Yeoul CLI
 
 Install the latest release:
@@ -95,6 +97,7 @@ Write durable outcomes to Yeoul when they become clear:
 - validated benchmark or evaluation conclusions
 
 Preserve provenance. Store source context as episodes first, and assert facts only when the subject, claim, scope, and supporting episode are clear.
+For an authorized confirmed durable claim, do not stop after episode ingest because an entity is missing. Reuse matching entities or use `--upsert-subject` and `--upsert-object`, then verify with `fact lookup` and `provenance`.
 ```
 
 If the repository already has an `AGENTS.md`, merge this section instead of replacing existing project rules.
@@ -125,20 +128,10 @@ If `policy show --json` does not include `episode_rules.fact_promotion`, the ins
 
 ## 6. Smoke Test Codex Memory Use
 
-Run these commands from a repository with `AGENTS.md` installed:
+Run the repository smoke script from a checkout with `AGENTS.md` installed. It uses a disposable database, preserves it on failure, and removes it only after every assertion passes:
 
 ```sh
-export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
-yeoul ingest episode --db "$YEOUL_DB" \
-  --kind note \
-  --content "Codex Yeoul smoke test: this repository uses the global Yeoul database for durable memory." \
-  --source-kind note \
-  --source-external-ref codex-yeoul-smoke \
-  --group-id "repo:smoke-test"
-
-yeoul search --db "$YEOUL_DB" \
-  --query "Codex Yeoul smoke test global database" \
-  --group-id "repo:smoke-test"
+YEOUL_BIN="$HOME/.local/bin/yeoul" scripts/ci/smoke-yeoul-memory-guidance.sh
 ```
 
 Then ask Codex:
@@ -153,10 +146,13 @@ Expected behavior:
 - Codex searches before making or revisiting decisions.
 - Codex records durable outcomes only when the fact candidate is clear enough.
 - Codex asks a focused clarification when a fact-worthy claim lacks subject, scope, or supporting context.
+- Codex does not stop after episode ingest when an authorized confirmed durable claim has a clear subject.
+- Codex creates or reuses canonical subject and object entities.
+- Codex verifies the fact and provenance before reporting memory completion.
 
 ## Updating
 
-When Yeoul changes, update both surfaces:
+When Yeoul changes, update the installed skill one-way from the canonical repository source:
 
 ```sh
 curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.sh | bash
@@ -173,4 +169,4 @@ Restart Codex after updating the skill.
 - If Codex does not mention `yeoul-memory`, confirm `~/.codex/skills/yeoul-memory/SKILL.md` exists and restart Codex.
 - If `yeoul` is not found, run `~/.local/bin/yeoul --help` and add `~/.local/bin` to `PATH`.
 - If records appear in `./yeoul.lbug`, switch commands back to `$HOME/.local/share/yeoul/work-memory.lbug` unless you are running an isolated test.
-- Do not store secrets, credentials, private keys, or verbatim sensitive data in Yeoul. Redact or omit them.
+- Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win.
