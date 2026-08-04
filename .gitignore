@@ -1,1 +1,3 @@
 *.lbug
+go.work
+go.work.sum

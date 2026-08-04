@@ -66,17 +66,17 @@ func (s *enhancedStore) Save(state persistedState) error {
 	}
 	defer s.fileLock.Unlock()
 
-	// 변경 사항 확인 (로깅용)
+	// 변경 사항 확인
 	if s.loaded {
 		_, hasChanges := s.dirtyTracker.getDirtyState(state)
 		if !hasChanges {
-			// 변경 사항 없음
+			// 변경 사항 없음 - 메타데이터만 업데이트
 			s.saveMeta.recordSave()
 			return nil
 		}
 	}
 
-	// 항상 전체 상태를 저장 (ladybugStore가 delta 계산을 수행)
+	// 상태 저장 (ladybugStore가 delta 계산을 수행)
 	if err := s.baseStore.Save(state); err != nil {
 		return err
 	}
@@ -89,7 +89,6 @@ func (s *enhancedStore) Save(state persistedState) error {
 
 	// 컴팩션 제안 확인
 	if s.saveMeta.shouldCompact() {
-		// 자동 컴팩션은 하지 않고 로그만 남김
 		fmt.Fprintf(os.Stderr, "info: consider running compaction after %d saves\n", s.saveMeta.saveCount)
 	}
 

@@ -191,15 +191,6 @@ type RevisionStats struct {
 	MaxEntityRevisionsID    string         `json:"max_entity_revisions_id"`
 }
 
-// CompactRevisionResult는 리비전 컴팩션 결과를 나타냅니다.
-type CompactRevisionResult struct {
-	Compacted          bool `json:"compacted"`
-	RemovedRevisions   int  `json:"removed_revisions"`
-	RemainingRevisions int  `json:"remaining_revisions"`
-	FactsProcessed     int  `json:"facts_processed"`
-	EntitiesProcessed  int  `json:"entities_processed"`
-}
-
 // String은 CompactionResult의 문자열 표현을 반환합니다.
 func (r CompactionResult) String() string {
 	return "compacted"

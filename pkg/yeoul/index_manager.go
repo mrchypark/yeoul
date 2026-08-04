@@ -205,7 +205,13 @@ func (im *IndexManager) GetIndexStats() (map[string]int, error) {
 
 // sanitizeID는 Cypher 인젝션을 방지하기 위해 ID 문자열을 검증하고 정리합니다.
 func sanitizeID(id string) (string, error) {
-	// 영숫자, 하이픈, 언더스코어, 점만 허용
+	if len(id) == 0 {
+		return "", fmt.Errorf("empty ID")
+	}
+	// 영숫자, 하이픈, 언더스코어, 점만 허용 (최대 255자)
+	if len(id) > 255 {
+		return "", fmt.Errorf("ID too long: %d characters", len(id))
+	}
 	validID := regexp.MustCompile(`^[a-zA-Z0-9\-_\.]+$`)
 	if !validID.MatchString(id) {
 		return "", fmt.Errorf("invalid ID format: %s", id)
@@ -225,8 +231,7 @@ func (im *IndexManager) EnsureSpaceIndexes(spaceID string) error {
 		return fmt.Errorf("invalid space ID: %w", err)
 	}
 
-	// 매개변수화된 쿼리 사용 (Ladybug Cypher 지원 시)
-	// 현재 버전에서는 검증된 ID만 사용
+	// 검증된 ID는 영숫자, 하이픈, 언더스코어, 점만 포함하므로 안전한 문자열 보간 사용
 	indexes := []string{
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (s:Source) ON (s.space_id) WHERE s.space_id = '%s'", sanitizedID),
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (e:Episode) ON (e.space_id) WHERE e.space_id = '%s'", sanitizedID),

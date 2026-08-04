@@ -2,7 +2,7 @@ package yeoul
 
 import (
 	"context"
-	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -560,5 +560,5 @@ func interfaceEqual(a, b any) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+	return reflect.DeepEqual(a, b)
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Transaction은 트랜잭션을 관리합니다.
@@ -53,7 +55,7 @@ func (tm *TxManager) Begin() (*Transaction, error) {
 	}
 
 	tx := &Transaction{
-		id:        fmt.Sprintf("tx_%d", time.Now().UnixNano()),
+		id:        fmt.Sprintf("tx_%s", uuid.New().String()[:8]),
 		store:     tm.store,
 		snapshot:  *state,
 		current:   clonePersistedState(*state),
@@ -327,27 +329,15 @@ type TransactionManager interface {
 
 // TxOptions는 트랜잭션 옵션을 나타냅니다.
 type TxOptions struct {
-	ReadOnly       bool           `json:"read_only"`
-	Timeout        time.Duration  `json:"timeout"`
-	IsolationLevel IsolationLevel `json:"isolation_level"`
+	ReadOnly bool          `json:"read_only"`
+	Timeout  time.Duration `json:"timeout"`
 }
-
-// IsolationLevel은 격리 수준을 나타냅니다.
-type IsolationLevel string
-
-const (
-	IsolationLevelReadUncommitted IsolationLevel = "read_uncommitted"
-	IsolationLevelReadCommitted   IsolationLevel = "read_committed"
-	IsolationLevelRepeatableRead  IsolationLevel = "repeatable_read"
-	IsolationLevelSerializable    IsolationLevel = "serializable"
-)
 
 // DefaultTxOptions는 기본 트랜잭션 옵션을 반환합니다.
 func DefaultTxOptions() TxOptions {
 	return TxOptions{
-		ReadOnly:       false,
-		Timeout:        30 * time.Second,
-		IsolationLevel: IsolationLevelReadCommitted,
+		ReadOnly: false,
+		Timeout:  30 * time.Second,
 	}
 }
 

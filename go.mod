@@ -5,17 +5,15 @@ go 1.26
 require (
 	github.com/LadybugDB/go-ladybug v0.17.0
 	github.com/goccy/go-json v0.10.6
+	github.com/google/uuid v1.6.0
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/LadybugDB/go-ladybug => /tmp/go-ladybug
 
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/apache/arrow-go/v18 v18.6.0 // indirect
 	github.com/apache/thrift v0.23.0 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect

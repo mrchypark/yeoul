@@ -71,14 +71,14 @@ func (fl *fileLock) Unlock() error {
 		return nil
 	}
 
-	// 락 정보 제거
-	fl.removeLockInfo()
-
-	// flock 해제
+	// flock 해제 (먼저 해제해야 함)
 	err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN)
 	fl.file.Close()
 	fl.locked = false
 	fl.file = nil
+
+	// 락 정보 파일 제거
+	fl.removeLockInfo()
 
 	return err
 }
@@ -89,11 +89,7 @@ func (fl *fileLock) writeLockInfo() {
 		return
 	}
 
-	// 간단한 정보만 기록
-	fl.file.Truncate(0)
-	fl.file.Seek(0, 0)
-
-	// JSON 대신 간단한 형식 사용
+	// 파일 끝에 락 정보 기록 (Truncate/Seek 불필요)
 	data := []byte("pid: " + strconv.Itoa(os.Getpid()) + "\n")
 	fl.file.Write(data)
 }
