@@ -3,7 +3,6 @@ package yeoul
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -59,6 +58,11 @@ func (s *enhancedStore) Load() (*persistedState, error) {
 func (s *enhancedStore) Save(state persistedState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// 읽기 전용 모드에서는 저장 불가
+	if s.cfg.ReadOnly {
+		return fmt.Errorf("cannot save in read-only mode")
+	}
 
 	// 파일 락 획득
 	if err := s.fileLock.Lock(); err != nil {
@@ -158,6 +162,7 @@ type StoreStats struct {
 // enhancedMemoryStore는 개선된 인메모리 저장소입니다.
 type enhancedMemoryStore struct {
 	state persistedState
+	mu    sync.RWMutex
 }
 
 func newEnhancedMemoryStore() *enhancedMemoryStore {
@@ -167,11 +172,15 @@ func newEnhancedMemoryStore() *enhancedMemoryStore {
 }
 
 func (s *enhancedMemoryStore) Load() (*persistedState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	cloned := clonePersistedState(s.state)
 	return &cloned, nil
 }
 
 func (s *enhancedMemoryStore) Save(state persistedState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.state = state
 	return nil
 }
@@ -223,7 +232,3 @@ func DefaultCompactionOptions() CompactionOptions {
 	}
 }
 
-// getFilePath는 디렉토리 경로를 반환합니다.
-func getFilePath(path string) string {
-	return filepath.Dir(path)
-}

@@ -444,6 +444,15 @@ func (dt *dirtyTracker) syncTracker(state persistedState) {
 		}
 	}
 
+	// 삭제된 항목 제거
+	for id := range dt.sources {
+		if _, exists := state.Sources[id]; !exists {
+			if !dt.sources[id].isDirty {
+				delete(dt.sources, id)
+			}
+		}
+	}
+
 	for id, episode := range state.Episodes {
 		if entry, exists := dt.episodes[id]; exists {
 			if !entry.isDirty {
@@ -452,6 +461,15 @@ func (dt *dirtyTracker) syncTracker(state persistedState) {
 			}
 		} else {
 			dt.episodes[id] = dirtyEntry[Episode]{current: episode, original: episode}
+		}
+	}
+
+	// 삭제된 항목 제거
+	for id := range dt.episodes {
+		if _, exists := state.Episodes[id]; !exists {
+			if !dt.episodes[id].isDirty {
+				delete(dt.episodes, id)
+			}
 		}
 	}
 
@@ -466,6 +484,15 @@ func (dt *dirtyTracker) syncTracker(state persistedState) {
 		}
 	}
 
+	// 삭제된 항목 제거
+	for id := range dt.entities {
+		if _, exists := state.Entities[id]; !exists {
+			if !dt.entities[id].isDirty {
+				delete(dt.entities, id)
+			}
+		}
+	}
+
 	for id, fact := range state.Facts {
 		if entry, exists := dt.facts[id]; exists {
 			if !entry.isDirty {
@@ -474,6 +501,15 @@ func (dt *dirtyTracker) syncTracker(state persistedState) {
 			}
 		} else {
 			dt.facts[id] = dirtyEntry[Fact]{current: fact, original: fact}
+		}
+	}
+
+	// 삭제된 항목 제거
+	for id := range dt.facts {
+		if _, exists := state.Facts[id]; !exists {
+			if !dt.facts[id].isDirty {
+				delete(dt.facts, id)
+			}
 		}
 	}
 

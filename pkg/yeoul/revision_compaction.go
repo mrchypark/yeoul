@@ -58,7 +58,9 @@ func (rc *RevisionCompactor) CompactFactRevisions(state *persistedState) Compact
 
 // CompactEntityRevisions는 엔티티 리비전을 컴팩션합니다.
 func (rc *RevisionCompactor) CompactEntityRevisions(state *persistedState) CompactionResult {
-	result := CompactionResult{}
+	result := CompactionResult{
+		Version: state.Version,
+	}
 
 	// 엔티티별 리비전 그룹화
 	revisionsByEntity := make(map[string][]EntityRevision)

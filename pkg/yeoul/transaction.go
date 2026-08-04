@@ -44,8 +44,13 @@ func newTxManager(store stateStore) *TxManager {
 }
 
 // Begin는 새로운 트랜잭션을 시작합니다.
+// 주의: 이 메서드는 store.Load()를 포함하므로 외부 I/O가 발생합니다.
+// 동시 Begin() 호출은 동일한 스냅샷을 기반으로 하여 lost update가 발생할 수 있습니다.
+// 필요 시 외부 락으로 보호해야 합니다.
 func (tm *TxManager) Begin() (*Transaction, error) {
 	// Load()는 I/O 작업이므로 lock 없이 수행
+	// 동시 Begin() 호출 시 동일한 스냅샷이 반환될 수 있으므로
+	// 호출자가 외부 락으로 보호해야 합니다.
 	state, err := tm.store.Load()
 	if err != nil {
 		return nil, err
