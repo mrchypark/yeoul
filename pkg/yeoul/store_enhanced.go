@@ -200,10 +200,10 @@ func openEnhancedStore(cfg Config) (stateStore, error) {
 
 // CompactionResult는 컴팩션 결과를 나타냅니다.
 type CompactionResult struct {
-	DatabasePath       string `json:"database_path"`
-	Compacted          bool   `json:"compacted"`
-	RemovedRevisions   int    `json:"removed_revisions"`
-	RemainingRevisions int    `json:"remaining_revisions"`
+	Version            int  `json:"version"`
+	Compacted          bool `json:"compacted"`
+	RemovedRevisions   int  `json:"removed_revisions"`
+	RemainingRevisions int  `json:"remaining_revisions"`
 }
 
 // CompactionOptions는 컴팩션 옵션을 나타냅니다.

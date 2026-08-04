@@ -83,11 +83,14 @@ func (tm *TxManager) ListTransactions() []*TransactionInfo {
 
 	var infos []*TransactionInfo
 	for _, tx := range tm.transactions {
-		infos = append(infos, &TransactionInfo{
+		tx.mu.RLock()
+		info := &TransactionInfo{
 			ID:        tx.id,
 			Status:    string(tx.status),
 			StartTime: tx.startTime,
-		})
+		}
+		tx.mu.RUnlock()
+		infos = append(infos, info)
 	}
 	return infos
 }

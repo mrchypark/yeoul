@@ -1,7 +1,6 @@
 package yeoul
 
 import (
-	"fmt"
 	"sort"
 )
 
@@ -22,7 +21,7 @@ func NewRevisionCompactor(factLimit, entityLimit int) *RevisionCompactor {
 // CompactFactRevisions는 팩트 리비전을 컴팩션합니다.
 func (rc *RevisionCompactor) CompactFactRevisions(state *persistedState) CompactionResult {
 	result := CompactionResult{
-		DatabasePath: fmt.Sprintf("%d", state.Version),
+		Version: state.Version,
 	}
 
 	// 팩트별 리비전 그룹화

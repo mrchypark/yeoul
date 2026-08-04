@@ -53,7 +53,13 @@ func (fl *fileLock) Lock() error {
 
 		// 락이 이미 존재하는지 확인
 		if fl.isLockStale() {
+			// 현재 파일 포인터 닫고 stale 락 제거 후 다시 열기
+			file.Close()
 			fl.removeStaleLock()
+			file, err = os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+			if err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -98,7 +104,8 @@ func (fl *fileLock) writeLockInfo() {
 	}
 
 	data := []byte("pid: " + strconv.Itoa(os.Getpid()) + "\n")
-	fl.file.Write(data)
+	// 에러 무시 - 락 정보 기록 실패는 치명적이지 않음
+	_, _ = fl.file.Write(data)
 }
 
 // removeLockInfo는 락 정보 파일을 제거합니다.
