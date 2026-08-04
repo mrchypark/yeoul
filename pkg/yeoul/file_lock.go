@@ -107,11 +107,6 @@ func (fl *fileLock) writeLockInfo() {
 	_, _ = fl.file.Write(data)
 }
 
-// removeLockInfo는 락 정보 파일을 제거합니다.
-func (fl *fileLock) removeLockInfo() {
-	os.Remove(fl.path)
-}
-
 // isLockStale은 락이 오래되었는지 확인합니다.
 func (fl *fileLock) isLockStale() bool {
 	info, err := os.Stat(fl.path)
