@@ -75,6 +75,8 @@ func (fl *fileLock) Lock() error {
 }
 
 // Unlock은 파일 락을 해제합니다.
+// 락 파일은 삭제하지 않습니다 - isLockStale()이 ModTime 기반으로 처리합니다.
+// 파일을 삭제하면 다른 프로세스가 락을 획득한 직후 파일이 사라지는 크로스 프로세스 레이스가 발생합니다.
 func (fl *fileLock) Unlock() error {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
@@ -83,16 +85,13 @@ func (fl *fileLock) Unlock() error {
 		return nil
 	}
 
-	// flock 해제 (먼저 해제해야 함)
+	// flock 해제
 	err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN)
 	if cerr := fl.file.Close(); cerr != nil && err == nil {
 		err = cerr
 	}
 	fl.locked = false
 	fl.file = nil
-
-	// 락 정보 파일 제거
-	fl.removeLockInfo()
 
 	return err
 }
@@ -211,8 +210,23 @@ func (fl *fileLock) RLock() error {
 }
 
 // RUnlock은 읽기 락을 해제합니다.
+// 읽기 락은 여러 프로세스가 동시에 보유할 수 있으므로 lock 파일을 삭제하지 않습니다.
 func (fl *fileLock) RUnlock() error {
-	return fl.Unlock()
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
+	if fl.file == nil {
+		return nil
+	}
+
+	err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN)
+	if cerr := fl.file.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	fl.locked = false
+	fl.file = nil
+
+	return err
 }
 
 // IsLocked는 락이 획득되었는지 확인합니다.

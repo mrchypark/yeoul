@@ -524,6 +524,15 @@ func (dt *dirtyTracker) syncTracker(state persistedState) {
 		}
 	}
 
+	// 삭제된 항목 제거
+	for id := range dt.factRevisions {
+		if _, exists := state.FactRevisions[id]; !exists {
+			if !dt.factRevisions[id].isDirty {
+				delete(dt.factRevisions, id)
+			}
+		}
+	}
+
 	for id, revision := range state.EntityRevisions {
 		if entry, exists := dt.entityRevisions[id]; exists {
 			if !entry.isDirty {
@@ -535,6 +544,15 @@ func (dt *dirtyTracker) syncTracker(state persistedState) {
 		}
 	}
 
+	// 삭제된 항목 제거
+	for id := range dt.entityRevisions {
+		if _, exists := state.EntityRevisions[id]; !exists {
+			if !dt.entityRevisions[id].isDirty {
+				delete(dt.entityRevisions, id)
+			}
+		}
+	}
+
 	for id, watermark := range state.MigrationWatermarks {
 		if entry, exists := dt.watermarks[id]; exists {
 			if !entry.isDirty {
@@ -543,6 +561,15 @@ func (dt *dirtyTracker) syncTracker(state persistedState) {
 			}
 		} else {
 			dt.watermarks[id] = dirtyEntry[MigrationWatermark]{current: watermark, original: watermark}
+		}
+	}
+
+	// 삭제된 항목 제거
+	for id := range dt.watermarks {
+		if _, exists := state.MigrationWatermarks[id]; !exists {
+			if !dt.watermarks[id].isDirty {
+				delete(dt.watermarks, id)
+			}
 		}
 	}
 }

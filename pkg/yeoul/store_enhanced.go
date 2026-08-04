@@ -190,6 +190,8 @@ func (s *enhancedMemoryStore) Close() error {
 }
 
 func (s *enhancedMemoryStore) GetStats() StoreStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return StoreStats{
 		DatabasePath: "memory",
 		SaveCount:    0,
