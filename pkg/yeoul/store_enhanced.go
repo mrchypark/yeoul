@@ -167,7 +167,8 @@ func newEnhancedMemoryStore() *enhancedMemoryStore {
 }
 
 func (s *enhancedMemoryStore) Load() (*persistedState, error) {
-	return &s.state, nil
+	cloned := clonePersistedState(s.state)
+	return &cloned, nil
 }
 
 func (s *enhancedMemoryStore) Save(state persistedState) error {
@@ -184,7 +185,7 @@ func (s *enhancedMemoryStore) GetStats() StoreStats {
 		DatabasePath: "memory",
 		SaveCount:    0,
 		LastSaveTime: time.Time{},
-		Loaded:       false,
+		Loaded:       true,
 		ReadOnly:     false,
 	}
 }

@@ -45,14 +45,14 @@ func newTxManager(store stateStore) *TxManager {
 
 // Begin는 새로운 트랜잭션을 시작합니다.
 func (tm *TxManager) Begin() (*Transaction, error) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
-	// 현재 상태 스냅샷
+	// Load()는 I/O 작업이므로 lock 없이 수행
 	state, err := tm.store.Load()
 	if err != nil {
 		return nil, err
 	}
+
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 
 	tx := &Transaction{
 		id:        fmt.Sprintf("tx_%s", uuid.New().String()),

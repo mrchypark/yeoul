@@ -228,8 +228,9 @@ func TestStoreStats(t *testing.T) {
 		t.Errorf("expected save count 0, got %d", stats.SaveCount)
 	}
 
-	if stats.Loaded {
-		t.Error("expected not loaded initially")
+	// memory store는 항상 로드된 상태
+	if !stats.Loaded {
+		t.Error("expected loaded for memory store")
 	}
 }
 

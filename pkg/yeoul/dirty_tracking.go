@@ -199,7 +199,7 @@ func (dt *dirtyTracker) markFactDeleted(id string) {
 // getDirtyState는 변경된 항목만 포함된 상태를 반환합니다.
 func (dt *dirtyTracker) getDirtyState(current persistedState) (persistedState, bool) {
 	dirty := persistedState{
-		Version:             1,
+		Version:             current.Version,
 		Sequence:            current.Sequence,
 		Sources:             make(map[string]Source),
 		Episodes:            make(map[string]Episode),

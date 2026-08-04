@@ -53,14 +53,14 @@ func (im *IndexManager) EnsureIndexes() error {
 		"CREATE INDEX IF NOT EXISTS FOR (r:EntityRevision) ON (r.entity_id)",
 	}
 
+	var lastErr error
 	for _, index := range indexes {
 		if err := im.store.exec(index); err != nil {
-			// 인덱스 생성 실패는 경고만 남기고 계속 진행
-			fmt.Printf("warning: failed to create index: %v\n", err)
+			lastErr = fmt.Errorf("failed to create index: %w", err)
 		}
 	}
 
-	return nil
+	return lastErr
 }
 
 // DropIndexes는 모든 인덱스를 제거합니다.
@@ -88,13 +88,14 @@ func (im *IndexManager) DropIndexes() error {
 		"DROP INDEX IF EXISTS FOR (r:EntityRevision) ON (r.entity_id)",
 	}
 
+	var lastErr error
 	for _, index := range indexes {
 		if err := im.store.exec(index); err != nil {
-			fmt.Printf("warning: failed to drop index: %v\n", err)
+			lastErr = fmt.Errorf("failed to drop index: %w", err)
 		}
 	}
 
-	return nil
+	return lastErr
 }
 
 // ListIndexes는 현재 인덱스 목록을 반환합니다.
@@ -157,13 +158,14 @@ func (im *IndexManager) AnalyzeStatistics() error {
 		"MATCH (r:EntityRevision) RETURN count(r) AS entity_revision_count",
 	}
 
+	var lastErr error
 	for _, query := range queries {
 		if err := im.store.exec(query); err != nil {
-			fmt.Printf("warning: failed to analyze statistics: %v\n", err)
+			lastErr = fmt.Errorf("failed to analyze statistics: %w", err)
 		}
 	}
 
-	return nil
+	return lastErr
 }
 
 // GetIndexStats는 인덱스 통계를 반환합니다.

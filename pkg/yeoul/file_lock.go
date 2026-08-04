@@ -35,8 +35,8 @@ func (fl *fileLock) Lock() error {
 		return err
 	}
 
-	// 락 파일 열기 (없으면 생성)
-	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+	// 락 파일 열기 (없으면 생성, 기존 내용 삭제)
+	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
@@ -191,7 +191,12 @@ func (fl *fileLock) RLock() error {
 
 		// stale 락 검사
 		if fl.isLockStale() {
+			file.Close()
 			fl.removeStaleLock()
+			file, err = os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+			if err != nil {
+				return err
+			}
 			continue
 		}
 
