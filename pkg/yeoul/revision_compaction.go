@@ -189,5 +189,8 @@ type RevisionStats struct {
 
 // String은 CompactionResult의 문자열 표현을 반환합니다.
 func (r CompactionResult) String() string {
-	return "compacted"
+	if r.Compacted {
+		return "compacted"
+	}
+	return "no compaction needed"
 }
