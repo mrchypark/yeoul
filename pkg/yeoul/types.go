@@ -491,7 +491,7 @@ func (r FactRevision) Equal(other FactRevision) bool {
 		r.SubjectID == other.SubjectID &&
 		r.ObjectID == other.ObjectID &&
 		r.ValueText == other.ValueText &&
-		r.Confidence == other.Confidence &&
+		float64Equal(r.Confidence, other.Confidence) &&
 		r.Status == other.Status &&
 		r.ValidFrom.Equal(other.ValidFrom) &&
 		r.ValidTo.Equal(other.ValidTo) &&

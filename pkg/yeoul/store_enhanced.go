@@ -181,7 +181,7 @@ func (s *enhancedMemoryStore) Load() (*persistedState, error) {
 func (s *enhancedMemoryStore) Save(state persistedState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = state
+	s.state = clonePersistedState(state)
 	return nil
 }
 
