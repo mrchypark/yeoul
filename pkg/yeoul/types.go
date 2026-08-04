@@ -2,6 +2,7 @@ package yeoul
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -466,7 +467,7 @@ func (f Fact) Equal(other Fact) bool {
 		f.SubjectID == other.SubjectID &&
 		f.ObjectID == other.ObjectID &&
 		f.ValueText == other.ValueText &&
-		f.Confidence == other.Confidence &&
+		float64Equal(f.Confidence, other.Confidence) &&
 		f.Status == other.Status &&
 		f.ValidFrom.Equal(other.ValidFrom) &&
 		f.ValidTo.Equal(other.ValidTo) &&
@@ -550,6 +551,11 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// float64Equal는 두 float64 값이 거의 동일한지 비교합니다.
+func float64Equal(a, b float64) bool {
+	return math.Abs(a-b) < 1e-9
 }
 
 // interfaceEqual는 두 interface{}가 동일한지 비교합니다.

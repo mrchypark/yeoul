@@ -187,24 +187,27 @@ func (im *IndexManager) GetIndexStats() (map[string]int, error) {
 			continue
 		}
 
-		if result.HasNext() {
+		func() {
+			defer result.Close()
+
+			if !result.HasNext() {
+				return
+			}
+
 			tuple, err := result.Next()
 			if err != nil {
-				result.Close()
-				continue
+				return
 			}
 
 			values, err := tuple.GetAsSlice()
 			if err != nil || len(values) == 0 {
-				result.Close()
-				continue
+				return
 			}
 
 			if count, ok := values[0].(int64); ok {
 				stats[key] = int(count)
 			}
-		}
-		result.Close()
+		}()
 	}
 
 	return stats, nil

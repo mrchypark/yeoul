@@ -360,6 +360,8 @@ func WithTx(tm *TxManager, fn func(tx *Transaction) error) error {
 		if tx.IsActive() {
 			tx.Abort()
 		}
+		// 완료된 트랜잭션 정리
+		tm.Cleanup()
 	}()
 
 	if err := fn(tx); err != nil {
