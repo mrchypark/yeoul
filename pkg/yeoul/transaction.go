@@ -55,7 +55,7 @@ func (tm *TxManager) Begin() (*Transaction, error) {
 	}
 
 	tx := &Transaction{
-		id:        fmt.Sprintf("tx_%s", uuid.New().String()[:8]),
+		id:        fmt.Sprintf("tx_%s", uuid.New().String()),
 		store:     tm.store,
 		snapshot:  *state,
 		current:   clonePersistedState(*state),

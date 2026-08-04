@@ -147,13 +147,3 @@ func (e *TransactionError) Error() string {
 func (e *TransactionError) Unwrap() error {
 	return e.Err
 }
-
-// Wrap은 에러를 래핑하여 Error 타입으로 반환합니다.
-func Wrap(code ErrorCode, message string, cause error) error {
-	return errorf(code, message, nil, cause)
-}
-
-// Wrapf는 상세 정보와 함께 에러를 래핑합니다.
-func Wrapf(code ErrorCode, message string, details map[string]any, cause error) error {
-	return errorf(code, message, details, cause)
-}
