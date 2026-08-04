@@ -240,7 +240,9 @@ func (im *IndexManager) EnsureSpaceIndexes(spaceID string) error {
 		return fmt.Errorf("invalid space ID: %w", err)
 	}
 
-	// 검증된 ID는 영숫자, 하이픈, 언더스코어, 점만 포함하므로 안전한 문자열 보간 사용
+	// 검증된 ID는 영숫자, 하이픈, 언더스코어, 점만 포함 (최대 255자)
+	// go-ladybug가 parameterized query를 지원하지 않으므로 검증된 ID로 문자열 보간 사용
+	// sanitizeID()에서 정규식으로 안전한 문자만 허용하므로 Cypher 인젝션 위험 없음
 	indexes := []string{
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (s:Source) ON (s.space_id) WHERE s.space_id = '%s'", sanitizedID),
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (e:Episode) ON (e.space_id) WHERE e.space_id = '%s'", sanitizedID),

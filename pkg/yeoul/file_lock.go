@@ -56,7 +56,7 @@ func (fl *fileLock) Lock() error {
 			// 현재 파일 포인터 닫고 stale 락 제거 후 다시 열기
 			file.Close()
 			fl.removeStaleLock()
-			file, err = os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+			file, err = os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 			if err != nil {
 				return err
 			}
