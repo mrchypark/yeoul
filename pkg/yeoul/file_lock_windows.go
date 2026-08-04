@@ -17,8 +17,9 @@ var (
 )
 
 const (
-	lockfileExclusiveLock = 0x00000002
-	lockfileFailImmediately = 0x00000001
+	lockfileExclusiveLock    = 0x00000002
+	lockfileFailImmediately  = 0x00000001
+	errLockViolation syscall.Errno = 33 // ERROR_LOCK_VIOLATION
 )
 
 func lockFile(f *os.File, exclusive bool) error {
@@ -37,7 +38,7 @@ func lockFile(f *os.File, exclusive bool) error {
 		uintptr(unsafe.Pointer(&overlapped)),
 	)
 	if ret == 0 {
-		if err.(syscall.Errno) == syscall.ERROR_LOCK_VIOLATION {
+		if err.(syscall.Errno) == errLockViolation {
 			return errLockBusy
 		}
 		return err
