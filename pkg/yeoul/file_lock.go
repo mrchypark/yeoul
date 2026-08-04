@@ -3,6 +3,7 @@ package yeoul
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -25,7 +26,7 @@ func newFileLock(path string) *fileLock {
 func (fl *fileLock) Lock() error {
 	// 락 파일 디렉토리 생성
 	dir := filepath.Dir(fl.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
 	}
 
@@ -88,19 +89,13 @@ func (fl *fileLock) writeLockInfo() {
 		return
 	}
 
-	info := map[string]interface{}{
-		"pid":       os.Getpid(),
-		"timestamp": time.Now().UTC(),
-	}
-
 	// 간단한 정보만 기록
 	fl.file.Truncate(0)
 	fl.file.Seek(0, 0)
 
 	// JSON 대신 간단한 형식 사용
-	data := []byte("pid: " + string(rune(os.Getpid())) + "\n")
+	data := []byte("pid: " + strconv.Itoa(os.Getpid()) + "\n")
 	fl.file.Write(data)
-	_ = info
 }
 
 // removeLockInfo는 락 정보 파일을 제거합니다.
@@ -137,7 +132,7 @@ func (e *LockError) Error() string {
 // tryLock은 non-blocking으로 락을 시도합니다.
 func (fl *fileLock) tryLock() error {
 	dir := filepath.Dir(fl.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
 	}
 
@@ -161,7 +156,7 @@ func (fl *fileLock) tryLock() error {
 // RLock은 읽기 락을 획득합니다.
 func (fl *fileLock) RLock() error {
 	dir := filepath.Dir(fl.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
 	}
 

@@ -2,6 +2,7 @@ package yeoul
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -202,22 +203,40 @@ func (im *IndexManager) GetIndexStats() (map[string]int, error) {
 	return stats, nil
 }
 
+// sanitizeID는 Cypher 인젝션을 방지하기 위해 ID 문자열을 검증하고 정리합니다.
+func sanitizeID(id string) (string, error) {
+	// 영숫자, 하이픈, 언더스코어, 점만 허용
+	validID := regexp.MustCompile(`^[a-zA-Z0-9\-_\.]+$`)
+	if !validID.MatchString(id) {
+		return "", fmt.Errorf("invalid ID format: %s", id)
+	}
+	return id, nil
+}
+
 // EnsureSpaceIndexes는 특정 공간(space)에 대한 인덱스를 생성합니다.
 func (im *IndexManager) EnsureSpaceIndexes(spaceID string) error {
 	if strings.TrimSpace(spaceID) == "" {
 		return nil
 	}
 
+	// spaceID 검증
+	sanitizedID, err := sanitizeID(spaceID)
+	if err != nil {
+		return fmt.Errorf("invalid space ID: %w", err)
+	}
+
+	// 매개변수화된 쿼리 사용 (Ladybug Cypher 지원 시)
+	// 현재 버전에서는 검증된 ID만 사용
 	indexes := []string{
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (s:Source) ON (s.space_id) WHERE s.space_id = '%s'", spaceID),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (e:Episode) ON (e.space_id) WHERE e.space_id = '%s'", spaceID),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (e:Entity) ON (e.space_id) WHERE e.space_id = '%s'", spaceID),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (f:Fact) ON (f.space_id) WHERE f.space_id = '%s'", spaceID),
+		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (s:Source) ON (s.space_id) WHERE s.space_id = '%s'", sanitizedID),
+		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (e:Episode) ON (e.space_id) WHERE e.space_id = '%s'", sanitizedID),
+		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (e:Entity) ON (e.space_id) WHERE e.space_id = '%s'", sanitizedID),
+		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (f:Fact) ON (f.space_id) WHERE f.space_id = '%s'", sanitizedID),
 	}
 
 	for _, index := range indexes {
 		if err := im.store.exec(index); err != nil {
-			fmt.Printf("warning: failed to create space index for %s: %v\n", spaceID, err)
+			fmt.Printf("warning: failed to create space index for %s: %v\n", sanitizedID, err)
 		}
 	}
 

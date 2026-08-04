@@ -1,7 +1,6 @@
 package yeoul
 
 import (
-	"reflect"
 	"time"
 )
 
@@ -70,7 +69,7 @@ func (dt *dirtyTracker) markSource(id string, source Source) {
 		dt.sources[id] = dirtyEntry[Source]{current: source, isNew: true, isDirty: true}
 		return
 	}
-	if !reflect.DeepEqual(entry.current, source) {
+	if !entry.current.Equal(source) {
 		entry.current = source
 		entry.isDirty = true
 		dt.sources[id] = entry
@@ -84,7 +83,7 @@ func (dt *dirtyTracker) markEpisode(id string, episode Episode) {
 		dt.episodes[id] = dirtyEntry[Episode]{current: episode, isNew: true, isDirty: true}
 		return
 	}
-	if !reflect.DeepEqual(entry.current, episode) {
+	if !entry.current.Equal(episode) {
 		entry.current = episode
 		entry.isDirty = true
 		dt.episodes[id] = entry
@@ -98,7 +97,7 @@ func (dt *dirtyTracker) markEntity(id string, entity Entity) {
 		dt.entities[id] = dirtyEntry[Entity]{current: entity, isNew: true, isDirty: true}
 		return
 	}
-	if !reflect.DeepEqual(entry.current, entity) {
+	if !entry.current.Equal(entity) {
 		entry.current = entity
 		entry.isDirty = true
 		dt.entities[id] = entry
@@ -112,7 +111,7 @@ func (dt *dirtyTracker) markFact(id string, fact Fact) {
 		dt.facts[id] = dirtyEntry[Fact]{current: fact, isNew: true, isDirty: true}
 		return
 	}
-	if !reflect.DeepEqual(entry.current, fact) {
+	if !entry.current.Equal(fact) {
 		entry.current = fact
 		entry.isDirty = true
 		dt.facts[id] = entry
@@ -126,7 +125,7 @@ func (dt *dirtyTracker) markFactRevision(id string, revision FactRevision) {
 		dt.factRevisions[id] = dirtyEntry[FactRevision]{current: revision, isNew: true, isDirty: true}
 		return
 	}
-	if !reflect.DeepEqual(entry.current, revision) {
+	if !entry.current.Equal(revision) {
 		entry.current = revision
 		entry.isDirty = true
 		dt.factRevisions[id] = entry
@@ -140,7 +139,7 @@ func (dt *dirtyTracker) markEntityRevision(id string, revision EntityRevision) {
 		dt.entityRevisions[id] = dirtyEntry[EntityRevision]{current: revision, isNew: true, isDirty: true}
 		return
 	}
-	if !reflect.DeepEqual(entry.current, revision) {
+	if !entry.current.Equal(revision) {
 		entry.current = revision
 		entry.isDirty = true
 		dt.entityRevisions[id] = entry
@@ -154,7 +153,7 @@ func (dt *dirtyTracker) markWatermark(id string, watermark MigrationWatermark) {
 		dt.watermarks[id] = dirtyEntry[MigrationWatermark]{current: watermark, isNew: true, isDirty: true}
 		return
 	}
-	if !reflect.DeepEqual(entry.current, watermark) {
+	if !entry.current.Equal(watermark) {
 		entry.current = watermark
 		entry.isDirty = true
 		dt.watermarks[id] = entry
@@ -334,7 +333,7 @@ func (dt *dirtyTracker) buildOptimizedDeltaStatements(prev, next persistedState)
 		switch {
 		case !oldExists && newExists:
 			statements = append(statements, createSourceStatement(newSource))
-		case oldExists && newExists && !reflect.DeepEqual(oldSource, newSource):
+		case oldExists && newExists && !oldSource.Equal(newSource):
 			statements = append(statements, updateSourceStatement(newSource))
 		case oldExists && !newExists:
 			statements = append(statements, deleteSourceNodeStatement(id))
@@ -353,7 +352,7 @@ func (dt *dirtyTracker) buildOptimizedDeltaStatements(prev, next persistedState)
 		switch {
 		case !oldExists && newExists:
 			statements = append(statements, createEpisodeStatement(newEpisode))
-		case oldExists && newExists && !reflect.DeepEqual(oldEpisode, newEpisode):
+		case oldExists && newExists && !oldEpisode.Equal(newEpisode):
 			statements = append(statements, updateEpisodeStatement(newEpisode))
 		case oldExists && !newExists:
 			statements = append(statements, deleteEpisodeNodeStatement(id))
@@ -372,7 +371,7 @@ func (dt *dirtyTracker) buildOptimizedDeltaStatements(prev, next persistedState)
 		switch {
 		case !oldExists && newExists:
 			statements = append(statements, createEntityStatement(newEntity))
-		case oldExists && newExists && !reflect.DeepEqual(oldEntity, newEntity):
+		case oldExists && newExists && !oldEntity.Equal(newEntity):
 			statements = append(statements, updateEntityStatement(newEntity))
 		case oldExists && !newExists:
 			statements = append(statements, deleteEntityNodeStatement(id))
@@ -391,7 +390,7 @@ func (dt *dirtyTracker) buildOptimizedDeltaStatements(prev, next persistedState)
 		switch {
 		case !oldExists && newExists:
 			statements = append(statements, createFactStatement(newFact))
-		case oldExists && newExists && !reflect.DeepEqual(stripFactRelationshipFields(oldFact), stripFactRelationshipFields(newFact)):
+		case oldExists && newExists && !stripFactRelationshipFields(oldFact).Equal(stripFactRelationshipFields(newFact)):
 			statements = append(statements, updateFactStatement(newFact))
 		case oldExists && !newExists:
 			statements = append(statements, deleteFactNodeStatement(id))
@@ -399,18 +398,16 @@ func (dt *dirtyTracker) buildOptimizedDeltaStatements(prev, next persistedState)
 	}
 
 	// 변경된 리비전 처리 (추가만 가능)
-	for id, entry := range dt.factRevisions {
+	for _, entry := range dt.factRevisions {
 		if entry.isNew {
 			statements = append(statements, createFactRevisionStatement(entry.current))
 		}
-		_ = id
 	}
 
-	for id, entry := range dt.entityRevisions {
+	for _, entry := range dt.entityRevisions {
 		if entry.isNew {
 			statements = append(statements, createEntityRevisionStatement(entry.current))
 		}
-		_ = id
 	}
 
 	// 변경된 워크마크 처리
@@ -425,7 +422,7 @@ func (dt *dirtyTracker) buildOptimizedDeltaStatements(prev, next persistedState)
 		switch {
 		case !oldExists && newExists:
 			statements = append(statements, createMigrationWatermarkStatement(newWatermark))
-		case oldExists && newExists && !reflect.DeepEqual(oldWatermark, newWatermark):
+		case oldExists && newExists && !oldWatermark.Equal(newWatermark):
 			statements = append(statements, updateMigrationWatermarkStatement(newWatermark))
 		}
 	}

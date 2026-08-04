@@ -66,31 +66,25 @@ func (s *enhancedStore) Save(state persistedState) error {
 	}
 	defer s.fileLock.Unlock()
 
-	// 이전 상태가 없으면 전체 저장
-	if !s.loaded {
-		s.dirtyTracker.initFromState(state)
-		s.lastState = clonePersistedState(state)
-		s.loaded = true
-		s.saveMeta.recordSave()
-		return s.baseStore.Save(state)
+	// 변경 사항 확인 (로깅용)
+	if s.loaded {
+		_, hasChanges := s.dirtyTracker.getDirtyState(state)
+		if !hasChanges {
+			// 변경 사항 없음
+			s.saveMeta.recordSave()
+			return nil
+		}
 	}
 
-	// 변경된 항목만 추적하여 저장
-	dirtyState, hasChanges := s.dirtyTracker.getDirtyState(state)
-	if !hasChanges {
-		// 변경 사항 없음
-		s.saveMeta.recordSave()
-		return nil
-	}
-
-	// 변경된 항목 저장
-	if err := s.baseStore.Save(dirtyState); err != nil {
+	// 항상 전체 상태를 저장 (ladybugStore가 delta 계산을 수행)
+	if err := s.baseStore.Save(state); err != nil {
 		return err
 	}
 
-	// 트래커 리셋
+	// 상태 업데이트
 	s.lastState = clonePersistedState(state)
-	s.dirtyTracker.reset(state)
+	s.dirtyTracker.initFromState(state)
+	s.loaded = true
 	s.saveMeta.recordSave()
 
 	// 컴팩션 제안 확인

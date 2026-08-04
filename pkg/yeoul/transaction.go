@@ -11,6 +11,7 @@ type Transaction struct {
 	id        string
 	store     stateStore
 	snapshot  persistedState
+	current   persistedState // 현재 변경된 상태
 	startTime time.Time
 	status    TxStatus
 	mu        sync.RWMutex
@@ -55,6 +56,7 @@ func (tm *TxManager) Begin() (*Transaction, error) {
 		id:        fmt.Sprintf("tx_%d", time.Now().UnixNano()),
 		store:     tm.store,
 		snapshot:  *state,
+		current:   clonePersistedState(*state),
 		startTime: time.Now().UTC(),
 		status:    TxStatusActive,
 	}
@@ -112,6 +114,15 @@ func (tx *Transaction) Commit() error {
 		}
 	}
 
+	// 실제 저장 수행
+	if err := tx.store.Save(tx.current); err != nil {
+		return &TransactionError{
+			Op:      "commit",
+			Message: "failed to save state",
+			Err:     err,
+		}
+	}
+
 	tx.status = TxStatusCommitted
 	return nil
 }
@@ -161,6 +172,142 @@ func (tx *Transaction) GetStartTime() time.Time {
 // GetDuration은 트랜잭션 실행 시간을 반환합니다.
 func (tx *Transaction) GetDuration() time.Duration {
 	return time.Since(tx.startTime)
+}
+
+// UpdateSource는 소스를 업데이트합니다.
+func (tx *Transaction) UpdateSource(source Source) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "update_source",
+			Message: "transaction is not active",
+		}
+	}
+
+	tx.current.Sources[source.ID] = source
+	return nil
+}
+
+// UpdateEpisode는 에피소드를 업데이트합니다.
+func (tx *Transaction) UpdateEpisode(episode Episode) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "update_episode",
+			Message: "transaction is not active",
+		}
+	}
+
+	tx.current.Episodes[episode.ID] = episode
+	return nil
+}
+
+// UpdateEntity는 엔티티를 업데이트합니다.
+func (tx *Transaction) UpdateEntity(entity Entity) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "update_entity",
+			Message: "transaction is not active",
+		}
+	}
+
+	tx.current.Entities[entity.ID] = entity
+	return nil
+}
+
+// UpdateFact는 팩트를 업데이트합니다.
+func (tx *Transaction) UpdateFact(fact Fact) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "update_fact",
+			Message: "transaction is not active",
+		}
+	}
+
+	tx.current.Facts[fact.ID] = fact
+	return nil
+}
+
+// DeleteSource는 소스를 삭제합니다.
+func (tx *Transaction) DeleteSource(id string) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "delete_source",
+			Message: "transaction is not active",
+		}
+	}
+
+	delete(tx.current.Sources, id)
+	return nil
+}
+
+// DeleteEpisode는 에피소드를 삭제합니다.
+func (tx *Transaction) DeleteEpisode(id string) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "delete_episode",
+			Message: "transaction is not active",
+		}
+	}
+
+	delete(tx.current.Episodes, id)
+	return nil
+}
+
+// DeleteEntity는 엔티티를 삭제합니다.
+func (tx *Transaction) DeleteEntity(id string) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "delete_entity",
+			Message: "transaction is not active",
+		}
+	}
+
+	delete(tx.current.Entities, id)
+	return nil
+}
+
+// DeleteFact는 팩트를 삭제합니다.
+func (tx *Transaction) DeleteFact(id string) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.status != TxStatusActive {
+		return &TransactionError{
+			Op:      "delete_fact",
+			Message: "transaction is not active",
+		}
+	}
+
+	delete(tx.current.Facts, id)
+	return nil
+}
+
+// GetCurrentState는 현재 트랜잭션의 상태를 반환합니다.
+func (tx *Transaction) GetCurrentState() persistedState {
+	tx.mu.RLock()
+	defer tx.mu.RUnlock()
+
+	return clonePersistedState(tx.current)
 }
 
 // TransactionInfo는 트랜잭션 정보를 나타냅니다.
@@ -225,16 +372,5 @@ func WithTx(tm *TxManager, fn func(tx *Transaction) error) error {
 }
 
 // TxError는 트랜잭션 에러를 나타냅니다.
-type TxError struct {
-	Op      string
-	Message string
-	Err     error
-}
-
-func (e *TxError) Error() string {
-	return fmt.Sprintf("transaction error: %s: %s", e.Op, e.Message)
-}
-
-func (e *TxError) Unwrap() error {
-	return e.Err
-}
+// TransactionError와 동일한 타입으로, 하위 호환성을 위해 별칭으로 정의합니다.
+type TxError = TransactionError
