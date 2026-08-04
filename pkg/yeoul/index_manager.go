@@ -250,11 +250,12 @@ func (im *IndexManager) EnsureSpaceIndexes(spaceID string) error {
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (f:Fact) ON (f.space_id) WHERE f.space_id = '%s'", sanitizedID),
 	}
 
+	var lastErr error
 	for _, index := range indexes {
 		if err := im.store.exec(index); err != nil {
-			fmt.Printf("warning: failed to create space index for %s: %v\n", sanitizedID, err)
+			lastErr = fmt.Errorf("failed to create space index for %s: %w", sanitizedID, err)
 		}
 	}
 
-	return nil
+	return lastErr
 }

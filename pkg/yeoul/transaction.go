@@ -171,16 +171,22 @@ func (tx *Transaction) IsActive() bool {
 
 // GetID는 트랜잭션 ID를 반환합니다.
 func (tx *Transaction) GetID() string {
+	tx.mu.RLock()
+	defer tx.mu.RUnlock()
 	return tx.id
 }
 
 // GetStartTime는 트랜잭션 시작 시간을 반환합니다.
 func (tx *Transaction) GetStartTime() time.Time {
+	tx.mu.RLock()
+	defer tx.mu.RUnlock()
 	return tx.startTime
 }
 
 // GetDuration은 트랜잭션 실행 시간을 반환합니다.
 func (tx *Transaction) GetDuration() time.Duration {
+	tx.mu.RLock()
+	defer tx.mu.RUnlock()
 	return time.Since(tx.startTime)
 }
 

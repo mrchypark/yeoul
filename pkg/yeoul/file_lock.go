@@ -149,7 +149,7 @@ func (fl *fileLock) tryLock() error {
 		return err
 	}
 
-	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0644)
+	file, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}

@@ -36,9 +36,12 @@ func (rc *RevisionCompactor) CompactFactRevisions(state *persistedState) Compact
 			continue
 		}
 
-		// 리비전 정렬 (최신 순)
-		sort.Slice(revisions, func(i, j int) bool {
-			return revisions[i].TxTime.After(revisions[j].TxTime)
+		// 리비전 정렬 (최신 순, 동일 TxTime일 때는 ID 기준으로 결정론적 정렬)
+		sort.SliceStable(revisions, func(i, j int) bool {
+			if !revisions[i].TxTime.Equal(revisions[j].TxTime) {
+				return revisions[i].TxTime.After(revisions[j].TxTime)
+			}
+			return revisions[i].ID < revisions[j].ID
 		})
 
 		// 오래된 리비전 제거
@@ -74,9 +77,12 @@ func (rc *RevisionCompactor) CompactEntityRevisions(state *persistedState) Compa
 			continue
 		}
 
-		// 리비전 정렬 (최신 순)
-		sort.Slice(revisions, func(i, j int) bool {
-			return revisions[i].TxTime.After(revisions[j].TxTime)
+		// 리비전 정렬 (최신 순, 동일 TxTime일 때는 ID 기준으로 결정론적 정렬)
+		sort.SliceStable(revisions, func(i, j int) bool {
+			if !revisions[i].TxTime.Equal(revisions[j].TxTime) {
+				return revisions[i].TxTime.After(revisions[j].TxTime)
+			}
+			return revisions[i].ID < revisions[j].ID
 		})
 
 		// 오래된 리비전 제거

@@ -39,13 +39,13 @@ func newEnhancedStore(cfg Config) (*enhancedStore, error) {
 
 // Load는 상태를 로드합니다.
 func (s *enhancedStore) Load() (*persistedState, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	state, err := s.baseStore.Load()
 	if err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	s.lastState = clonePersistedState(*state)
 	s.dirtyTracker.initFromState(*state)
