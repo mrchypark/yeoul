@@ -68,7 +68,7 @@ func TestDirtyTrackerDeleteOperations(t *testing.T) {
 }
 
 func TestFileLockBasicOperations(t *testing.T) {
-	lock := newFileLock("/tmp/test_yeoul.lock")
+	lock := newFileLock(t.TempDir() + "/test_yeoul.lock")
 
 	// 락 획득 시도
 	err := lock.Lock()
@@ -259,7 +259,7 @@ func TestIndexManager(t *testing.T) {
 }
 
 func TestFileLockReadWriteLock(t *testing.T) {
-	lock := newFileLock("/tmp/test_yeoul_rw.lock")
+	lock := newFileLock(t.TempDir() + "/test_yeoul_rw.lock")
 
 	// 읽기 락 획득 시도
 	err := lock.RLock()
@@ -571,6 +571,9 @@ func TestRegression_FileLockTryLockTruncation(t *testing.T) {
 		t.Fatalf("tryLock failed: %v", err)
 	}
 
+	// Unlock before reading - on Windows LockFileEx locks the file from other handles
+	_ = fl.Unlock()
+
 	// Read back: should only have our PID, not "pid: 99999\n"
 	data, err := os.ReadFile(fl.path)
 	if err != nil {
@@ -581,7 +584,6 @@ func TestRegression_FileLockTryLockTruncation(t *testing.T) {
 	if len(content) > 0 && content == "pid: 99999\n" {
 		t.Error("tryLock did not truncate: old PID still present in lock file")
 	}
-	_ = fl.Unlock()
 }
 
 // TestRegression_CompactionDeterministicSort verifies that CompactFactRevisions
