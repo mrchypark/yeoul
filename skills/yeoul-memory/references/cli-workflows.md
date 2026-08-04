@@ -10,6 +10,7 @@ For normal work, prefer a single user-level database rather than a project-local
 export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
 export YEOUL_GROUP="project:yeoul"
 export YEOUL_PROJECT_ID="project:yeoul"
+<<<<<<< Updated upstream
 export YEOUL_REPOSITORY_ID="repo:mrchypark-yeoul:repository:mrchypark-yeoul"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
@@ -20,8 +21,34 @@ Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local exp
 ## Search current context
 
 ```bash
-yeoul search --db "$YEOUL_DB" --query "Ladybug decision" --mode hybrid --group-id "$YEOUL_GROUP" --include-related
+yeoul search --db "$YEOUL_DB" --query "Ladybug decision" --backend auto --group-id "$YEOUL_GROUP" --include-related
 ```
+
+## Verify local install
+
+After installing or upgrading Yeoul locally, verify the wrapper and the real user-level database:
+
+```bash
+command -v yeoul
+sed -n '1,5p' "$HOME/.local/bin/yeoul"
+yeoul inspect counts --db "$YEOUL_DB" --json
+yeoul search --db "$YEOUL_DB" --query "recent Yeoul memory" --backend auto --group-id "$YEOUL_GROUP" --limit 3
+```
+
+If the new binary cannot open an existing Ladybug database, migrate through a fresh database instead of leaving the wrapper pointed at an unusable install:
+
+```bash
+old_bin="$HOME/.local/share/yeoul/v0.2.2/bin/yeoul"
+new_bin="$HOME/.local/share/yeoul/v0.2.3/bin/yeoul"
+backup_dir="$HOME/.local/share/yeoul/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$backup_dir"
+"$old_bin" admin export --db "$YEOUL_DB" --out "$backup_dir/export.json" --json
+"$new_bin" init --db "$backup_dir/work-memory.new.lbug" --json
+"$new_bin" admin import --db "$backup_dir/work-memory.new.lbug" --in "$backup_dir/export.json" --json --confirm
+"$new_bin" inspect counts --db "$backup_dir/work-memory.new.lbug" --json
+```
+
+Keep the original database under the backup directory before replacing `$YEOUL_DB`. If inactive or superseded facts matter, inspect them with the old binary using `fact lookup --include-inactive` and preserve or reconstruct lifecycle state before the replacement.
 
 Use `--policy-path` with `--recipe` when a pack should shape retrieval:
 

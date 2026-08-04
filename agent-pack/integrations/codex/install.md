@@ -35,6 +35,7 @@ Verify the CLI wrapper:
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
 yeoul --help
+sed -n '1,5p' "$HOME/.local/bin/yeoul"
 ```
 
 Add `~/.local/bin` to your shell startup file if it is not already on `PATH`.
@@ -161,6 +162,32 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 mkdir -p "$CODEX_HOME/skills/yeoul-memory"
 cp -R /path/to/yeoul/skills/yeoul-memory/. "$CODEX_HOME/skills/yeoul-memory/"
 ```
+
+Then verify the installed binary against the real user-level database, not just `--help`:
+
+```sh
+export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
+yeoul inspect counts --db "$YEOUL_DB" --json
+yeoul search --db "$YEOUL_DB" \
+  --query "recent Yeoul memory" \
+  --backend auto \
+  --limit 3
+```
+
+If the new binary cannot open an existing Ladybug database, keep a timestamped backup and migrate through export/import with the last known-good binary:
+
+```sh
+old_bin="$HOME/.local/share/yeoul/v0.2.2/bin/yeoul"
+new_bin="$HOME/.local/share/yeoul/v0.2.3/bin/yeoul"
+backup_dir="$HOME/.local/share/yeoul/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$backup_dir"
+"$old_bin" admin export --db "$YEOUL_DB" --out "$backup_dir/export.json" --json
+"$new_bin" init --db "$backup_dir/work-memory.new.lbug" --json
+"$new_bin" admin import --db "$backup_dir/work-memory.new.lbug" --in "$backup_dir/export.json" --json --confirm
+"$new_bin" inspect counts --db "$backup_dir/work-memory.new.lbug" --json
+```
+
+Copy the existing `$YEOUL_DB` into the backup directory before replacing it. If inactive or superseded facts matter, inspect them with `fact lookup --include-inactive` on the old binary and preserve or reconstruct lifecycle state before the replacement.
 
 Restart Codex after updating the skill.
 

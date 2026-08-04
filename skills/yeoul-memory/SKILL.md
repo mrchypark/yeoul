@@ -16,6 +16,15 @@ Default path:
 
 Project-local `./yeoul.lbug` is only for quickstarts, isolated tests, or temporary debugging.
 
+## Local install and upgrade checks
+
+When asked to install or upgrade Yeoul on this computer:
+- Install the requested release with the repository installer or `scripts/install.sh --version TAG`.
+- Verify the wrapper points at the expected install directory; the current CLI does not provide a `--version` command.
+- Verify the user-level database actually opens with the installed binary using `yeoul inspect counts --db "$YEOUL_DB"` and at least one `yeoul search`.
+- If a new Ladybug-backed release cannot open an existing database, do not treat the install as complete. Keep a timestamped backup, export with the last known-good binary, import into a fresh database with the new binary, and verify counts and lifecycle state before replacing `$YEOUL_DB`.
+- Preserve inactive or superseded facts when the public export omits lifecycle history. If lifecycle history cannot be reconstructed safely, keep the old database backup and report the limitation.
+
 ## Search first
 
 Search Yeoul before answering when:

@@ -8,6 +8,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+replace github.com/LadybugDB/go-ladybug => /tmp/go-ladybug
+
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/apache/arrow-go/v18 v18.6.0 // indirect

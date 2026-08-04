@@ -33,7 +33,7 @@ Before recommending a direction, interpreting status, or resolving a tradeoff:
 ```bash
 yeoul search --db "$YEOUL_DB" \
   --query "current context for this task" \
-  --mode hybrid \
+  --backend auto \
   --policy-path ./agent-pack \
   --recipe recent_context \
   --include-related
