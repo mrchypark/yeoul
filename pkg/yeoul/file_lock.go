@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -13,6 +14,7 @@ type fileLock struct {
 	path   string
 	file   *os.File
 	locked bool
+	mu     sync.RWMutex
 }
 
 // newFileLock은 새로운 파일 락을 생성합니다.
