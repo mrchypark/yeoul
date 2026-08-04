@@ -3,14 +3,12 @@ package yeoul
 import (
 	"fmt"
 	"sort"
-	"time"
 )
 
 // RevisionCompactor는 리비전 컴팩션을 관리합니다.
 type RevisionCompactor struct {
 	factRevisionLimit   int
 	entityRevisionLimit int
-	now                 func() time.Time
 }
 
 // NewRevisionCompactor는 새로운 리비전 컴팩터를 생성합니다.
@@ -18,9 +16,6 @@ func NewRevisionCompactor(factLimit, entityLimit int) *RevisionCompactor {
 	return &RevisionCompactor{
 		factRevisionLimit:   factLimit,
 		entityRevisionLimit: entityLimit,
-		now: func() time.Time {
-			return time.Now().UTC()
-		},
 	}
 }
 

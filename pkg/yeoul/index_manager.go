@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// validIDPattern은 ID 유효성 검사용 정규식입니다.
+var validIDPattern = regexp.MustCompile(`^[a-zA-Z0-9\-_\.]+$`)
+
 // IndexManager는 인덱스를 관리합니다.
 type IndexManager struct {
 	store *ladybugStore
@@ -185,11 +188,13 @@ func (im *IndexManager) GetIndexStats() (map[string]int, error) {
 		if result.HasNext() {
 			tuple, err := result.Next()
 			if err != nil {
+				result.Close()
 				continue
 			}
 
 			values, err := tuple.GetAsSlice()
 			if err != nil || len(values) == 0 {
+				result.Close()
 				continue
 			}
 
@@ -212,8 +217,7 @@ func sanitizeID(id string) (string, error) {
 	if len(id) > 255 {
 		return "", fmt.Errorf("ID too long: %d characters", len(id))
 	}
-	validID := regexp.MustCompile(`^[a-zA-Z0-9\-_\.]+$`)
-	if !validID.MatchString(id) {
+	if !validIDPattern.MatchString(id) {
 		return "", fmt.Errorf("invalid ID format: %s", id)
 	}
 	return id, nil

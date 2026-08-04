@@ -26,6 +26,9 @@ func newFileLock(path string) *fileLock {
 
 // Lock은 파일 락을 획득합니다.
 func (fl *fileLock) Lock() error {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
 	// 락 파일 디렉토리 생성
 	dir := filepath.Dir(fl.path)
 	if err := os.MkdirAll(dir, 0750); err != nil {
@@ -38,20 +41,18 @@ func (fl *fileLock) Lock() error {
 		return err
 	}
 
-	//非blocking 파일 락 시도
+	// non-blocking 파일 락 시도
 	for i := 0; i < 100; i++ { // 최대 10초 대기
 		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
 			fl.file = file
 			fl.locked = true
-			// 락 정보 기록
 			fl.writeLockInfo()
 			return nil
 		}
 
 		// 락이 이미 존재하는지 확인
 		if fl.isLockStale() {
-			// 오래된 락 제거
 			fl.removeStaleLock()
 			continue
 		}
@@ -69,13 +70,18 @@ func (fl *fileLock) Lock() error {
 
 // Unlock은 파일 락을 해제합니다.
 func (fl *fileLock) Unlock() error {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
 	if fl.file == nil {
 		return nil
 	}
 
 	// flock 해제 (먼저 해제해야 함)
 	err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN)
-	fl.file.Close()
+	if cerr := fl.file.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
 	fl.locked = false
 	fl.file = nil
 
@@ -91,7 +97,6 @@ func (fl *fileLock) writeLockInfo() {
 		return
 	}
 
-	// 파일 끝에 락 정보 기록 (Truncate/Seek 불필요)
 	data := []byte("pid: " + strconv.Itoa(os.Getpid()) + "\n")
 	fl.file.Write(data)
 }
@@ -129,6 +134,9 @@ func (e *LockError) Error() string {
 
 // tryLock은 non-blocking으로 락을 시도합니다.
 func (fl *fileLock) tryLock() error {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
 	dir := filepath.Dir(fl.path)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
@@ -153,6 +161,9 @@ func (fl *fileLock) tryLock() error {
 
 // RLock은 읽기 락을 획득합니다.
 func (fl *fileLock) RLock() error {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
 	dir := filepath.Dir(fl.path)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
@@ -170,6 +181,13 @@ func (fl *fileLock) RLock() error {
 			fl.locked = true
 			return nil
 		}
+
+		// stale 락 검사
+		if fl.isLockStale() {
+			fl.removeStaleLock()
+			continue
+		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -187,6 +205,8 @@ func (fl *fileLock) RUnlock() error {
 
 // IsLocked는 락이 획득되었는지 확인합니다.
 func (fl *fileLock) IsLocked() bool {
+	fl.mu.RLock()
+	defer fl.mu.RUnlock()
 	return fl.locked
 }
 

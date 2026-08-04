@@ -1,6 +1,7 @@
 package yeoul
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -58,63 +59,80 @@ func errorf(code ErrorCode, message string, details map[string]any, cause error)
 	}
 }
 
+// unwrapYeoulError는 에러 체인에서 Error 타입을 추출합니다.
+func unwrapYeoulError(err error) *Error {
+	var yeoulErr *Error
+	if errors.As(err, &yeoulErr) {
+		return yeoulErr
+	}
+	return nil
+}
+
 // IsNotFoundError는 에러가 NotFound 유형인지 확인합니다.
 func IsNotFoundError(err error) bool {
-	if e, ok := err.(*Error); ok {
-		switch e.Code {
-		case ErrEntityNotFound, ErrFactNotFound, ErrSourceNotFound:
-			return true
-		}
+	e := unwrapYeoulError(err)
+	if e == nil {
+		return false
+	}
+	switch e.Code {
+	case ErrEntityNotFound, ErrFactNotFound, ErrSourceNotFound:
+		return true
 	}
 	return false
 }
 
 // IsStorageError는 에러가 Storage 유형인지 확인합니다.
 func IsStorageError(err error) bool {
-	if e, ok := err.(*Error); ok {
-		return e.Code == ErrStorageFailed
+	e := unwrapYeoulError(err)
+	if e == nil {
+		return false
 	}
-	return false
+	return e.Code == ErrStorageFailed
 }
 
 // IsLockError는 에러가 Lock 유형인지 확인합니다.
 func IsLockError(err error) bool {
-	if e, ok := err.(*Error); ok {
-		return e.Code == ErrLockFailed
+	e := unwrapYeoulError(err)
+	if e == nil {
+		return false
 	}
-	return false
+	return e.Code == ErrLockFailed
 }
 
 // IsCompactionError는 에러가 Compaction 유형인지 확인합니다.
 func IsCompactionError(err error) bool {
-	if e, ok := err.(*Error); ok {
-		return e.Code == ErrCompactionFailed
+	e := unwrapYeoulError(err)
+	if e == nil {
+		return false
 	}
-	return false
+	return e.Code == ErrCompactionFailed
 }
 
 // IsTransactionError는 에러가 Transaction 유형인지 확인합니다.
 func IsTransactionError(err error) bool {
-	if e, ok := err.(*Error); ok {
-		return e.Code == ErrTransactionFailed
+	e := unwrapYeoulError(err)
+	if e == nil {
+		return false
 	}
-	return false
+	return e.Code == ErrTransactionFailed
 }
 
 // GetErrorDetails는 에러의 상세 정보를 반환합니다.
 func GetErrorDetails(err error) map[string]any {
-	if e, ok := err.(*Error); ok {
-		return e.Details
+	e := unwrapYeoulError(err)
+	if e == nil {
+		return nil
 	}
-	return nil
+	return e.Details
 }
 
 // GetErrorCode는 에러 코드를 반환합니다.
 func GetErrorCode(err error) ErrorCode {
-	if e, ok := err.(*Error); ok {
-		return e.Code
+	e := unwrapYeoulError(err)
+	if e == nil {
+		return ""
 	}
-	return ""
+	return e.Code
 }
 
 // StorageError는 저장소 관련 에러를 나타냅니다.

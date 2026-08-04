@@ -150,7 +150,7 @@ func (tx *Transaction) GetSnapshot() persistedState {
 	tx.mu.RLock()
 	defer tx.mu.RUnlock()
 
-	return tx.snapshot
+	return clonePersistedState(tx.snapshot)
 }
 
 // IsActive는 트랜잭션이 활성 상태인지 확인합니다.
