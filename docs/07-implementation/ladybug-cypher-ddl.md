@@ -1,5 +1,10 @@
 # Ladybug Cypher DDL
 
+> The canonical, executable DDL now lives in
+> [`internal/storage/ladybug/cypher.go`](../../internal/storage/ladybug/cypher.go)
+> (`DDLStatements`). This document records the original design sketch below;
+> when the two differ, the code is authoritative.
+
 This document records the initial schema DDL for Yeoul on Ladybug.
 It is intentionally conservative and can be evolved through migrations.
 

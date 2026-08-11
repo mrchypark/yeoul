@@ -64,12 +64,3 @@ func unwrapYeoulError(err error) *Error {
 	}
 	return nil
 }
-
-// IsStorageError는 에러가 Storage 유형인지 확인합니다.
-func IsStorageError(err error) bool {
-	e := unwrapYeoulError(err)
-	if e == nil {
-		return false
-	}
-	return e.Code == ErrStorageFailed
-}

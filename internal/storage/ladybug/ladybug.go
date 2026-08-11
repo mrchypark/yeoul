@@ -6,8 +6,9 @@ import (
 	lbug "github.com/LadybugDB/go-ladybug"
 )
 
-// Store is a thin feasibility harness around the Ladybug Go binding.
-// Yeoul's full storage adapter will build on this package after Stage 0 validation.
+// Store is the Ladybug database handle used by the Yeoul storage adapter.
+// Raw Cypher statement generation lives in cypher.go in this package;
+// callers must not construct Cypher text themselves.
 type Store struct {
 	db *lbug.Database
 }

@@ -54,8 +54,8 @@ func DDLStatements() []string {
 
 // CreateNode renders a CREATE statement for one node record.
 func CreateNode(record NodeRecord) string {
-	clauses := nodeClauses(record, false)
-	return fmt.Sprintf("CREATE (:%s {%s})", record.Label, clauses)
+	parts := nodeClauses(record)
+	return fmt.Sprintf("CREATE (:%s {%s})", record.Label, strings.Join(parts, ", "))
 }
 
 // UpdateNode renders a MATCH+SET statement for one node record.
@@ -71,6 +71,9 @@ func UpdateNode(record NodeRecord) string {
 	setParts := make([]string, 0, len(names))
 	for _, name := range names {
 		setParts = append(setParts, fmt.Sprintf("n.%s=%s", name, record.Props[name]))
+	}
+	if len(setParts) == 0 {
+		return fmt.Sprintf("MATCH (n:%s {id:%s})", record.Label, StringLiteral(record.ID))
 	}
 	return fmt.Sprintf("MATCH (n:%s {id:%s}) SET %s", record.Label, StringLiteral(record.ID), strings.Join(setParts, ", "))
 }
@@ -93,12 +96,21 @@ func CreateMetaSequence(sequence uint64) string {
 // CreateRelationship renders a MATCH-two-nodes + CREATE relationship
 // statement. Both FromID and ToID must be non-empty.
 func CreateRelationship(spec RelationshipSpec) string {
+	props := propClauses(spec.Props)
+	if props == "" {
+		return fmt.Sprintf(
+			"MATCH (a:%s {id:%s}), (b:%s {id:%s}) CREATE (a)-[:%s]->(b)",
+			spec.FromLabel, StringLiteral(spec.FromID),
+			spec.ToLabel, StringLiteral(spec.ToID),
+			spec.Type,
+		)
+	}
 	return fmt.Sprintf(
 		"MATCH (a:%s {id:%s}), (b:%s {id:%s}) CREATE (a)-[:%s {%s}]->(b)",
 		spec.FromLabel, StringLiteral(spec.FromID),
 		spec.ToLabel, StringLiteral(spec.ToID),
 		spec.Type,
-		propClauses(spec.Props),
+		props,
 	)
 }
 
@@ -218,23 +230,18 @@ func Uint64Literal(value uint64) string {
 	return fmt.Sprintf("%d", value)
 }
 
-func nodeClauses(record NodeRecord, skipID bool) string {
+func nodeClauses(record NodeRecord) []string {
 	parts := make([]string, 0, len(record.Props)+1)
-	if !skipID {
-		parts = append(parts, "id:"+StringLiteral(record.ID))
-	}
+	parts = append(parts, "id:"+StringLiteral(record.ID))
 	names := make([]string, 0, len(record.Props))
 	for name := range record.Props {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if skipID && name == "id" {
-			continue
-		}
 		parts = append(parts, fmt.Sprintf("%s:%s", name, record.Props[name]))
 	}
-	return strings.Join(parts, ", ")
+	return parts
 }
 
 func propClauses(props map[string]string) string {
