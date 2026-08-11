@@ -22,7 +22,7 @@ type ladybugStore struct {
 func newLadybugStore(cfg Config) (stateStore, error) {
 	store, err := lstore.Open(cfg.DatabasePath, cfg.ReadOnly)
 	if err != nil {
-		return nil, errorf(ErrConfigInvalid, "open ladybug database", map[string]any{
+		return nil, errorf(ErrStorageFailed, "open ladybug database", map[string]any{
 			"database_path": cfg.DatabasePath,
 		}, err)
 	}
@@ -106,7 +106,7 @@ func (s *ladybugStore) Save(state persistedState) error {
 	}
 
 	if err := s.exec(strings.Join(statements, ";\n")); err != nil {
-		return errorf(ErrConfigInvalid, "write ladybug graph state", map[string]any{
+		return errorf(ErrStorageFailed, "write ladybug graph state", map[string]any{
 			"database_path": s.cfg.DatabasePath,
 		}, err)
 	}
@@ -124,8 +124,8 @@ func (s *ladybugStore) Close() error {
 }
 
 func (s *ladybugStore) ensureSchema() error {
-	if err := s.exec(strings.Join(ladybugDDLStatements(), ";\n")); err != nil {
-		return errorf(ErrConfigInvalid, "ensure ladybug graph schema", map[string]any{
+	if err := s.exec(strings.Join(lstore.DDLStatements(), ";\n")); err != nil {
+		return errorf(ErrStorageFailed, "ensure ladybug graph schema", map[string]any{
 			"database_path": s.cfg.DatabasePath,
 		}, err)
 	}
@@ -133,7 +133,7 @@ func (s *ladybugStore) ensureSchema() error {
 }
 
 func (s *ladybugStore) loadSources(state *persistedState) error {
-	return s.loadNodes("MATCH (s:Source) RETURN s", func(node lbug.Node) error {
+	return s.loadNodes("Source", func(node lbug.Node) error {
 		source := Source{
 			ID:          asString(node.Properties["id"]),
 			SpaceID:     asString(node.Properties["space_id"]),
@@ -149,7 +149,7 @@ func (s *ladybugStore) loadSources(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadMeta(state *persistedState) error {
-	return s.loadRows("MATCH (m:YeoulMeta {id: 'singleton'}) RETURN m.sequence", func(values []any) error {
+	return s.loadRows(lstore.QueryMetaSequence(), func(values []any) error {
 		if len(values) > 0 {
 			state.Sequence = asUint64(values[0])
 		}
@@ -158,7 +158,7 @@ func (s *ladybugStore) loadMeta(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadEpisodes(state *persistedState) error {
-	return s.loadNodes("MATCH (e:Episode) RETURN e", func(node lbug.Node) error {
+	return s.loadNodes("Episode", func(node lbug.Node) error {
 		episode := Episode{
 			ID:         asString(node.Properties["id"]),
 			SpaceID:    asString(node.Properties["space_id"]),
@@ -176,7 +176,7 @@ func (s *ladybugStore) loadEpisodes(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadEntities(state *persistedState) error {
-	return s.loadNodes("MATCH (e:Entity) RETURN e", func(node lbug.Node) error {
+	return s.loadNodes("Entity", func(node lbug.Node) error {
 		entity := Entity{
 			ID:            asString(node.Properties["id"]),
 			SpaceID:       asString(node.Properties["space_id"]),
@@ -194,7 +194,7 @@ func (s *ladybugStore) loadEntities(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadFacts(state *persistedState) error {
-	return s.loadNodes("MATCH (f:Fact) RETURN f", func(node lbug.Node) error {
+	return s.loadNodes("Fact", func(node lbug.Node) error {
 		fact := Fact{
 			ID:               asString(node.Properties["id"]),
 			SpaceID:          asString(node.Properties["space_id"]),
@@ -217,7 +217,7 @@ func (s *ladybugStore) loadFacts(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadFactRevisions(state *persistedState) error {
-	return s.loadNodes("MATCH (r:FactRevision) RETURN r", func(node lbug.Node) error {
+	return s.loadNodes("FactRevision", func(node lbug.Node) error {
 		revision := FactRevision{
 			ID:                   asString(node.Properties["id"]),
 			FactID:               asString(node.Properties["fact_id"]),
@@ -246,7 +246,7 @@ func (s *ladybugStore) loadFactRevisions(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadEntityRevisions(state *persistedState) error {
-	return s.loadNodes("MATCH (r:EntityRevision) RETURN r", func(node lbug.Node) error {
+	return s.loadNodes("EntityRevision", func(node lbug.Node) error {
 		revision := EntityRevision{
 			ID:            asString(node.Properties["id"]),
 			EntityID:      asString(node.Properties["entity_id"]),
@@ -267,7 +267,7 @@ func (s *ladybugStore) loadEntityRevisions(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadMigrationWatermarks(state *persistedState) error {
-	return s.loadNodes("MATCH (m:YeoulMigration) RETURN m", func(node lbug.Node) error {
+	return s.loadNodes("YeoulMigration", func(node lbug.Node) error {
 		watermark := MigrationWatermark{
 			ID:        asString(node.Properties["id"]),
 			AppliedAt: asTime(node.Properties["applied_at"]),
@@ -279,8 +279,7 @@ func (s *ladybugStore) loadMigrationWatermarks(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadSubjectEdges(state *persistedState) error {
-	query := "MATCH (f:Fact)-[:SUBJECT]->(e:Entity) RETURN f.id, e.id"
-	return s.loadRows(query, func(values []any) error {
+	return s.loadRows(lstore.QuerySubjectEdges(), func(values []any) error {
 		factID, entityID := asString(values[0]), asString(values[1])
 		fact := state.Facts[factID]
 		fact.SubjectID = entityID
@@ -290,8 +289,7 @@ func (s *ladybugStore) loadSubjectEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadObjectEdges(state *persistedState) error {
-	query := "MATCH (f:Fact)-[:OBJECT_ENTITY]->(e:Entity) RETURN f.id, e.id"
-	return s.loadRows(query, func(values []any) error {
+	return s.loadRows(lstore.QueryObjectEdges(), func(values []any) error {
 		factID, entityID := asString(values[0]), asString(values[1])
 		fact := state.Facts[factID]
 		fact.ObjectID = entityID
@@ -301,8 +299,7 @@ func (s *ladybugStore) loadObjectEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadSupportedByEdges(state *persistedState) error {
-	query := "MATCH (f:Fact)-[:SUPPORTED_BY]->(e:Episode) RETURN f.id, e.id"
-	return s.loadRows(query, func(values []any) error {
+	return s.loadRows(lstore.QuerySupportedByEdges(), func(values []any) error {
 		factID, episodeID := asString(values[0]), asString(values[1])
 		fact := state.Facts[factID]
 		if !slices.Contains(fact.SupportingEpisodeIDs, episodeID) {
@@ -314,8 +311,7 @@ func (s *ladybugStore) loadSupportedByEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
-	query := "MATCH (newFact:Fact)-[r:SUPERSEDES]->(oldFact:Fact) RETURN newFact.id, oldFact.id, r.reason"
-	return s.loadRows(query, func(values []any) error {
+	return s.loadRows(lstore.QuerySupersedesEdges(), func(values []any) error {
 		newID, oldID, reason := asString(values[0]), asString(values[1]), asString(values[2])
 		oldFact := state.Facts[oldID]
 		oldFact.Metadata = mergeAnyMap(oldFact.Metadata, map[string]any{
@@ -335,8 +331,8 @@ func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
 	})
 }
 
-func (s *ladybugStore) loadNodes(query string, apply func(node lbug.Node) error) error {
-	return s.loadRows(query, func(values []any) error {
+func (s *ladybugStore) loadNodes(label string, apply func(node lbug.Node) error) error {
+	return s.loadRows(lstore.QueryNodes(label), func(values []any) error {
 		if len(values) == 0 {
 			return nil
 		}
@@ -351,10 +347,10 @@ func (s *ladybugStore) loadNodes(query string, apply func(node lbug.Node) error)
 func (s *ladybugStore) loadRows(query string, apply func(values []any) error) error {
 	result, err := s.store.Query(query)
 	if err != nil {
-		if s.cfg.ReadOnly && isMissingTableError(err) {
+		if s.cfg.ReadOnly && lstore.IsMissingTableError(err) {
 			return nil
 		}
-		return errorf(ErrConfigInvalid, "query ladybug graph state", map[string]any{
+		return errorf(ErrStorageFailed, "query ladybug graph state", map[string]any{
 			"database_path": s.cfg.DatabasePath,
 			"query":         query,
 		}, err)
@@ -364,14 +360,14 @@ func (s *ladybugStore) loadRows(query string, apply func(values []any) error) er
 	for result.HasNext() {
 		tuple, err := result.Next()
 		if err != nil {
-			return errorf(ErrConfigInvalid, "read ladybug graph row", map[string]any{
+			return errorf(ErrStorageFailed, "read ladybug graph row", map[string]any{
 				"database_path": s.cfg.DatabasePath,
 				"query":         query,
 			}, err)
 		}
 		values, err := tuple.GetAsSlice()
 		if err != nil {
-			return errorf(ErrConfigInvalid, "decode ladybug graph row", map[string]any{
+			return errorf(ErrStorageFailed, "decode ladybug graph row", map[string]any{
 				"database_path": s.cfg.DatabasePath,
 				"query":         query,
 			}, err)
@@ -418,8 +414,8 @@ func (s *ladybugStore) buildMetaDelta(prev, next persistedState) []string {
 		return nil
 	}
 	return []string{
-		"MATCH (m:YeoulMeta {id:'singleton'}) DELETE m",
-		fmt.Sprintf("CREATE (:YeoulMeta {id:'singleton', sequence:%s})", cypherUint64Literal(next.Sequence)),
+		lstore.DeleteMetaSequence(),
+		lstore.CreateMetaSequence(next.Sequence),
 	}
 }
 
@@ -430,9 +426,11 @@ func (s *ladybugStore) buildSourceDelta(prev, next map[string]Source) []string {
 		newSource, newOK := next[id]
 		switch {
 		case !oldOK && newOK:
-			statements = append(statements, createSourceStatement(newSource))
+			statements = append(statements, lstore.CreateNode(sourceRecord(newSource)))
 		case oldOK && newOK && !reflect.DeepEqual(oldSource, newSource):
-			statements = append(statements, updateSourceStatement(newSource))
+			if stmt, ok := lstore.UpdateNode(sourceRecord(newSource)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -445,9 +443,11 @@ func (s *ladybugStore) buildEpisodeDelta(prev, next map[string]Episode) []string
 		newEpisode, newOK := next[id]
 		switch {
 		case !oldOK && newOK:
-			statements = append(statements, createEpisodeStatement(newEpisode))
+			statements = append(statements, lstore.CreateNode(episodeRecord(newEpisode)))
 		case oldOK && newOK && !reflect.DeepEqual(oldEpisode, newEpisode):
-			statements = append(statements, updateEpisodeStatement(newEpisode))
+			if stmt, ok := lstore.UpdateNode(episodeRecord(newEpisode)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -460,9 +460,11 @@ func (s *ladybugStore) buildEntityDelta(prev, next map[string]Entity) []string {
 		newEntity, newOK := next[id]
 		switch {
 		case !oldOK && newOK:
-			statements = append(statements, createEntityStatement(newEntity))
+			statements = append(statements, lstore.CreateNode(entityRecord(newEntity)))
 		case oldOK && newOK && !reflect.DeepEqual(oldEntity, newEntity):
-			statements = append(statements, updateEntityStatement(newEntity))
+			if stmt, ok := lstore.UpdateNode(entityRecord(newEntity)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -475,9 +477,11 @@ func (s *ladybugStore) buildFactDelta(prev, next map[string]Fact) []string {
 		newFact, newOK := next[id]
 		switch {
 		case !oldOK && newOK:
-			statements = append(statements, createFactStatement(newFact))
+			statements = append(statements, lstore.CreateNode(factRecord(newFact)))
 		case oldOK && newOK && !reflect.DeepEqual(stripFactRelationshipFields(oldFact), stripFactRelationshipFields(newFact)):
-			statements = append(statements, updateFactStatement(newFact))
+			if stmt, ok := lstore.UpdateNode(factRecord(newFact)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -490,9 +494,11 @@ func (s *ladybugStore) buildMigrationWatermarkDelta(prev, next map[string]Migrat
 		newWatermark, newOK := next[id]
 		switch {
 		case !oldOK && newOK:
-			statements = append(statements, createMigrationWatermarkStatement(newWatermark))
+			statements = append(statements, lstore.CreateNode(watermarkRecord(newWatermark)))
 		case oldOK && newOK && !reflect.DeepEqual(oldWatermark, newWatermark):
-			statements = append(statements, updateMigrationWatermarkStatement(newWatermark))
+			if stmt, ok := lstore.UpdateNode(watermarkRecord(newWatermark)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -504,7 +510,7 @@ func (s *ladybugStore) buildEntityRevisionDelta(prev, next map[string]EntityRevi
 		if _, ok := prev[id]; ok {
 			continue
 		}
-		statements = append(statements, createEntityRevisionStatement(next[id]))
+		statements = append(statements, lstore.CreateNode(entityRevisionRecord(next[id])))
 	}
 	return statements
 }
@@ -515,7 +521,7 @@ func (s *ladybugStore) buildFactRevisionDelta(prev, next map[string]FactRevision
 		if _, ok := prev[id]; ok {
 			continue
 		}
-		statements = append(statements, createFactRevisionStatement(next[id]))
+		statements = append(statements, lstore.CreateNode(factRevisionRecord(next[id])))
 	}
 	return statements
 }
@@ -562,7 +568,7 @@ func (s *ladybugStore) buildDeletedFactStatements(prev, next map[string]Fact) []
 		if _, ok := next[id]; ok {
 			continue
 		}
-		statements = append(statements, deleteFactNodeStatement(id))
+		statements = append(statements, lstore.DeleteNode("Fact", id))
 	}
 	return statements
 }
@@ -573,7 +579,7 @@ func (s *ladybugStore) buildDeletedEpisodeStatements(prev, next map[string]Episo
 		if _, ok := next[id]; ok {
 			continue
 		}
-		statements = append(statements, deleteEpisodeNodeStatement(id))
+		statements = append(statements, lstore.DeleteNode("Episode", id))
 	}
 	return statements
 }
@@ -584,7 +590,7 @@ func (s *ladybugStore) buildDeletedEntityStatements(prev, next map[string]Entity
 		if _, ok := next[id]; ok {
 			continue
 		}
-		statements = append(statements, deleteEntityNodeStatement(id))
+		statements = append(statements, lstore.DeleteNode("Entity", id))
 	}
 	return statements
 }
@@ -595,236 +601,141 @@ func (s *ladybugStore) buildDeletedSourceStatements(prev, next map[string]Source
 		if _, ok := next[id]; ok {
 			continue
 		}
-		statements = append(statements, deleteSourceNodeStatement(id))
+		statements = append(statements, lstore.DeleteNode("Source", id))
 	}
 	return statements
 }
 
-func ladybugDDLStatements() []string {
-	return []string{
-		"CREATE NODE TABLE IF NOT EXISTS YeoulMeta(id STRING, sequence INT64, PRIMARY KEY(id))",
-		"CREATE NODE TABLE IF NOT EXISTS Source(id STRING, space_id STRING, kind STRING, uri STRING, external_ref STRING, created_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
-		"CREATE NODE TABLE IF NOT EXISTS Episode(id STRING, space_id STRING, kind STRING, content STRING, content_hash STRING, source_id STRING, group_id STRING, observed_at TIMESTAMP, ingested_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
-		"CREATE NODE TABLE IF NOT EXISTS Entity(id STRING, space_id STRING, namespace STRING, type STRING, canonical_name STRING, aliases_json STRING, fingerprint STRING, created_at TIMESTAMP, updated_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
-		"CREATE NODE TABLE IF NOT EXISTS Fact(id STRING, space_id STRING, predicate STRING, value_text STRING, confidence DOUBLE, status STRING, valid_from TIMESTAMP, valid_to TIMESTAMP, observed_at TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, retracted_at TIMESTAMP, retraction_reason STRING, metadata_json STRING, PRIMARY KEY(id))",
-		"CREATE NODE TABLE IF NOT EXISTS YeoulMigration(id STRING, applied_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
-		"CREATE NODE TABLE IF NOT EXISTS EntityRevision(id STRING, entity_id STRING, space_id STRING, revision_kind STRING, tx_time TIMESTAMP, namespace STRING, type STRING, canonical_name STRING, aliases_json STRING, created_at TIMESTAMP, updated_at TIMESTAMP, metadata_json STRING, PRIMARY KEY(id))",
-		"CREATE NODE TABLE IF NOT EXISTS FactRevision(id STRING, fact_id STRING, space_id STRING, revision_kind STRING, tx_time TIMESTAMP, predicate STRING, subject_id STRING, object_id STRING, value_text STRING, confidence DOUBLE, status STRING, valid_from TIMESTAMP, valid_to TIMESTAMP, observed_at TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, retracted_at TIMESTAMP, retraction_reason STRING, supporting_episode_ids_json STRING, metadata_json STRING, PRIMARY KEY(id))",
-		"CREATE REL TABLE IF NOT EXISTS FROM_SOURCE(FROM Episode TO Source, created_at TIMESTAMP)",
-		"CREATE REL TABLE IF NOT EXISTS ASSERTS(FROM Episode TO Fact, created_at TIMESTAMP)",
-		"CREATE REL TABLE IF NOT EXISTS SUBJECT(FROM Fact TO Entity, created_at TIMESTAMP)",
-		"CREATE REL TABLE IF NOT EXISTS OBJECT_ENTITY(FROM Fact TO Entity, created_at TIMESTAMP)",
-		"CREATE REL TABLE IF NOT EXISTS SUPPORTED_BY(FROM Fact TO Episode, support_kind STRING, created_at TIMESTAMP)",
-		"CREATE REL TABLE IF NOT EXISTS SUPERSEDES(FROM Fact TO Fact, reason STRING, created_at TIMESTAMP)",
+func sourceRecord(source Source) lstore.NodeRecord {
+	return lstore.NodeRecord{
+		Label: "Source",
+		ID:    source.ID,
+		Props: map[string]string{
+			"space_id":      lstore.StringLiteral(source.SpaceID),
+			"kind":          lstore.StringLiteral(source.Kind),
+			"uri":           lstore.StringLiteral(source.URI),
+			"external_ref":  lstore.StringLiteral(source.ExternalRef),
+			"created_at":    lstore.TimeLiteral(source.CreatedAt),
+			"metadata_json": lstore.JSONLiteral(source.Metadata),
+		},
 	}
 }
 
-func createSourceStatement(source Source) string {
-	return fmt.Sprintf(
-		"CREATE (:Source {id:%s, space_id:%s, kind:%s, uri:%s, external_ref:%s, created_at:%s, metadata_json:%s})",
-		cypherStringLiteral(source.ID),
-		cypherStringLiteral(source.SpaceID),
-		cypherStringLiteral(source.Kind),
-		cypherStringLiteral(source.URI),
-		cypherStringLiteral(source.ExternalRef),
-		cypherTimeLiteral(source.CreatedAt),
-		cypherJSONLiteral(source.Metadata),
-	)
+func episodeRecord(episode Episode) lstore.NodeRecord {
+	return lstore.NodeRecord{
+		Label: "Episode",
+		ID:    episode.ID,
+		Props: map[string]string{
+			"space_id":      lstore.StringLiteral(episode.SpaceID),
+			"kind":          lstore.StringLiteral(episode.Kind),
+			"content":       lstore.StringLiteral(episode.Content),
+			"content_hash":  lstore.StringLiteral(""),
+			"source_id":     lstore.StringLiteral(episode.SourceID),
+			"group_id":      lstore.StringLiteral(episode.GroupID),
+			"observed_at":   lstore.TimeLiteral(episode.ObservedAt),
+			"ingested_at":   lstore.TimeLiteral(episode.IngestedAt),
+			"metadata_json": lstore.JSONLiteral(episode.Metadata),
+		},
+	}
 }
 
-func updateSourceStatement(source Source) string {
-	return fmt.Sprintf(
-		"MATCH (s:Source {id:%s}) SET s.space_id=%s, s.kind=%s, s.uri=%s, s.external_ref=%s, s.created_at=%s, s.metadata_json=%s",
-		cypherStringLiteral(source.ID),
-		cypherStringLiteral(source.SpaceID),
-		cypherStringLiteral(source.Kind),
-		cypherStringLiteral(source.URI),
-		cypherStringLiteral(source.ExternalRef),
-		cypherTimeLiteral(source.CreatedAt),
-		cypherJSONLiteral(source.Metadata),
-	)
+func entityRecord(entity Entity) lstore.NodeRecord {
+	return lstore.NodeRecord{
+		Label: "Entity",
+		ID:    entity.ID,
+		Props: map[string]string{
+			"space_id":       lstore.StringLiteral(entity.SpaceID),
+			"namespace":      lstore.StringLiteral(entity.Namespace),
+			"type":           lstore.StringLiteral(entity.Type),
+			"canonical_name": lstore.StringLiteral(entity.CanonicalName),
+			"aliases_json":   lstore.JSONLiteral(entity.Aliases),
+			"fingerprint":    lstore.StringLiteral(""),
+			"created_at":     lstore.TimeLiteral(entity.CreatedAt),
+			"updated_at":     lstore.TimeLiteral(entity.UpdatedAt),
+			"metadata_json":  lstore.JSONLiteral(entity.Metadata),
+		},
+	}
 }
 
-func createEpisodeStatement(episode Episode) string {
-	return fmt.Sprintf(
-		"CREATE (:Episode {id:%s, space_id:%s, kind:%s, content:%s, content_hash:%s, source_id:%s, group_id:%s, observed_at:%s, ingested_at:%s, metadata_json:%s})",
-		cypherStringLiteral(episode.ID),
-		cypherStringLiteral(episode.SpaceID),
-		cypherStringLiteral(episode.Kind),
-		cypherStringLiteral(episode.Content),
-		cypherStringLiteral(""),
-		cypherStringLiteral(episode.SourceID),
-		cypherStringLiteral(episode.GroupID),
-		cypherTimeLiteral(episode.ObservedAt),
-		cypherTimeLiteral(episode.IngestedAt),
-		cypherJSONLiteral(episode.Metadata),
-	)
+func factRecord(fact Fact) lstore.NodeRecord {
+	return lstore.NodeRecord{
+		Label: "Fact",
+		ID:    fact.ID,
+		Props: map[string]string{
+			"space_id":          lstore.StringLiteral(fact.SpaceID),
+			"predicate":         lstore.StringLiteral(fact.Predicate),
+			"value_text":        lstore.StringLiteral(fact.ValueText),
+			"confidence":        lstore.FloatLiteral(fact.Confidence),
+			"status":            lstore.StringLiteral(fact.Status),
+			"valid_from":        lstore.TimeLiteral(fact.ValidFrom),
+			"valid_to":          lstore.TimeLiteral(fact.ValidTo),
+			"observed_at":       lstore.TimeLiteral(fact.ObservedAt),
+			"created_at":        lstore.TimeLiteral(fact.CreatedAt),
+			"updated_at":        lstore.TimeLiteral(fact.UpdatedAt),
+			"retracted_at":      lstore.TimeLiteral(fact.RetractedAt),
+			"retraction_reason": lstore.StringLiteral(fact.RetractionReason),
+			"metadata_json":     lstore.JSONLiteral(fact.Metadata),
+		},
+	}
 }
 
-func updateEpisodeStatement(episode Episode) string {
-	return fmt.Sprintf(
-		"MATCH (e:Episode {id:%s}) SET e.space_id=%s, e.kind=%s, e.content=%s, e.content_hash=%s, e.source_id=%s, e.group_id=%s, e.observed_at=%s, e.ingested_at=%s, e.metadata_json=%s",
-		cypherStringLiteral(episode.ID),
-		cypherStringLiteral(episode.SpaceID),
-		cypherStringLiteral(episode.Kind),
-		cypherStringLiteral(episode.Content),
-		cypherStringLiteral(""),
-		cypherStringLiteral(episode.SourceID),
-		cypherStringLiteral(episode.GroupID),
-		cypherTimeLiteral(episode.ObservedAt),
-		cypherTimeLiteral(episode.IngestedAt),
-		cypherJSONLiteral(episode.Metadata),
-	)
+func watermarkRecord(watermark MigrationWatermark) lstore.NodeRecord {
+	return lstore.NodeRecord{
+		Label: "YeoulMigration",
+		ID:    watermark.ID,
+		Props: map[string]string{
+			"applied_at":    lstore.TimeLiteral(watermark.AppliedAt),
+			"metadata_json": lstore.JSONLiteral(watermark.Metadata),
+		},
+	}
 }
 
-func createEntityStatement(entity Entity) string {
-	return fmt.Sprintf(
-		"CREATE (:Entity {id:%s, space_id:%s, namespace:%s, type:%s, canonical_name:%s, aliases_json:%s, fingerprint:%s, created_at:%s, updated_at:%s, metadata_json:%s})",
-		cypherStringLiteral(entity.ID),
-		cypherStringLiteral(entity.SpaceID),
-		cypherStringLiteral(entity.Namespace),
-		cypherStringLiteral(entity.Type),
-		cypherStringLiteral(entity.CanonicalName),
-		cypherJSONLiteral(entity.Aliases),
-		cypherStringLiteral(""),
-		cypherTimeLiteral(entity.CreatedAt),
-		cypherTimeLiteral(entity.UpdatedAt),
-		cypherJSONLiteral(entity.Metadata),
-	)
+func entityRevisionRecord(revision EntityRevision) lstore.NodeRecord {
+	return lstore.NodeRecord{
+		Label: "EntityRevision",
+		ID:    revision.ID,
+		Props: map[string]string{
+			"entity_id":      lstore.StringLiteral(revision.EntityID),
+			"space_id":       lstore.StringLiteral(revision.SpaceID),
+			"revision_kind":  lstore.StringLiteral(revision.RevisionKind),
+			"tx_time":        lstore.TimeLiteral(revision.TxTime),
+			"namespace":      lstore.StringLiteral(revision.Namespace),
+			"type":           lstore.StringLiteral(revision.Type),
+			"canonical_name": lstore.StringLiteral(revision.CanonicalName),
+			"aliases_json":   lstore.JSONLiteral(revision.Aliases),
+			"created_at":     lstore.TimeLiteral(revision.CreatedAt),
+			"updated_at":     lstore.TimeLiteral(revision.UpdatedAt),
+			"metadata_json":  lstore.JSONLiteral(revision.Metadata),
+		},
+	}
 }
 
-func updateEntityStatement(entity Entity) string {
-	return fmt.Sprintf(
-		"MATCH (e:Entity {id:%s}) SET e.space_id=%s, e.namespace=%s, e.type=%s, e.canonical_name=%s, e.aliases_json=%s, e.fingerprint=%s, e.created_at=%s, e.updated_at=%s, e.metadata_json=%s",
-		cypherStringLiteral(entity.ID),
-		cypherStringLiteral(entity.SpaceID),
-		cypherStringLiteral(entity.Namespace),
-		cypherStringLiteral(entity.Type),
-		cypherStringLiteral(entity.CanonicalName),
-		cypherJSONLiteral(entity.Aliases),
-		cypherStringLiteral(""),
-		cypherTimeLiteral(entity.CreatedAt),
-		cypherTimeLiteral(entity.UpdatedAt),
-		cypherJSONLiteral(entity.Metadata),
-	)
-}
-
-func createFactStatement(fact Fact) string {
-	return fmt.Sprintf(
-		"CREATE (:Fact {id:%s, space_id:%s, predicate:%s, value_text:%s, confidence:%s, status:%s, valid_from:%s, valid_to:%s, observed_at:%s, created_at:%s, updated_at:%s, retracted_at:%s, retraction_reason:%s, metadata_json:%s})",
-		cypherStringLiteral(fact.ID),
-		cypherStringLiteral(fact.SpaceID),
-		cypherStringLiteral(fact.Predicate),
-		cypherStringLiteral(fact.ValueText),
-		cypherFloatLiteral(fact.Confidence),
-		cypherStringLiteral(fact.Status),
-		cypherTimeLiteral(fact.ValidFrom),
-		cypherTimeLiteral(fact.ValidTo),
-		cypherTimeLiteral(fact.ObservedAt),
-		cypherTimeLiteral(fact.CreatedAt),
-		cypherTimeLiteral(fact.UpdatedAt),
-		cypherTimeLiteral(fact.RetractedAt),
-		cypherStringLiteral(fact.RetractionReason),
-		cypherJSONLiteral(fact.Metadata),
-	)
-}
-
-func updateFactStatement(fact Fact) string {
-	return fmt.Sprintf(
-		"MATCH (f:Fact {id:%s}) SET f.space_id=%s, f.predicate=%s, f.value_text=%s, f.confidence=%s, f.status=%s, f.valid_from=%s, f.valid_to=%s, f.observed_at=%s, f.created_at=%s, f.updated_at=%s, f.retracted_at=%s, f.retraction_reason=%s, f.metadata_json=%s",
-		cypherStringLiteral(fact.ID),
-		cypherStringLiteral(fact.SpaceID),
-		cypherStringLiteral(fact.Predicate),
-		cypherStringLiteral(fact.ValueText),
-		cypherFloatLiteral(fact.Confidence),
-		cypherStringLiteral(fact.Status),
-		cypherTimeLiteral(fact.ValidFrom),
-		cypherTimeLiteral(fact.ValidTo),
-		cypherTimeLiteral(fact.ObservedAt),
-		cypherTimeLiteral(fact.CreatedAt),
-		cypherTimeLiteral(fact.UpdatedAt),
-		cypherTimeLiteral(fact.RetractedAt),
-		cypherStringLiteral(fact.RetractionReason),
-		cypherJSONLiteral(fact.Metadata),
-	)
-}
-
-func createMigrationWatermarkStatement(watermark MigrationWatermark) string {
-	return fmt.Sprintf(
-		"CREATE (:YeoulMigration {id:%s, applied_at:%s, metadata_json:%s})",
-		cypherStringLiteral(watermark.ID),
-		cypherTimeLiteral(watermark.AppliedAt),
-		cypherJSONLiteral(watermark.Metadata),
-	)
-}
-
-func updateMigrationWatermarkStatement(watermark MigrationWatermark) string {
-	return fmt.Sprintf(
-		"MATCH (m:YeoulMigration {id:%s}) SET m.applied_at=%s, m.metadata_json=%s",
-		cypherStringLiteral(watermark.ID),
-		cypherTimeLiteral(watermark.AppliedAt),
-		cypherJSONLiteral(watermark.Metadata),
-	)
-}
-
-func createEntityRevisionStatement(revision EntityRevision) string {
-	return fmt.Sprintf(
-		"CREATE (:EntityRevision {id:%s, entity_id:%s, space_id:%s, revision_kind:%s, tx_time:%s, namespace:%s, type:%s, canonical_name:%s, aliases_json:%s, created_at:%s, updated_at:%s, metadata_json:%s})",
-		cypherStringLiteral(revision.ID),
-		cypherStringLiteral(revision.EntityID),
-		cypherStringLiteral(revision.SpaceID),
-		cypherStringLiteral(revision.RevisionKind),
-		cypherTimeLiteral(revision.TxTime),
-		cypherStringLiteral(revision.Namespace),
-		cypherStringLiteral(revision.Type),
-		cypherStringLiteral(revision.CanonicalName),
-		cypherJSONLiteral(revision.Aliases),
-		cypherTimeLiteral(revision.CreatedAt),
-		cypherTimeLiteral(revision.UpdatedAt),
-		cypherJSONLiteral(revision.Metadata),
-	)
-}
-
-func createFactRevisionStatement(revision FactRevision) string {
-	return fmt.Sprintf(
-		"CREATE (:FactRevision {id:%s, fact_id:%s, space_id:%s, revision_kind:%s, tx_time:%s, predicate:%s, subject_id:%s, object_id:%s, value_text:%s, confidence:%s, status:%s, valid_from:%s, valid_to:%s, observed_at:%s, created_at:%s, updated_at:%s, retracted_at:%s, retraction_reason:%s, supporting_episode_ids_json:%s, metadata_json:%s})",
-		cypherStringLiteral(revision.ID),
-		cypherStringLiteral(revision.FactID),
-		cypherStringLiteral(revision.SpaceID),
-		cypherStringLiteral(revision.RevisionKind),
-		cypherTimeLiteral(revision.TxTime),
-		cypherStringLiteral(revision.Predicate),
-		cypherStringLiteral(revision.SubjectID),
-		cypherStringLiteral(revision.ObjectID),
-		cypherStringLiteral(revision.ValueText),
-		cypherFloatLiteral(revision.Confidence),
-		cypherStringLiteral(revision.Status),
-		cypherTimeLiteral(revision.ValidFrom),
-		cypherTimeLiteral(revision.ValidTo),
-		cypherTimeLiteral(revision.ObservedAt),
-		cypherTimeLiteral(revision.CreatedAt),
-		cypherTimeLiteral(revision.UpdatedAt),
-		cypherTimeLiteral(revision.RetractedAt),
-		cypherStringLiteral(revision.RetractionReason),
-		cypherJSONLiteral(revision.SupportingEpisodeIDs),
-		cypherJSONLiteral(revision.Metadata),
-	)
-}
-
-func deleteSourceNodeStatement(id string) string {
-	return fmt.Sprintf("MATCH (s:Source {id:%s}) DELETE s", cypherStringLiteral(id))
-}
-
-func deleteEpisodeNodeStatement(id string) string {
-	return fmt.Sprintf("MATCH (e:Episode {id:%s}) DELETE e", cypherStringLiteral(id))
-}
-
-func deleteEntityNodeStatement(id string) string {
-	return fmt.Sprintf("MATCH (e:Entity {id:%s}) DELETE e", cypherStringLiteral(id))
-}
-
-func deleteFactNodeStatement(id string) string {
-	return fmt.Sprintf("MATCH (f:Fact {id:%s}) DELETE f", cypherStringLiteral(id))
+func factRevisionRecord(revision FactRevision) lstore.NodeRecord {
+	return lstore.NodeRecord{
+		Label: "FactRevision",
+		ID:    revision.ID,
+		Props: map[string]string{
+			"fact_id":                     lstore.StringLiteral(revision.FactID),
+			"space_id":                    lstore.StringLiteral(revision.SpaceID),
+			"revision_kind":               lstore.StringLiteral(revision.RevisionKind),
+			"tx_time":                     lstore.TimeLiteral(revision.TxTime),
+			"predicate":                   lstore.StringLiteral(revision.Predicate),
+			"subject_id":                  lstore.StringLiteral(revision.SubjectID),
+			"object_id":                   lstore.StringLiteral(revision.ObjectID),
+			"value_text":                  lstore.StringLiteral(revision.ValueText),
+			"confidence":                  lstore.FloatLiteral(revision.Confidence),
+			"status":                      lstore.StringLiteral(revision.Status),
+			"valid_from":                  lstore.TimeLiteral(revision.ValidFrom),
+			"valid_to":                    lstore.TimeLiteral(revision.ValidTo),
+			"observed_at":                 lstore.TimeLiteral(revision.ObservedAt),
+			"created_at":                  lstore.TimeLiteral(revision.CreatedAt),
+			"updated_at":                  lstore.TimeLiteral(revision.UpdatedAt),
+			"retracted_at":                lstore.TimeLiteral(revision.RetractedAt),
+			"retraction_reason":           lstore.StringLiteral(revision.RetractionReason),
+			"supporting_episode_ids_json": lstore.JSONLiteral(revision.SupportingEpisodeIDs),
+			"metadata_json":               lstore.JSONLiteral(revision.Metadata),
+		},
+	}
 }
 
 func createEpisodeRelationshipStatements(episode Episode) []string {
@@ -832,104 +743,103 @@ func createEpisodeRelationshipStatements(episode Episode) []string {
 		return nil
 	}
 	return []string{
-		fmt.Sprintf(
-			"MATCH (e:Episode {id:%s}), (src:Source {id:%s}) CREATE (e)-[:FROM_SOURCE {created_at:%s}]->(src)",
-			cypherStringLiteral(episode.ID),
-			cypherStringLiteral(episode.SourceID),
-			cypherTimeLiteral(episode.IngestedAt),
-		),
+		lstore.CreateRelationship(lstore.RelationshipSpec{
+			FromLabel: "Episode",
+			FromID:    episode.ID,
+			Type:      "FROM_SOURCE",
+			ToLabel:   "Source",
+			ToID:      episode.SourceID,
+			Props: map[string]string{
+				"created_at": lstore.TimeLiteral(episode.IngestedAt),
+			},
+		}),
 	}
 }
 
 func deleteEpisodeRelationshipStatements(episode Episode) []string {
 	return []string{
-		fmt.Sprintf("MATCH (:Episode {id:%s})-[r:FROM_SOURCE]->(:Source) DELETE r", cypherStringLiteral(episode.ID)),
-		fmt.Sprintf("MATCH (:Episode {id:%s})-[r:ASSERTS]->(:Fact) DELETE r", cypherStringLiteral(episode.ID)),
-		fmt.Sprintf("MATCH (:Fact)-[r:SUPPORTED_BY]->(:Episode {id:%s}) DELETE r", cypherStringLiteral(episode.ID)),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Episode", FromID: episode.ID, Type: "FROM_SOURCE", ToLabel: "Source"}),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Episode", FromID: episode.ID, Type: "ASSERTS", ToLabel: "Fact"}),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Fact", Type: "SUPPORTED_BY", ToLabel: "Episode", ToID: episode.ID}),
 	}
 }
 
 func createFactRelationshipStatements(fact Fact) []string {
 	statements := make([]string, 0, 6+len(fact.SupportingEpisodeIDs)*2)
 	if fact.SubjectID != "" {
-		statements = append(statements, fmt.Sprintf(
-			"MATCH (f:Fact {id:%s}), (e:Entity {id:%s}) CREATE (f)-[:SUBJECT {created_at:%s}]->(e)",
-			cypherStringLiteral(fact.ID),
-			cypherStringLiteral(fact.SubjectID),
-			cypherTimeLiteral(fact.CreatedAt),
-		))
+		statements = append(statements, lstore.CreateRelationship(lstore.RelationshipSpec{
+			FromLabel: "Fact",
+			FromID:    fact.ID,
+			Type:      "SUBJECT",
+			ToLabel:   "Entity",
+			ToID:      fact.SubjectID,
+			Props: map[string]string{
+				"created_at": lstore.TimeLiteral(fact.CreatedAt),
+			},
+		}))
 	}
 	if fact.ObjectID != "" {
-		statements = append(statements, fmt.Sprintf(
-			"MATCH (f:Fact {id:%s}), (e:Entity {id:%s}) CREATE (f)-[:OBJECT_ENTITY {created_at:%s}]->(e)",
-			cypherStringLiteral(fact.ID),
-			cypherStringLiteral(fact.ObjectID),
-			cypherTimeLiteral(fact.CreatedAt),
-		))
+		statements = append(statements, lstore.CreateRelationship(lstore.RelationshipSpec{
+			FromLabel: "Fact",
+			FromID:    fact.ID,
+			Type:      "OBJECT_ENTITY",
+			ToLabel:   "Entity",
+			ToID:      fact.ObjectID,
+			Props: map[string]string{
+				"created_at": lstore.TimeLiteral(fact.CreatedAt),
+			},
+		}))
 	}
 	for _, episodeID := range fact.SupportingEpisodeIDs {
-		statements = append(statements, fmt.Sprintf(
-			"MATCH (ep:Episode {id:%s}), (f:Fact {id:%s}) CREATE (ep)-[:ASSERTS {created_at:%s}]->(f)",
-			cypherStringLiteral(episodeID),
-			cypherStringLiteral(fact.ID),
-			cypherTimeLiteral(fact.CreatedAt),
-		))
-		statements = append(statements, fmt.Sprintf(
-			"MATCH (f:Fact {id:%s}), (ep:Episode {id:%s}) CREATE (f)-[:SUPPORTED_BY {support_kind:%s, created_at:%s}]->(ep)",
-			cypherStringLiteral(fact.ID),
-			cypherStringLiteral(episodeID),
-			cypherStringLiteral("observed"),
-			cypherTimeLiteral(fact.CreatedAt),
-		))
+		statements = append(statements, lstore.CreateRelationship(lstore.RelationshipSpec{
+			FromLabel: "Episode",
+			FromID:    episodeID,
+			Type:      "ASSERTS",
+			ToLabel:   "Fact",
+			ToID:      fact.ID,
+			Props: map[string]string{
+				"created_at": lstore.TimeLiteral(fact.CreatedAt),
+			},
+		}))
+		statements = append(statements, lstore.CreateRelationship(lstore.RelationshipSpec{
+			FromLabel: "Fact",
+			FromID:    fact.ID,
+			Type:      "SUPPORTED_BY",
+			ToLabel:   "Episode",
+			ToID:      episodeID,
+			Props: map[string]string{
+				"support_kind": lstore.StringLiteral("observed"),
+				"created_at":   lstore.TimeLiteral(fact.CreatedAt),
+			},
+		}))
 	}
 	supersededBy, _ := fact.Metadata["superseded_by"].(string)
 	if supersededBy != "" {
 		reason, _ := fact.Metadata["supersede_reason"].(string)
-		statements = append(statements, fmt.Sprintf(
-			"MATCH (newFact:Fact {id:%s}), (oldFact:Fact {id:%s}) CREATE (newFact)-[:SUPERSEDES {reason:%s, created_at:%s}]->(oldFact)",
-			cypherStringLiteral(supersededBy),
-			cypherStringLiteral(fact.ID),
-			cypherStringLiteral(reason),
-			cypherTimeLiteral(fact.UpdatedAt),
-		))
+		statements = append(statements, lstore.CreateRelationship(lstore.RelationshipSpec{
+			FromLabel: "Fact",
+			FromID:    supersededBy,
+			Type:      "SUPERSEDES",
+			ToLabel:   "Fact",
+			ToID:      fact.ID,
+			Props: map[string]string{
+				"reason":     lstore.StringLiteral(reason),
+				"created_at": lstore.TimeLiteral(fact.UpdatedAt),
+			},
+		}))
 	}
 	return statements
 }
 
 func deleteFactRelationshipStatements(fact Fact) []string {
 	return []string{
-		fmt.Sprintf("MATCH (:Fact {id:%s})-[r:SUBJECT]->(:Entity) DELETE r", cypherStringLiteral(fact.ID)),
-		fmt.Sprintf("MATCH (:Fact {id:%s})-[r:OBJECT_ENTITY]->(:Entity) DELETE r", cypherStringLiteral(fact.ID)),
-		fmt.Sprintf("MATCH (:Episode)-[r:ASSERTS]->(:Fact {id:%s}) DELETE r", cypherStringLiteral(fact.ID)),
-		fmt.Sprintf("MATCH (:Fact {id:%s})-[r:SUPPORTED_BY]->(:Episode) DELETE r", cypherStringLiteral(fact.ID)),
-		fmt.Sprintf("MATCH (:Fact {id:%s})-[r:SUPERSEDES]->(:Fact) DELETE r", cypherStringLiteral(fact.ID)),
-		fmt.Sprintf("MATCH (:Fact)-[r:SUPERSEDES]->(:Fact {id:%s}) DELETE r", cypherStringLiteral(fact.ID)),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Fact", FromID: fact.ID, Type: "SUBJECT", ToLabel: "Entity"}),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Fact", FromID: fact.ID, Type: "OBJECT_ENTITY", ToLabel: "Entity"}),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Episode", Type: "ASSERTS", ToLabel: "Fact", ToID: fact.ID}),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Fact", FromID: fact.ID, Type: "SUPPORTED_BY", ToLabel: "Episode"}),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Fact", FromID: fact.ID, Type: "SUPERSEDES", ToLabel: "Fact"}),
+		lstore.DeleteRelationship(lstore.RelationshipSpec{FromLabel: "Fact", Type: "SUPERSEDES", ToLabel: "Fact", ToID: fact.ID}),
 	}
-}
-
-func cypherStringLiteral(value string) string {
-	data, _ := json.Marshal(value)
-	return string(data)
-}
-
-func cypherJSONLiteral(value any) string {
-	data, _ := json.Marshal(value)
-	return cypherStringLiteral(string(data))
-}
-
-func cypherTimeLiteral(value time.Time) string {
-	if value.IsZero() {
-		return "NULL"
-	}
-	return fmt.Sprintf("timestamp(%s)", cypherStringLiteral(value.UTC().Format(time.RFC3339Nano)))
-}
-
-func cypherFloatLiteral(value float64) string {
-	return fmt.Sprintf("%g", value)
-}
-
-func cypherUint64Literal(value uint64) string {
-	return fmt.Sprintf("%d", value)
 }
 
 func stripFactRelationshipFields(fact Fact) Fact {
@@ -1059,10 +969,6 @@ func asTime(value any) time.Time {
 	default:
 		return time.Time{}
 	}
-}
-
-func isMissingTableError(err error) bool {
-	return strings.Contains(err.Error(), "Binder exception: Table ")
 }
 
 func sortedKeys[T any](items map[string]T) []string {

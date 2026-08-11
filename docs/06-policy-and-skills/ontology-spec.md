@@ -1,30 +1,10 @@
-version: 1
+# Ontology Specification
 
-entity_types:
-  - Person
-  - Organization
-  - Project
-  - Task
-  - Document
-  - Repository
-  - File
-  - Decision
-  - Issue
+The Yeoul ontology is a single source of truth maintained in the agent pack:
 
-predicates:
-  - OWNS
-  - WORKS_ON
-  - DECIDED
-  - BLOCKED_BY
-  - DEPENDS_ON
-  - MENTIONED_IN
-  - CHANGED_TO
-  - SUPERSEDES
+- Canonical file: [`agent-pack/ontology.yaml`](../../agent-pack/ontology.yaml)
 
-dedup:
-  Person:
-    keys: [email, canonical_name]
-  Repository:
-    keys: [url, canonical_name]
-  File:
-    keys: [path, repository]
+It defines the starter entity types, predicates, and deduplication keys used
+by agent-facing memory workflows. The `docs/` tree intentionally does not
+carry a copy; keep ontology changes in the agent pack and reference the file
+above.
