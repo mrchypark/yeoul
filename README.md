@@ -79,6 +79,28 @@ Yeoul keeps agent behavior outside the core engine, so each coding assistant nee
 
 See the full product-specific guide in [`agent-pack/integrations/README.md`](./agent-pack/integrations/README.md).
 
+## Local Development
+
+Requirements: Go 1.26+ and the `gcc` toolchain (cgo).
+
+The Ladybug runtime ships as a native shared library and must be staged into
+the Go module cache once per machine before building or testing:
+
+```bash
+bash scripts/ci/setup-ladybug.sh darwin arm64   # darwin arm64|amd64, linux amd64|arm64, windows amd64
+```
+
+Then build, vet, and test normally:
+
+```bash
+go build ./...
+go vet ./...
+go test ./...
+```
+
+The `rax` retrieval runtime is optional; CLI search degrades to core search
+when the bundled `librax_ffi` library is not present.
+
 ## Separation Rule
 
 ```text

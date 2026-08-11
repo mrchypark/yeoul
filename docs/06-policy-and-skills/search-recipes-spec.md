@@ -1,39 +1,10 @@
-version: 1
+# Search Recipes Specification
 
-recipes:
-  recent_context:
-    description: Retrieve recent facts and episodes related to a query.
-    strategy: hybrid
-    filters:
-      window_days: 30
-      fact_status: active
-    ranking:
-      recency: 0.4
-      semantic_similarity: 0.3
-      graph_distance: 0.2
-      confidence: 0.1
+Search recipes are a single source of truth maintained in the agent pack:
 
-  preflight_briefing:
-    description: Retrieve active context an agent should check before starting non-trivial work.
-    strategy: neighborhood
-    filters:
-      fact_status: active
-    expand:
-      entity_types: [Project, Task, Repository, File, Issue, Document, Person, Decision]
+- Canonical file: [`agent-pack/search_recipes.yaml`](../../agent-pack/search_recipes.yaml)
 
-  project_memory:
-    description: Retrieve project-level context.
-    strategy: neighborhood
-    expand:
-      hops: 2
-      entity_types: [Project, Task, Decision, Document]
-    ranking:
-      graph_distance: 0.4
-      recency: 0.3
-      provenance: 0.3
-
-  contradiction_check:
-    description: Find facts that may conflict with a new fact.
-    strategy: predicate_subject_lookup
-    filters:
-      fact_status: active
+They define the retrieval recipes (`recent_context`, `preflight_briefing`,
+`project_memory`, `contradiction_check`) with their strategies and rankings.
+The `docs/` tree intentionally does not carry a copy; keep recipe changes in
+the agent pack and reference the file above.

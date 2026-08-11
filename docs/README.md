@@ -17,6 +17,7 @@ Agent Pack은 Core를 사용하는 규칙만 제공한다.
 ```text
 docs/
   00-overview/
+    current-scope.md
     vision.md
     glossary.md
     principles.md
@@ -73,7 +74,6 @@ docs/
 
   07-implementation/
     repo-layout.md
-    migration-system.md
     ladybug-cypher-ddl.md
     indexing.md
     transactions.md
@@ -81,17 +81,12 @@ docs/
 
   08-operations/
     local-storage.md
-    backup-restore.md
     observability.md
     performance-benchmarking.md
-    security-and-privacy.md
     data-retention.md
 
   09-quality/
-    acceptance-criteria.md
     test-plan.md
-    benchmark-plan.md
-    failure-modes.md
 
   10-examples/
     quickstart.md
@@ -99,7 +94,15 @@ docs/
     example-ontology.md
     example-agent-instructions.md
     example-ingest-workflow.md
+    proactive-decision-support.md
 ```
+
+Related bundles:
+
+- `agent-pack/` — agent-facing skills, instructions, ontology, episode rules, and search recipes.
+- `skills/yeoul-memory/` — reusable agent skill backed by the same CLI workflows.
+- `evals/` — evaluation evidence for agent-facing guidance.
+- `yeoul-docs-scope/` — compatibility pointer to the current scope documents.
 
 ## Current Scope
 
@@ -109,7 +112,7 @@ This repository now includes:
 - most of the remaining product, research, memory model, API, implementation, operations, quality, and example drafts
 - the separate `agent-pack/` starter files for AI agent integrations
 
-Some planned files in the tree are still intentionally pending and can be added as implementation needs become concrete.
+The tree above lists files that exist. Documents that were previously planned but not yet written (for example migration, backup/restore, security, and benchmark planning docs) are intentionally absent rather than listed as pending.
 
 ## Scope Anchor
 
