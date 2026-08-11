@@ -129,7 +129,10 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 		result, err = e.ingestEpisodeLocked(spaceID, input, source, now)
 		return err
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResult, error) {

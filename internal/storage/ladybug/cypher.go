@@ -59,7 +59,8 @@ func CreateNode(record NodeRecord) string {
 }
 
 // UpdateNode renders a MATCH+SET statement for one node record.
-func UpdateNode(record NodeRecord) string {
+// Returns ("", false) when the record has no properties to update.
+func UpdateNode(record NodeRecord) (string, bool) {
 	names := make([]string, 0, len(record.Props))
 	for name := range record.Props {
 		if name == "id" {
@@ -73,9 +74,9 @@ func UpdateNode(record NodeRecord) string {
 		setParts = append(setParts, fmt.Sprintf("n.%s=%s", name, record.Props[name]))
 	}
 	if len(setParts) == 0 {
-		return fmt.Sprintf("MATCH (n:%s {id:%s})", record.Label, StringLiteral(record.ID))
+		return "", false
 	}
-	return fmt.Sprintf("MATCH (n:%s {id:%s}) SET %s", record.Label, StringLiteral(record.ID), strings.Join(setParts, ", "))
+	return fmt.Sprintf("MATCH (n:%s {id:%s}) SET %s", record.Label, StringLiteral(record.ID), strings.Join(setParts, ", ")), true
 }
 
 // DeleteNode renders a MATCH+DELETE statement for one node record.

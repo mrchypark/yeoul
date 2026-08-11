@@ -428,7 +428,9 @@ func (s *ladybugStore) buildSourceDelta(prev, next map[string]Source) []string {
 		case !oldOK && newOK:
 			statements = append(statements, lstore.CreateNode(sourceRecord(newSource)))
 		case oldOK && newOK && !reflect.DeepEqual(oldSource, newSource):
-			statements = append(statements, lstore.UpdateNode(sourceRecord(newSource)))
+			if stmt, ok := lstore.UpdateNode(sourceRecord(newSource)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -443,7 +445,9 @@ func (s *ladybugStore) buildEpisodeDelta(prev, next map[string]Episode) []string
 		case !oldOK && newOK:
 			statements = append(statements, lstore.CreateNode(episodeRecord(newEpisode)))
 		case oldOK && newOK && !reflect.DeepEqual(oldEpisode, newEpisode):
-			statements = append(statements, lstore.UpdateNode(episodeRecord(newEpisode)))
+			if stmt, ok := lstore.UpdateNode(episodeRecord(newEpisode)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -458,7 +462,9 @@ func (s *ladybugStore) buildEntityDelta(prev, next map[string]Entity) []string {
 		case !oldOK && newOK:
 			statements = append(statements, lstore.CreateNode(entityRecord(newEntity)))
 		case oldOK && newOK && !reflect.DeepEqual(oldEntity, newEntity):
-			statements = append(statements, lstore.UpdateNode(entityRecord(newEntity)))
+			if stmt, ok := lstore.UpdateNode(entityRecord(newEntity)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -473,7 +479,9 @@ func (s *ladybugStore) buildFactDelta(prev, next map[string]Fact) []string {
 		case !oldOK && newOK:
 			statements = append(statements, lstore.CreateNode(factRecord(newFact)))
 		case oldOK && newOK && !reflect.DeepEqual(stripFactRelationshipFields(oldFact), stripFactRelationshipFields(newFact)):
-			statements = append(statements, lstore.UpdateNode(factRecord(newFact)))
+			if stmt, ok := lstore.UpdateNode(factRecord(newFact)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
@@ -488,7 +496,9 @@ func (s *ladybugStore) buildMigrationWatermarkDelta(prev, next map[string]Migrat
 		case !oldOK && newOK:
 			statements = append(statements, lstore.CreateNode(watermarkRecord(newWatermark)))
 		case oldOK && newOK && !reflect.DeepEqual(oldWatermark, newWatermark):
-			statements = append(statements, lstore.UpdateNode(watermarkRecord(newWatermark)))
+			if stmt, ok := lstore.UpdateNode(watermarkRecord(newWatermark)); ok {
+				statements = append(statements, stmt)
+			}
 		}
 	}
 	return statements
