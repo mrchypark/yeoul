@@ -18,7 +18,7 @@ Usage:
   yeoul admin checkpoint --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json]
   yeoul admin export --db PATH --out FILE [--json]
-  yeoul admin import --db PATH --in FILE [--json]
+  yeoul admin import --db PATH --in FILE [--json] [--confirm]
 `)
 	if len(args) == 0 {
 		return &usageError{message: usage}
@@ -254,7 +254,7 @@ Usage:
 func (c cli) runAdminImport(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul admin import --db PATH --in FILE [--json]
+  yeoul admin import --db PATH --in FILE [--json] [--confirm]
 `)
 	fs := newFlagSet("admin import")
 	var dbPath string

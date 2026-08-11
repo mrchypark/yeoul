@@ -120,7 +120,7 @@ Usage:
   yeoul admin checkpoint --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json] [--confirm]
   yeoul admin export --db PATH --out FILE [--json]
-  yeoul admin import --db PATH --in FILE [--json]
+  yeoul admin import --db PATH --in FILE [--json] [--confirm]
   yeoul bench ingest --db PATH --episodes N [--facts-per-episode N] [--json]
   yeoul bench query --db PATH --query TEXT [--backend auto|core|rax] [--entity ID] [--fact ID] [--iterations N] [--json]
   yeoul bench lifecycle --db PATH --iterations N [--json]
