@@ -103,7 +103,14 @@ checksum_name="checksums_${os}-${arch}.txt"
 base_url="https://github.com/${repo}/releases/download/${tag}"
 
 temp_dir="$(mktemp -d)"
-trap 'rm -rf "${temp_dir}"' EXIT
+staging_dir=""
+cleanup() {
+  rm -rf "${temp_dir}"
+  if [[ -n "${staging_dir}" ]]; then
+    rm -rf "${staging_dir}"
+  fi
+}
+trap cleanup EXIT
 
 archive_path="${temp_dir}/${archive_name}"
 checksum_path="${temp_dir}/${checksum_name}"
@@ -138,7 +145,9 @@ verify_checksum
 
 mkdir -p "${install_root}" "${bin_dir}"
 target_dir="${install_root}/${tag}"
-rm -rf "${target_dir}"
+staging_dir="${install_root}/.${tag}.staging-${RANDOM:-0}-$$"
+backup_dir="${install_root}/.${tag}.previous-${RANDOM:-0}-$$"
+rm -rf "${staging_dir}" "${backup_dir}"
 
 tar -xzf "${archive_path}" -C "${temp_dir}"
 extracted_dir="$(find "${temp_dir}" -mindepth 1 -maxdepth 1 -type d -name "yeoul_*_${os}_${arch}" -print -quit)"
@@ -148,7 +157,27 @@ if [[ -z "${extracted_dir}" ]]; then
   exit 1
 fi
 
-mv "${extracted_dir}" "${target_dir}"
+mv "${extracted_dir}" "${staging_dir}"
+
+for executable in yeoul yeould; do
+  if [[ ! -x "${staging_dir}/bin/${executable}" ]]; then
+    echo "archive is missing executable bin/${executable}" >&2
+    exit 1
+  fi
+done
+
+if [[ -e "${target_dir}" || -L "${target_dir}" ]]; then
+  mv "${target_dir}" "${backup_dir}"
+fi
+if ! mv "${staging_dir}" "${target_dir}"; then
+  if [[ -e "${backup_dir}" || -L "${backup_dir}" ]]; then
+    mv "${backup_dir}" "${target_dir}"
+  fi
+  echo "failed to replace ${target_dir}" >&2
+  exit 1
+fi
+staging_dir=""
+rm -rf "${backup_dir}"
 
 cat > "${bin_dir}/yeoul" <<EOF
 #!/usr/bin/env bash

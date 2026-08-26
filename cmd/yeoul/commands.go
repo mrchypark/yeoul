@@ -9,6 +9,7 @@ import (
 	"time"
 
 	json "github.com/goccy/go-json"
+	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/retrieval"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -892,11 +893,11 @@ Usage:
 	}
 	defer store.Close()
 
-	version, err := singleStringQuery(store, "CALL db_version() RETURN *")
+	version, err := singleStringQuery(store, lstore.QueryVersion())
 	if err != nil {
 		return err
 	}
-	rows, err := queryRows(store, "CALL show_tables() RETURN *")
+	rows, err := queryRows(store, lstore.QueryTables())
 	if err != nil {
 		return err
 	}
@@ -967,10 +968,10 @@ Usage:
 		key   string
 		query string
 	}{
-		{key: "sources", query: "MATCH (n:Source) RETURN count(n)"},
-		{key: "episodes", query: "MATCH (n:Episode) RETURN count(n)"},
-		{key: "entities", query: "MATCH (n:Entity) RETURN count(n)"},
-		{key: "facts", query: "MATCH (n:Fact) RETURN count(n)"},
+		{key: "sources", query: lstore.QueryCount("Source")},
+		{key: "episodes", query: lstore.QueryCount("Episode")},
+		{key: "entities", query: lstore.QueryCount("Entity")},
+		{key: "facts", query: lstore.QueryCount("Fact")},
 	} {
 		value, err := singleIntQuery(store, item.query)
 		if err != nil {

@@ -40,6 +40,10 @@ jobs:
         if: matrix.goos == 'linux'
         run: sh scripts/ci/check-yeoul-memory-guidance.sh
 
+      - name: Validate storage query boundary
+        if: matrix.goos == 'linux'
+        run: sh scripts/ci/check-storage-boundaries.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	json "github.com/goccy/go-json"
+	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
@@ -236,7 +237,9 @@ Usage:
 	if err != nil {
 		return err
 	}
-	payload = importableExportPayload(payload)
+	if err := validateImportableExportPayload(payload); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
@@ -328,29 +331,29 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 	}
 	defer store.Close()
 
-	sourceRows, err := queryRows(store, "MATCH (s:Source) RETURN s.id, s.kind, s.uri, s.external_ref")
+	sourceRows, err := queryRows(store, lstore.QuerySourceRefs())
 	if err != nil {
 		return nil, err
 	}
 	sourceMap := make(map[string]yeoul.SourceInput, len(sourceRows))
 	for _, row := range sourceRows {
-		id := fmt.Sprint(row["s.id"])
+		id := fmt.Sprint(row["id"])
 		sourceMap[id] = yeoul.SourceInput{
 			ID:          id,
-			Kind:        fmt.Sprint(row["s.kind"]),
-			URI:         fmt.Sprint(row["s.uri"]),
-			ExternalRef: fmt.Sprint(row["s.external_ref"]),
+			Kind:        fmt.Sprint(row["kind"]),
+			URI:         fmt.Sprint(row["uri"]),
+			ExternalRef: fmt.Sprint(row["external_ref"]),
 		}
 	}
 
 	payload := &exportFile{}
 
-	episodeRows, err := queryRows(store, "MATCH (e:Episode) RETURN e.id")
+	episodeRows, err := queryRows(store, lstore.QueryAllIDs("Episode"))
 	if err != nil {
 		return nil, err
 	}
 	for _, row := range episodeRows {
-		id := fmt.Sprint(row["e.id"])
+		id := fmt.Sprint(row["id"])
 		record, err := eng.GetEpisode(ctx, id)
 		if err != nil {
 			return nil, err
@@ -371,12 +374,12 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		payload.Episodes = append(payload.Episodes, input)
 	}
 
-	entityRows, err := queryRows(store, "MATCH (e:Entity) RETURN e.id")
+	entityRows, err := queryRows(store, lstore.QueryAllIDs("Entity"))
 	if err != nil {
 		return nil, err
 	}
 	for _, row := range entityRows {
-		id := fmt.Sprint(row["e.id"])
+		id := fmt.Sprint(row["id"])
 		record, err := eng.GetEntity(ctx, id)
 		if err != nil {
 			return nil, err
@@ -392,12 +395,12 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		})
 	}
 
-	factRows, err := queryRows(store, "MATCH (f:Fact) RETURN f.id")
+	factRows, err := queryRows(store, lstore.QueryAllIDs("Fact"))
 	if err != nil {
 		return nil, err
 	}
 	for _, row := range factRows {
-		id := fmt.Sprint(row["f.id"])
+		id := fmt.Sprint(row["id"])
 		record, err := eng.GetFact(ctx, id)
 		if err != nil {
 			return nil, err
@@ -419,53 +422,53 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		})
 	}
 
-	entityRevisionRows, err := queryRowsAllowMissing(store, "MATCH (r:EntityRevision) RETURN r.id, r.entity_id, r.space_id, r.revision_kind, r.tx_time, r.namespace, r.type, r.canonical_name, r.aliases_json, r.created_at, r.updated_at, r.metadata_json")
+	entityRevisionRows, err := queryRowsAllowMissing(store, lstore.QueryEntityRevisionRows())
 	if err != nil {
 		return nil, err
 	}
 	for _, row := range entityRevisionRows {
 		payload.EntityRevisions = append(payload.EntityRevisions, yeoul.EntityRevision{
-			ID:            rowString(row, "r.id"),
-			EntityID:      rowString(row, "r.entity_id"),
-			SpaceID:       rowString(row, "r.space_id"),
-			RevisionKind:  rowString(row, "r.revision_kind"),
-			TxTime:        rowTime(row, "r.tx_time"),
-			Namespace:     rowString(row, "r.namespace"),
-			Type:          rowString(row, "r.type"),
-			CanonicalName: rowString(row, "r.canonical_name"),
-			Aliases:       rowStringSlice(row, "r.aliases_json"),
-			CreatedAt:     rowTime(row, "r.created_at"),
-			UpdatedAt:     rowTime(row, "r.updated_at"),
-			Metadata:      rowMap(row, "r.metadata_json"),
+			ID:            rowString(row, "id"),
+			EntityID:      rowString(row, "entity_id"),
+			SpaceID:       rowString(row, "space_id"),
+			RevisionKind:  rowString(row, "revision_kind"),
+			TxTime:        rowTime(row, "tx_time"),
+			Namespace:     rowString(row, "namespace"),
+			Type:          rowString(row, "type"),
+			CanonicalName: rowString(row, "canonical_name"),
+			Aliases:       rowStringSlice(row, "aliases_json"),
+			CreatedAt:     rowTime(row, "created_at"),
+			UpdatedAt:     rowTime(row, "updated_at"),
+			Metadata:      rowMap(row, "metadata_json"),
 		})
 	}
 
-	factRevisionRows, err := queryRowsAllowMissing(store, "MATCH (r:FactRevision) RETURN r.id, r.fact_id, r.space_id, r.revision_kind, r.tx_time, r.predicate, r.subject_id, r.object_id, r.value_text, r.confidence, r.status, r.valid_from, r.valid_to, r.observed_at, r.created_at, r.updated_at, r.retracted_at, r.retraction_reason, r.supporting_episode_ids_json, r.metadata_json")
+	factRevisionRows, err := queryRowsAllowMissing(store, lstore.QueryFactRevisionRows())
 	if err != nil {
 		return nil, err
 	}
 	for _, row := range factRevisionRows {
 		payload.FactRevisions = append(payload.FactRevisions, yeoul.FactRevision{
-			ID:                   rowString(row, "r.id"),
-			FactID:               rowString(row, "r.fact_id"),
-			SpaceID:              rowString(row, "r.space_id"),
-			RevisionKind:         rowString(row, "r.revision_kind"),
-			TxTime:               rowTime(row, "r.tx_time"),
-			Predicate:            rowString(row, "r.predicate"),
-			SubjectID:            rowString(row, "r.subject_id"),
-			ObjectID:             rowString(row, "r.object_id"),
-			ValueText:            rowString(row, "r.value_text"),
-			Confidence:           rowFloat64(row, "r.confidence"),
-			Status:               rowString(row, "r.status"),
-			ValidFrom:            rowTime(row, "r.valid_from"),
-			ValidTo:              rowTime(row, "r.valid_to"),
-			ObservedAt:           rowTime(row, "r.observed_at"),
-			CreatedAt:            rowTime(row, "r.created_at"),
-			UpdatedAt:            rowTime(row, "r.updated_at"),
-			RetractedAt:          rowTime(row, "r.retracted_at"),
-			RetractionReason:     rowString(row, "r.retraction_reason"),
-			SupportingEpisodeIDs: rowStringSlice(row, "r.supporting_episode_ids_json"),
-			Metadata:             rowMap(row, "r.metadata_json"),
+			ID:                   rowString(row, "id"),
+			FactID:               rowString(row, "fact_id"),
+			SpaceID:              rowString(row, "space_id"),
+			RevisionKind:         rowString(row, "revision_kind"),
+			TxTime:               rowTime(row, "tx_time"),
+			Predicate:            rowString(row, "predicate"),
+			SubjectID:            rowString(row, "subject_id"),
+			ObjectID:             rowString(row, "object_id"),
+			ValueText:            rowString(row, "value_text"),
+			Confidence:           rowFloat64(row, "confidence"),
+			Status:               rowString(row, "status"),
+			ValidFrom:            rowTime(row, "valid_from"),
+			ValidTo:              rowTime(row, "valid_to"),
+			ObservedAt:           rowTime(row, "observed_at"),
+			CreatedAt:            rowTime(row, "created_at"),
+			UpdatedAt:            rowTime(row, "updated_at"),
+			RetractedAt:          rowTime(row, "retracted_at"),
+			RetractionReason:     rowString(row, "retraction_reason"),
+			SupportingEpisodeIDs: rowStringSlice(row, "supporting_episode_ids_json"),
+			Metadata:             rowMap(row, "metadata_json"),
 		})
 	}
 
@@ -477,40 +480,29 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 	return payload, nil
 }
 
-func importableExportPayload(payload *exportFile) *exportFile {
+func validateImportableExportPayload(payload *exportFile) error {
 	if payload == nil {
 		return nil
 	}
-	out := *payload
-	out.EntityRevisions = nil
-	out.FactRevisions = nil
-	out.Facts = make([]yeoul.FactInput, 0, len(payload.Facts))
 	for _, fact := range payload.Facts {
 		if fact.Status != "" && fact.Status != "active" {
-			continue
+			return fmt.Errorf("admin export cannot create an importable snapshot: inactive fact %q has status %q; full-fidelity restore is not implemented", fact.ID, fact.Status)
 		}
-		fact.Status = ""
-		fact.Metadata = stripExportFactLifecycleMetadata(fact.Metadata)
-		out.Facts = append(out.Facts, fact)
+		if hasFactLifecycleMetadata(fact.Metadata) {
+			return fmt.Errorf("admin export cannot create an importable snapshot: fact %q contains lifecycle metadata; full-fidelity restore is not implemented", fact.ID)
+		}
 	}
-	return &out
+	if len(payload.EntityRevisions) > 0 || len(payload.FactRevisions) > 0 {
+		return fmt.Errorf("admin export cannot create an importable snapshot: database contains revision history; full-fidelity restore is not implemented")
+	}
+	return nil
 }
 
-func stripExportFactLifecycleMetadata(src map[string]any) map[string]any {
-	if len(src) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(src))
-	for key, value := range src {
-		switch key {
-		case "superseded_by", "supersedes", "supersede_reason", "duplicate_of", "_history":
-			continue
-		default:
-			out[key] = value
+func hasFactLifecycleMetadata(metadata map[string]any) bool {
+	for _, key := range []string{"superseded_by", "supersedes", "supersede_reason", "duplicate_of", "_history"} {
+		if _, ok := metadata[key]; ok {
+			return true
 		}
 	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return false
 }

@@ -7,6 +7,8 @@ description: Use when working in the Yeoul repository or when an agent should st
 
 Use this skill when the task depends on prior project memory, durable decisions, fact lifecycle, or provenance in the Yeoul repo.
 
+Yeoul Core is a memory substrate, not an agent runtime. Keep agent behavior in skills, instructions, ontology files, episode rules, and search recipes. Use Yeoul public CLI/API workflows instead of raw Cypher or storage queries.
+
 ## Default database path
 
 For normal work, prefer a single user-level Yeoul database instead of a project-local database file.
@@ -23,7 +25,7 @@ When asked to install or upgrade Yeoul on this computer:
 - Verify the wrapper points at the expected install directory; the current CLI does not provide a `--version` command.
 - Verify the user-level database actually opens with the installed binary using `yeoul inspect counts --db "$YEOUL_DB"` and at least one `yeoul search`.
 - If a new Ladybug-backed release cannot open an existing database, do not treat the install as complete. Keep a timestamped backup, export with the last known-good binary, import into a fresh database with the new binary, and verify counts and lifecycle state before replacing `$YEOUL_DB`.
-- Preserve inactive or superseded facts when the public export omits lifecycle history. If lifecycle history cannot be reconstructed safely, keep the old database backup and report the limitation.
+- Preserve inactive, superseded, or revision-backed facts during upgrades. If `admin export` refuses lifecycle or revision state because full-fidelity restore is not implemented, keep the old database backup and report the limitation instead of replacing `$YEOUL_DB`.
 
 ## Search first
 
@@ -31,6 +33,7 @@ Search Yeoul before answering when:
 - the user asks what was decided before
 - the task depends on prior project constraints or status
 - you are about to start non-trivial work and prior memory may change the plan, tools, or output shape
+- ownership, task assignment, dependency, issue, or recent change history matters
 - a new fact may conflict with existing memory
 - you need provenance or change history
 
@@ -39,7 +42,8 @@ For Yeoul repo work, and for any non-trivial task where prior context might matt
 Prefer:
 - `yeoul search` with the `recent_context` recipe for broad recall
 - `yeoul search` with the `preflight_briefing` recipe before non-trivial work
-- `yeoul fact lookup` for subject/predicate checks
+- `yeoul search` with the `project_memory` recipe for project-level context
+- `yeoul fact lookup` for subject/predicate checks and contradiction checks
 - `yeoul timeline` for change history
 - `yeoul provenance` for explanation
 - `yeoul neighborhood` for local graph context
@@ -47,6 +51,7 @@ Prefer:
 Default behavior:
 - proactively search before recommendations, design choices, prioritization, status interpretation, or conflict resolution
 - proactively search when the user refers to earlier decisions, previous attempts, current status, or continuity across work
+- proactively check for active conflicting facts before asserting a new fact
 - if `preflight_briefing` is unavailable, validate/list recipes, use `recent_context` once as a fallback, and say the policy pack needs syncing
 - skip lookup only when the task is clearly self-contained and prior memory is unlikely to matter
 

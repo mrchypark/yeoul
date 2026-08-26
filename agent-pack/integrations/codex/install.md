@@ -177,8 +177,10 @@ yeoul search --db "$YEOUL_DB" \
 If the new binary cannot open an existing Ladybug database, keep a timestamped backup and migrate through export/import with the last known-good binary:
 
 ```sh
-old_bin="$HOME/.local/share/yeoul/v0.2.2/bin/yeoul"
-new_bin="$HOME/.local/share/yeoul/v0.2.3/bin/yeoul"
+old_tag="<old-tag>"
+new_tag="<new-tag>"
+old_bin="$HOME/.local/share/yeoul/${old_tag}/bin/yeoul"
+new_bin="$HOME/.local/share/yeoul/${new_tag}/bin/yeoul"
 backup_dir="$HOME/.local/share/yeoul/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$backup_dir"
 "$old_bin" admin export --db "$YEOUL_DB" --out "$backup_dir/export.json" --json
@@ -187,7 +189,8 @@ mkdir -p "$backup_dir"
 "$new_bin" inspect counts --db "$backup_dir/work-memory.new.lbug" --json
 ```
 
-Copy the existing `$YEOUL_DB` into the backup directory before replacing it. If inactive or superseded facts matter, inspect them with `fact lookup --include-inactive` on the old binary and preserve or reconstruct lifecycle state before the replacement.
+Replace `<old-tag>` and `<new-tag>` with the installed release tags for the last known-good binary and the target binary.
+Copy the existing `$YEOUL_DB` into the backup directory before replacing it. `admin export` is an importable snapshot, not a full-fidelity restore format; if it refuses inactive facts or revision history, keep the backup, inspect the state with `fact lookup --include-inactive` on the old binary, and report the limitation instead of replacing `$YEOUL_DB`.
 
 Restart Codex after updating the skill.
 

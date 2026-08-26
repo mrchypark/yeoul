@@ -55,6 +55,7 @@ $baseUrl = "https://github.com/$Repo/releases/download/$tag"
 
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("yeoul-install-" + [System.Guid]::NewGuid().ToString("N"))
 $null = New-Item -ItemType Directory -Path $tempDir -Force
+$stagingDir = $null
 
 try {
     $archivePath = Join-Path $tempDir $archiveName
@@ -78,16 +79,46 @@ try {
     Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
 
     $targetDir = Join-Path $InstallRoot $tag
-    if (Test-Path $targetDir) {
-        Remove-Item -Recurse -Force $targetDir
-    }
     $null = New-Item -ItemType Directory -Path $InstallRoot -Force
 
     $extractedRoot = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
     if (-not $extractedRoot) {
         throw "Failed to locate extracted archive directory."
     }
-    Move-Item -Path $extractedRoot.FullName -Destination $targetDir
+    $stagingDir = Join-Path $InstallRoot (".$tag.staging-" + [System.Guid]::NewGuid().ToString("N"))
+    $backupDir = Join-Path $InstallRoot (".$tag.previous-" + [System.Guid]::NewGuid().ToString("N"))
+    Move-Item -Path $extractedRoot.FullName -Destination $stagingDir
+
+    foreach ($exe in @("yeoul.exe", "yeould.exe")) {
+        $exePath = Join-Path $stagingDir "bin\$exe"
+        if (-not (Test-Path -LiteralPath $exePath)) {
+            throw "Archive is missing executable bin/$exe."
+        }
+    }
+
+    $hasBackup = $false
+    $targetMoved = $false
+    try {
+        if (Test-Path -LiteralPath $targetDir) {
+            Move-Item -LiteralPath $targetDir -Destination $backupDir
+            $hasBackup = $true
+            $targetMoved = $true
+        }
+        Move-Item -LiteralPath $stagingDir -Destination $targetDir
+        $stagingDir = $null
+        if ($hasBackup -and (Test-Path -LiteralPath $backupDir)) {
+            Remove-Item -Recurse -Force -LiteralPath $backupDir
+        }
+    }
+    catch {
+        if ($targetMoved -and (Test-Path -LiteralPath $targetDir)) {
+            Remove-Item -Recurse -Force -LiteralPath $targetDir
+        }
+        if ($hasBackup -and (Test-Path -LiteralPath $backupDir)) {
+            Move-Item -LiteralPath $backupDir -Destination $targetDir
+        }
+        throw
+    }
 
     $binDir = Join-Path $targetDir "bin"
     if (-not $SkipPathUpdate) {
@@ -102,6 +133,9 @@ try {
     Write-Host "If Windows reports a missing runtime, install the Microsoft Visual C++ 2015-2022 Redistributable (x64)."
 }
 finally {
+    if ($stagingDir -and (Test-Path -LiteralPath $stagingDir)) {
+        Remove-Item -Recurse -Force -LiteralPath $stagingDir
+    }
     if (Test-Path $tempDir) {
         Remove-Item -Recurse -Force $tempDir
     }

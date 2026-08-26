@@ -10,13 +10,24 @@ For normal work, prefer a single user-level database rather than a project-local
 export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
 export YEOUL_GROUP="project:yeoul"
 export YEOUL_PROJECT_ID="project:yeoul"
-<<<<<<< Updated upstream
 export YEOUL_REPOSITORY_ID="repo:mrchypark-yeoul:repository:mrchypark-yeoul"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
 Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
 `$YEOUL_GROUP` scopes searches and episode writes. `$YEOUL_PROJECT_ID` preserves the current established project subject ID in the user database; apply the canonical namespace and stable-key conventions below to newly upserted entities. Use `$YEOUL_PROJECT_ID` for broad project continuity and `$YEOUL_REPOSITORY_ID` for repo-specific fact lookups. `fact assert` does not take `--group-id`; use an existing subject ID or upsert with repo namespace `repo:mrchypark/yeoul` plus stable keys.
+
+## Agent pack rules
+
+Yeoul Core is not an agent runtime. Agent behavior belongs in policy files such as `SKILL.md`, `agent_instructions.md`, `ontology.yaml`, `episode_rules.yaml`, and `search_recipes.yaml`.
+
+Use public Yeoul CLI/API workflows instead of raw Cypher. Prefer search recipes over ad hoc retrieval when the repository provides an `agent-pack`.
+
+Default recipe choices:
+- `recent_context` for open-ended recall and recent facts or episodes.
+- `preflight_briefing` before non-trivial work where prior memory may change the plan, tools, or output shape.
+- `project_memory` for project, task, decision, and document context.
+- `contradiction_check` before asserting a fact that may conflict with active memory.
 
 ## Search current context
 
@@ -38,8 +49,10 @@ yeoul search --db "$YEOUL_DB" --query "recent Yeoul memory" --backend auto --gro
 If the new binary cannot open an existing Ladybug database, migrate through a fresh database instead of leaving the wrapper pointed at an unusable install:
 
 ```bash
-old_bin="$HOME/.local/share/yeoul/v0.2.2/bin/yeoul"
-new_bin="$HOME/.local/share/yeoul/v0.2.3/bin/yeoul"
+old_tag="<old-tag>"
+new_tag="<new-tag>"
+old_bin="$HOME/.local/share/yeoul/${old_tag}/bin/yeoul"
+new_bin="$HOME/.local/share/yeoul/${new_tag}/bin/yeoul"
 backup_dir="$HOME/.local/share/yeoul/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$backup_dir"
 "$old_bin" admin export --db "$YEOUL_DB" --out "$backup_dir/export.json" --json
@@ -48,7 +61,8 @@ mkdir -p "$backup_dir"
 "$new_bin" inspect counts --db "$backup_dir/work-memory.new.lbug" --json
 ```
 
-Keep the original database under the backup directory before replacing `$YEOUL_DB`. If inactive or superseded facts matter, inspect them with the old binary using `fact lookup --include-inactive` and preserve or reconstruct lifecycle state before the replacement.
+Replace `<old-tag>` and `<new-tag>` with the installed release tags for the last known-good binary and the target binary.
+Keep the original database under the backup directory before replacing `$YEOUL_DB`. `admin export` is an importable snapshot, not a full-fidelity restore format; if it refuses inactive facts or revision history, keep the backup, inspect the state with the old binary using `fact lookup --include-inactive`, and report the limitation instead of replacing `$YEOUL_DB`.
 
 Use `--policy-path` with `--recipe` when a pack should shape retrieval:
 
@@ -58,6 +72,17 @@ yeoul search --db "$YEOUL_DB" \
   --group-id "$YEOUL_GROUP" \
   --policy-path ./agent-pack \
   --recipe recent_context \
+  --include-related
+```
+
+Use `project_memory` when the question is about repository-level context:
+
+```bash
+yeoul search --db "$YEOUL_DB" \
+  --query "release automation decisions" \
+  --group-id "$YEOUL_GROUP" \
+  --policy-path ./agent-pack \
+  --recipe project_memory \
   --include-related
 ```
 
@@ -82,6 +107,17 @@ yeoul fact lookup --db "$YEOUL_DB" \
   --predicate DECIDED \
   --group-id "$YEOUL_GROUP" \
   --include-inactive
+```
+
+Before asserting a new fact, check for possible active conflicts:
+
+```bash
+yeoul search --db "$YEOUL_DB" \
+  --query "new claim to check" \
+  --group-id "$YEOUL_GROUP" \
+  --policy-path ./agent-pack \
+  --recipe contradiction_check \
+  --include-related
 ```
 
 ## Explain change history

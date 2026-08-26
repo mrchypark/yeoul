@@ -11,7 +11,7 @@ import (
 
 func queryRowsAllowMissing(store *lstore.Store, query string) ([]map[string]any, error) {
 	rows, err := queryRows(store, query)
-	if err != nil && strings.Contains(err.Error(), "Binder exception: Table ") {
+	if lstore.IsMissingTableError(err) {
 		return nil, nil
 	}
 	return rows, err

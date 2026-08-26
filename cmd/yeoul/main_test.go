@@ -776,31 +776,6 @@ func TestCLIAdminExportImport(t *testing.T) {
 		"--source-kind", "note",
 		"--source-external-ref", "thread-export",
 	)
-	seedPath := filepath.Join(tmpDir, "seed-export.json")
-	seedPayload := `{
-  "entities": [{"id":"thing:export","type":"Thing","canonical_name":"export"}],
-  "facts": [{
-    "id":"fact-export",
-    "predicate":"HAS_STATE",
-    "subject_id":"thing:export",
-    "value_text":"old export state",
-    "supporting_episode_ids":["ep-export"]
-  }]
-}`
-	if err := os.WriteFile(seedPath, []byte(seedPayload), 0o644); err != nil {
-		t.Fatalf("write seed payload: %v", err)
-	}
-	runCLI("admin", "import", "--confirm", "--db", dbPath, "--in", seedPath)
-	time.Sleep(time.Millisecond)
-	updateEntityPath := filepath.Join(tmpDir, "update-entity-export.json")
-	updateEntityPayload := `{
-  "entities": [{"id":"thing:export","type":"Thing","canonical_name":"export renamed"}]
-}`
-	if err := os.WriteFile(updateEntityPath, []byte(updateEntityPayload), 0o644); err != nil {
-		t.Fatalf("write update entity payload: %v", err)
-	}
-	runCLI("admin", "import", "--confirm", "--db", dbPath, "--in", updateEntityPath)
-	runCLI("fact", "supersede", "--confirm", "--db", dbPath, "--id", "fact-export", "--predicate", "HAS_STATE", "--subject-id", "thing:export", "--value-text", "new export state", "--supporting-episodes", "ep-export", "--reason", "test")
 	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
 
 	data, err := os.ReadFile(exportPath)
@@ -813,15 +788,12 @@ func TestCLIAdminExportImport(t *testing.T) {
 	if strings.Contains(string(data), `"fact_revisions"`) || strings.Contains(string(data), `"entity_revisions"`) {
 		t.Fatalf("expected importable export payload without revision history, got %q", string(data))
 	}
-	if strings.Contains(string(data), `"old export state"`) || !strings.Contains(string(data), `"new export state"`) {
-		t.Fatalf("expected export payload to contain current active snapshot only, got %q", string(data))
-	}
 
 	importedDB := filepath.Join(tmpDir, "imported.lbug")
 	runCLI("init", "--db", importedDB)
 	runCLI("admin", "import", "--confirm", "--db", importedDB, "--in", exportPath)
-	imported := runCLI("search", "--db", importedDB, "--query", "new export state", "--json")
-	if !strings.Contains(imported, `"new export state"`) {
+	imported := runCLI("search", "--db", importedDB, "--query", "export me", "--json")
+	if !strings.Contains(imported, `"export me"`) {
 		t.Fatalf("expected imported snapshot search result, got %q", imported)
 	}
 
@@ -846,6 +818,123 @@ func TestCLIAdminExportImport(t *testing.T) {
 	runCLI("init", "--db", restoreDB)
 	if err := runCLIError("admin", "import", "--confirm", "--db", restoreDB, "--in", restorePath); err == nil {
 		t.Fatal("expected admin import to reject lifecycle-managed fact fields")
+	}
+}
+
+func TestCLIAdminExportRejectsLifecycleLoss(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	exportPath := filepath.Join(tmpDir, "export.json")
+
+	runCLI := func(args ...string) {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+	}
+	runCLIError := func(args ...string) error {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		return run(ctx, args, &stdout, &stderr)
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI(
+		"ingest", "episode",
+		"--db", dbPath,
+		"--id", "ep-export",
+		"--kind", "note",
+		"--content", "export me",
+		"--source-kind", "note",
+		"--source-external-ref", "thread-export",
+	)
+	seedPath := filepath.Join(tmpDir, "seed-export.json")
+	seedPayload := `{
+  "entities": [{"id":"thing:export","type":"Thing","canonical_name":"export"}],
+  "facts": [{
+    "id":"fact-export",
+    "predicate":"HAS_STATE",
+    "subject_id":"thing:export",
+    "value_text":"old export state",
+    "supporting_episode_ids":["ep-export"]
+  }]
+}`
+	if err := os.WriteFile(seedPath, []byte(seedPayload), 0o644); err != nil {
+		t.Fatalf("write seed payload: %v", err)
+	}
+	runCLI("admin", "import", "--confirm", "--db", dbPath, "--in", seedPath)
+	time.Sleep(time.Millisecond)
+	runCLI("fact", "supersede", "--confirm", "--db", dbPath, "--id", "fact-export", "--predicate", "HAS_STATE", "--subject-id", "thing:export", "--value-text", "new export state", "--supporting-episodes", "ep-export", "--reason", "test")
+
+	err := runCLIError("admin", "export", "--db", dbPath, "--out", exportPath)
+	if err == nil {
+		t.Fatal("expected admin export to reject inactive fact loss")
+	}
+	if !strings.Contains(err.Error(), "inactive fact") {
+		t.Fatalf("expected inactive fact export error, got %v", err)
+	}
+	if _, statErr := os.Stat(exportPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no lossy export file, stat err=%v", statErr)
+	}
+}
+
+func TestCLIAdminExportRejectsRevisionLoss(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	exportPath := filepath.Join(tmpDir, "export.json")
+
+	runCLI := func(args ...string) {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+	}
+	runCLIError := func(args ...string) error {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		return run(ctx, args, &stdout, &stderr)
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI(
+		"ingest", "episode",
+		"--db", dbPath,
+		"--id", "ep-revision",
+		"--kind", "note",
+		"--content", "active revision export",
+		"--source-kind", "note",
+		"--source-external-ref", "thread-revision",
+	)
+	seedPath := filepath.Join(tmpDir, "seed-revision.json")
+	seedPayload := `{
+  "entities": [{"id":"thing:revision","type":"Thing","canonical_name":"revision"}],
+  "facts": [{
+    "id":"fact-revision",
+    "predicate":"HAS_STATE",
+    "subject_id":"thing:revision",
+    "value_text":"active revision",
+    "supporting_episode_ids":["ep-revision"]
+  }]
+}`
+	if err := os.WriteFile(seedPath, []byte(seedPayload), 0o644); err != nil {
+		t.Fatalf("write seed payload: %v", err)
+	}
+	runCLI("admin", "import", "--confirm", "--db", dbPath, "--in", seedPath)
+
+	err := runCLIError("admin", "export", "--db", dbPath, "--out", exportPath)
+	if err == nil {
+		t.Fatal("expected admin export to reject revision history loss")
+	}
+	if !strings.Contains(err.Error(), "revision history") {
+		t.Fatalf("expected revision history export error, got %v", err)
 	}
 }
 

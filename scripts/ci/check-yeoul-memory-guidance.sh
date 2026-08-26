@@ -1,8 +1,15 @@
 #!/bin/sh
+# shellcheck disable=SC2016
 set -eu
 
-script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
-repo_root=$(CDPATH= cd "${script_dir}/../.." && pwd)
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH='' cd "${script_dir}/../.." && pwd)
+
+conflict_matches=$(git -C "${repo_root}" grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- . || true)
+if [ -n "${conflict_matches}" ]; then
+  printf 'unresolved conflict markers found:\n%s\n' "${conflict_matches}" >&2
+  exit 1
+fi
 
 require_text() {
   if ! grep -Fq -e "$2" "${repo_root}/$1"; then
