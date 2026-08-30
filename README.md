@@ -112,10 +112,11 @@ keeps the original as a timestamped `.ladybug-backup-*` sibling, and then
 installs the verified Lattice database at the original path. New databases use
 the standard `.ltdb` extension. An existing `.lbug` path remains valid after
 in-place migration for backward compatibility.
-Yeoul v0.5.1 and later use the bundled Ladybug v0.13.1 helper for databases
+Yeoul v0.5.2 and later use the bundled Ladybug v0.13.1 helper for databases
 created by Yeoul v0.2.2. Migration fails without modifying the source database
 when that helper or its matching runtime is unavailable. Do not use Yeoul
-v0.5.0 to migrate a pristine v0.2.2 database.
+v0.5.0 or v0.5.1 to migrate a pristine v0.2.2 database; v0.5.1 does not isolate
+the helper runtime from Linux Homebrew's inherited library path.
 Stop other Yeoul processes before migrating a database; migration requires
 exclusive ownership of the database path.
 

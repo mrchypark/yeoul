@@ -204,6 +204,27 @@ func TestMigrateDatabaseFailsClosedWithoutLegacyHelper(t *testing.T) {
 	}
 }
 
+func TestLegacyMigrationHelperEnvironmentRemovesInjectedRuntimes(t *testing.T) {
+	got := legacyMigrationHelperEnvironment([]string{
+		"PATH=/usr/bin",
+		"LD_LIBRARY_PATH=/main/lib",
+		"LD_PRELOAD=/tmp/injected.so",
+		"DYLD_LIBRARY_PATH=/main/lib",
+		"DYLD_FALLBACK_LIBRARY_PATH=/fallback/lib",
+		"DYLD_INSERT_LIBRARIES=/tmp/injected.dylib",
+		"YEOUL_DB=/memory.ltdb",
+	})
+	want := []string{"PATH=/usr/bin", "YEOUL_DB=/memory.ltdb"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected helper environment: %v", got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("unexpected helper environment: got=%v want=%v", got, want)
+		}
+	}
+}
+
 func TestMigrateDatabaseIsIdempotentForLattice(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "current.db")
