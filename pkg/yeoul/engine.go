@@ -99,6 +99,26 @@ func (e *engine) Close(ctx context.Context) error {
 	return e.store.Close()
 }
 
+func (e *engine) Snapshot(ctx context.Context) (*DatabaseSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	state := e.snapshotLocked()
+	return &DatabaseSnapshot{
+		Version:             state.Version,
+		Sequence:            state.Sequence,
+		Sources:             state.Sources,
+		Episodes:            state.Episodes,
+		Entities:            state.Entities,
+		Facts:               state.Facts,
+		FactRevisions:       state.FactRevisions,
+		EntityRevisions:     state.EntityRevisions,
+		MigrationWatermarks: state.MigrationWatermarks,
+	}, nil
+}
+
 func (e *engine) ensureWritableLocked() error {
 	if e.cfg.ReadOnly {
 		return errorf(ErrNotSupported, "write operation is not allowed in read-only mode", map[string]any{

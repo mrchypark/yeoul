@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	json "github.com/goccy/go-json"
-	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
@@ -118,6 +117,7 @@ Usage:
   yeoul index verify --db PATH --root DIR [--json]
   yeoul index publish-rax --root DIR --store FILE [--rax-lib PATH] [--rax-bin PATH] [--json]
   yeoul admin checkpoint --db PATH [--json]
+  yeoul admin migrate-db --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json] [--confirm]
   yeoul admin export --db PATH --out FILE [--json]
   yeoul admin import --db PATH --in FILE [--json] [--confirm]
@@ -223,7 +223,6 @@ func printCommandError(w io.Writer, err error) {
 
 func openReadEngine(ctx context.Context, dbPath string) (yeoul.Engine, error) {
 	return yeoul.Open(ctx, yeoul.Config{
-		Driver:       yeoul.StorageDriverLadybug,
 		DatabasePath: dbPath,
 		ReadOnly:     true,
 	})
@@ -231,7 +230,6 @@ func openReadEngine(ctx context.Context, dbPath string) (yeoul.Engine, error) {
 
 func openWriteEngine(ctx context.Context, dbPath string) (yeoul.Engine, error) {
 	return yeoul.Open(ctx, yeoul.Config{
-		Driver:       yeoul.StorageDriverLadybug,
 		DatabasePath: dbPath,
 	})
 }
@@ -241,10 +239,6 @@ func closeEngine(ctx context.Context, eng yeoul.Engine) error {
 		return nil
 	}
 	return eng.Close(ctx)
-}
-
-func openRawStore(dbPath string, readOnly bool) (*lstore.Store, error) {
-	return lstore.Open(dbPath, readOnly)
 }
 
 func writeJSON(w io.Writer, value any) error {

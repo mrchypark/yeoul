@@ -1,6 +1,6 @@
 # Concurrency Model
 
-Yeoul embedded mode assumes one process owns one READ_WRITE Ladybug database object.
+Yeoul embedded mode assumes one process owns one read-write LatticeDB database object.
 
 ## Allowed
 
@@ -11,7 +11,7 @@ Yeoul embedded mode assumes one process owns one READ_WRITE Ladybug database obj
 
 ## Not allowed by default
 
-- multiple Yeoul processes writing the same `.lbug` database
+- multiple Yeoul processes writing the same `.ltdb` database
 - one writer process plus separate reader processes over the same file
 - opening the same database file through multiple independent database objects
 
@@ -21,4 +21,4 @@ For multi-process use, run `yeould` as a local daemon and access it through HTTP
 
 ## Why this is explicit
 
-Ladybug's documented safe default is connection-level concurrency under a single owning READ_WRITE database object. Yeoul treats that as a product invariant rather than an implementation detail.
+LatticeDB's embedded database is process-owned. Yeoul treats single-process ownership as a product invariant rather than an implementation detail.

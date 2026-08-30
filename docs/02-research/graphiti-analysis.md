@@ -44,7 +44,7 @@ Yeoul should resist becoming a broad orchestration framework.
 |---|---|---|
 | Core identity | AI agent memory framework | Temporal graph memory engine |
 | Runtime language | Python | Go |
-| Storage backend | Pluggable / graph backends | Ladybug first |
+| Storage backend | Pluggable / graph backends | LatticeDB canonical; Ladybug migration-only |
 | Agent behavior | Central | Externalized |
 | LLM calls | Common in workflow | Explicitly outside core |
 | Policy files | Useful but secondary | First-class integration layer |

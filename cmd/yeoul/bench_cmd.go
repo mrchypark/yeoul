@@ -182,7 +182,7 @@ Usage:
 	defer func() { _ = closeEngine(ctx, eng) }()
 
 	if entityID == "" || factID == "" {
-		payload, err := exportDatabase(ctx, dbPath)
+		payload, err := exportDatabaseFromEngine(ctx, eng)
 		if err != nil {
 			return err
 		}
@@ -211,7 +211,7 @@ Usage:
 		}
 		if benchRaxRuntime.Kind == "ffi" {
 			var err error
-			benchRaxStorePath, err = ensureManagedRaxStore(ctx, dbPath, benchRaxRuntime)
+			benchRaxStorePath, err = ensureManagedRaxStore(ctx, eng, dbPath, benchRaxRuntime)
 			if err != nil {
 				return err
 			}
@@ -252,7 +252,7 @@ Usage:
 			if err != nil {
 				return err
 			}
-			if _, err := maybeRerankSearchWithRax(ctx, dbPath, query, backend, raxLib, raxBin, 10, searchResp); err != nil {
+			if _, err := maybeRerankSearchWithRax(ctx, eng, dbPath, query, backend, raxLib, raxBin, 10, searchResp); err != nil {
 				return err
 			}
 		}

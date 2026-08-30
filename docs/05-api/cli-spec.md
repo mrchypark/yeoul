@@ -18,7 +18,7 @@ Create a new database and initialize schema.
 
 #### Example
 ```bash
-yeoul init --db ./yeoul.lbug
+yeoul init --db ./yeoul.ltdb
 ```
 
 #### Flags
@@ -36,7 +36,7 @@ Run pending migrations.
 
 #### Example
 ```bash
-yeoul migrate --db ./yeoul.lbug
+yeoul migrate --db ./yeoul.ltdb
 ```
 
 ### `yeoul ingest`
@@ -50,8 +50,8 @@ Insert data into the memory graph.
 
 #### Examples
 ```bash
-yeoul ingest episode --db ./yeoul.lbug --kind chat_message --content-file ./note.txt --source-id thread_1
-yeoul ingest json --db ./yeoul.lbug --file ./episode.json
+yeoul ingest episode --db ./yeoul.ltdb --kind chat_message --content-file ./note.txt --source-id thread_1
+yeoul ingest json --db ./yeoul.ltdb --file ./episode.json
 ```
 
 ### `yeoul get`
@@ -59,7 +59,7 @@ Fetch one record by kind and ID.
 
 #### Example
 ```bash
-yeoul get --db ./yeoul.lbug --kind episode --id ep_000001
+yeoul get --db ./yeoul.ltdb --kind episode --id ep_000001
 ```
 
 #### Flags
@@ -72,9 +72,9 @@ Run retrieval queries.
 
 #### Examples
 ```bash
-yeoul search --db ./yeoul.lbug --query "recent decisions about ladybug"
-yeoul search --db ./yeoul.lbug --query "recent decisions about rax" --backend rax
-yeoul search --db ./yeoul.lbug --query "recent decisions" --type fact,episode --group-id project:yeoul --limit 20
+yeoul search --db ./yeoul.ltdb --query "recent decisions about LatticeDB"
+yeoul search --db ./yeoul.ltdb --query "recent decisions about rax" --backend rax
+yeoul search --db ./yeoul.ltdb --query "recent decisions" --type fact,episode --group-id project:yeoul --limit 20
 ```
 
 #### Flags
@@ -89,7 +89,7 @@ yeoul search --db ./yeoul.lbug --query "recent decisions" --type fact,episode --
 
 #### Behavior
 - defaults to `--backend auto`
-- keeps Ladybug-backed Yeoul records as canonical truth
+- keeps LatticeDB-backed Yeoul records as canonical truth
 - may use the bundled rax FFI runtime as a derived retrieval signal
 - falls back to core Yeoul search in `auto` mode when the rax runtime is unavailable
 - fails on rax errors when `--backend rax` is explicitly requested
@@ -99,7 +99,7 @@ Build a bounded, factual context bundle from one scoped search response.
 
 #### Example
 ```bash
-yeoul context --db ./yeoul.lbug --query "recent decisions about rax" --json
+yeoul context --db ./yeoul.ltdb --query "recent decisions about rax" --json
 ```
 
 #### Flags
@@ -113,7 +113,7 @@ Inspect time-ordered episode and fact events.
 
 #### Example
 ```bash
-yeoul timeline --db ./yeoul.lbug --entity entity_project_yeoul --descending
+yeoul timeline --db ./yeoul.ltdb --entity entity_project_yeoul --descending
 ```
 
 #### Flags
@@ -129,7 +129,7 @@ Explain supporting provenance for a record.
 
 #### Example
 ```bash
-yeoul provenance --db ./yeoul.lbug --fact fact_123
+yeoul provenance --db ./yeoul.ltdb --fact fact_123
 ```
 
 #### Flags
@@ -151,9 +151,10 @@ Inspect storage, schema, and counts.
 
 #### Examples
 ```bash
-yeoul inspect schema --db ./yeoul.lbug
-yeoul inspect counts --db ./yeoul.lbug
-yeoul inspect entity --db ./yeoul.lbug --id entity_project_yeoul
+yeoul inspect schema --db ./yeoul.ltdb
+yeoul inspect counts --db ./yeoul.ltdb
+yeoul inspect entity --db ./yeoul.ltdb --id entity_project_yeoul
+yeoul admin migrate-db --db ./legacy-yeoul.lbug --json
 ```
 
 ### `yeoul neighborhood`
@@ -161,7 +162,7 @@ Expand around an entity or fact.
 
 #### Example
 ```bash
-yeoul neighborhood --db ./yeoul.lbug --entity entity_project_yeoul --hops 2
+yeoul neighborhood --db ./yeoul.ltdb --entity entity_project_yeoul --hops 2
 ```
 
 #### Flags
@@ -182,10 +183,10 @@ Manage facts.
 
 #### Examples
 ```bash
-yeoul fact get --db ./yeoul.lbug --id fact_123
-yeoul fact lookup --db ./yeoul.lbug --subject-id entity_project_yeoul --predicate OWNS
-yeoul fact assert --db ./yeoul.lbug --predicate OWNS --upsert-subject --subject-namespace repo:mrchypark/yeoul --subject-type Project --subject-name Yeoul --subject-stable-key yeoul --value-text "Yeoul uses one user-level database" --supporting-episodes ep_000001
-yeoul fact retract --db ./yeoul.lbug --id fact_123 --reason "incorrect source"
+yeoul fact get --db ./yeoul.ltdb --id fact_123
+yeoul fact lookup --db ./yeoul.ltdb --subject-id entity_project_yeoul --predicate OWNS
+yeoul fact assert --db ./yeoul.ltdb --predicate OWNS --upsert-subject --subject-namespace repo:mrchypark/yeoul --subject-type Project --subject-name Yeoul --subject-stable-key yeoul --value-text "Yeoul uses one user-level database" --supporting-episodes ep_000001
+yeoul fact retract --db ./yeoul.ltdb --id fact_123 --reason "incorrect source"
 ```
 
 #### `assert` flags
@@ -250,8 +251,8 @@ Manage derived retrieval projections.
 
 #### Examples
 ```bash
-yeoul index build --db ./yeoul.lbug --root ~/.local/share/yeoul/index
-yeoul index verify --db ./yeoul.lbug --root ~/.local/share/yeoul/index
+yeoul index build --db ./yeoul.ltdb --root ~/.local/share/yeoul/index
+yeoul index verify --db ./yeoul.ltdb --root ~/.local/share/yeoul/index
 yeoul index publish-rax --root ~/.local/share/yeoul/index --store ~/.local/share/yeoul/rax/projection.rax
 ```
 
@@ -262,7 +263,7 @@ yeoul index publish-rax --root ~/.local/share/yeoul/index --store ~/.local/share
 
 #### Behavior
 - treats the index as a derived artifact, not canonical truth
-- rebuilds or validates projection state against the Ladybug-backed Yeoul database
+- rebuilds or validates projection state against the LatticeDB-backed Yeoul database
 - can publish Yeoul-owned projections into a rax FFI-backed `.rax` retrieval index
 
 ### `yeoul bench`
@@ -275,7 +276,7 @@ Run benchmark suites.
 
 #### Example
 ```bash
-yeoul bench ingest --db ./bench.lbug --episodes 100000
+yeoul bench ingest --db ./bench.ltdb --episodes 100000
 ```
 
 ### `yeoul admin`

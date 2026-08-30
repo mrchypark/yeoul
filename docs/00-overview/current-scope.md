@@ -6,7 +6,7 @@ This document defines the **current working scope** of Yeoul so the repository d
 
 Yeoul is a local-first implementation toolkit for temporal agent memory inspired by the Zep and Graphiti architecture.
 
-It uses Ladybug as the embedded graph store.
+It uses LatticeDB as the embedded graph store. Ladybug remains only as a legacy migration reader.
 It exposes developer-facing tools and interfaces for storing, retrieving, and inspecting temporal memory.
 It keeps AI extraction behavior and memory-use behavior outside the engine through instructions, skills, ontology files, episode rules, and search recipes.
 
@@ -39,7 +39,7 @@ The primary implementation target is:
 
 - embedded Go library
 - local CLI
-- Ladybug-backed schema and transaction model
+- LatticeDB-backed graph and transaction model
 - replay, inspect, query, and benchmark tooling
 
 ### 3. Externalized AI behavior

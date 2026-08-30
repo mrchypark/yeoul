@@ -63,7 +63,7 @@ It should not replace entity, fact, and provenance-oriented retrieval.
 When Yeoul uses an external retrieval runtime such as `rax`, the indexing boundary is a projection layer.
 
 That means:
-- Ladybug-backed Yeoul records remain canonical
+- LatticeDB-backed Yeoul records remain canonical
 - projection records are rebuilt from canonical records
 - retrieval runtime indexes may be dropped and rebuilt without losing memory truth
 - final search responses should hydrate canonical Yeoul records before provenance or lifecycle-sensitive output is returned

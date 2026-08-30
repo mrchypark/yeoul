@@ -4,17 +4,18 @@ Use these patterns when the `yeoul-memory` skill is active.
 
 ## Recommended database path
 
-For normal work, prefer a single user-level database rather than a project-local `./yeoul.lbug`.
+For normal work, prefer a single user-level database rather than a project-local `./yeoul.ltdb`.
 
 ```bash
-export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
+export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.ltdb"
 export YEOUL_GROUP="project:yeoul"
 export YEOUL_PROJECT_ID="project:yeoul"
 export YEOUL_REPOSITORY_ID="repo:mrchypark-yeoul:repository:mrchypark-yeoul"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
-Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
+Use `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable local experiments.
+LatticeDB is the canonical storage format and `.ltdb` is the standard extension for new databases. Before initialization, check for the legacy `$HOME/.local/share/yeoul/work-memory.lbug`; if it is the only existing database, keep using that path until migration and any rename are verified.
 `$YEOUL_GROUP` scopes searches and episode writes. `$YEOUL_PROJECT_ID` preserves the current established project subject ID in the user database; apply the canonical namespace and stable-key conventions below to newly upserted entities. Use `$YEOUL_PROJECT_ID` for broad project continuity and `$YEOUL_REPOSITORY_ID` for repo-specific fact lookups. `fact assert` does not take `--group-id`; use an existing subject ID or upsert with repo namespace `repo:mrchypark/yeoul` plus stable keys.
 
 ## Agent pack rules
@@ -32,7 +33,7 @@ Default recipe choices:
 ## Search current context
 
 ```bash
-yeoul search --db "$YEOUL_DB" --query "Ladybug decision" --backend auto --group-id "$YEOUL_GROUP" --include-related
+yeoul search --db "$YEOUL_DB" --query "storage engine decision" --backend auto --group-id "$YEOUL_GROUP" --include-related
 ```
 
 ## Verify local install
@@ -46,23 +47,15 @@ yeoul inspect counts --db "$YEOUL_DB" --json
 yeoul search --db "$YEOUL_DB" --query "recent Yeoul memory" --backend auto --group-id "$YEOUL_GROUP" --limit 3
 ```
 
-If the new binary cannot open an existing Ladybug database, migrate through a fresh database instead of leaving the wrapper pointed at an unusable install:
+Stop other Yeoul processes, then migrate a legacy Ladybug database in place through Yeoul's verified staging workflow:
 
 ```bash
-old_tag="<old-tag>"
-new_tag="<new-tag>"
-old_bin="$HOME/.local/share/yeoul/${old_tag}/bin/yeoul"
-new_bin="$HOME/.local/share/yeoul/${new_tag}/bin/yeoul"
-backup_dir="$HOME/.local/share/yeoul/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$backup_dir"
-"$old_bin" admin export --db "$YEOUL_DB" --out "$backup_dir/export.json" --json
-"$new_bin" init --db "$backup_dir/work-memory.new.lbug" --json
-"$new_bin" admin import --db "$backup_dir/work-memory.new.lbug" --in "$backup_dir/export.json" --json --confirm
-"$new_bin" inspect counts --db "$backup_dir/work-memory.new.lbug" --json
+yeoul admin migrate-db --db "$YEOUL_DB" --json
+yeoul inspect counts --db "$YEOUL_DB" --json
+yeoul fact lookup --db "$YEOUL_DB" --include-inactive --limit 10 --json
 ```
 
-Replace `<old-tag>` and `<new-tag>` with the installed release tags for the last known-good binary and the target binary.
-Keep the original database under the backup directory before replacing `$YEOUL_DB`. `admin export` is an importable snapshot, not a full-fidelity restore format; if it refuses inactive facts or revision history, keep the backup, inspect the state with the old binary using `fact lookup --include-inactive`, and report the limitation instead of replacing `$YEOUL_DB`.
+The command is idempotent for an existing LatticeDB database. When conversion occurs it reports a timestamped `.ladybug-backup-*` path; keep that backup until counts, search, revisions, and lifecycle state are verified.
 
 Use `--policy-path` with `--recipe` when a pack should shape retrieval:
 
@@ -166,7 +159,7 @@ Why:
 Tradeoffs:
 - retrieval scoping must remain disciplined until CLI space and scope controls improve
 Current application:
-- use $HOME/.local/share/yeoul/work-memory.lbug as the normal default
+- use $HOME/.local/share/yeoul/work-memory.ltdb as the normal default
 Revisit when:
 - stronger per-project space selection becomes available
 ```

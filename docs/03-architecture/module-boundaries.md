@@ -1,9 +1,16 @@
 # Module Boundaries
 
+## `storage/lattice`
+
+May import LatticeDB.
+Owns canonical graph persistence, indexed record lookup, and graph edge projection.
+Must not import policy, skills, or agent packages.
+
 ## `storage/ladybug`
 
 May import Ladybug Go bindings.
-May execute Cypher.
+May execute Cypher only to read or test legacy migration data.
+Must not receive default canonical writes.
 Must not import policy, skills, or agent packages.
 
 ## `core`

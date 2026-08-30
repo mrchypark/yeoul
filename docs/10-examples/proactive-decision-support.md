@@ -11,14 +11,14 @@ Use Yeoul proactively so the agent can:
 
 ## Recommended database path
 
-For normal work, prefer a single user-level database rather than a project-local `./yeoul.lbug`.
+For normal work, prefer a single user-level database rather than a project-local `./yeoul.ltdb`.
 
 ```bash
-export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
+export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.ltdb"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
-Use `./yeoul.lbug` only for quickstarts, isolated tests, or disposable local experiments.
+Use `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable local experiments. If only the legacy user-level `.lbug` database exists, keep using that path until migration and any rename are verified.
 
 ## Privacy and authority
 
@@ -122,7 +122,7 @@ Why:
 Tradeoffs:
 - search scoping must stay disciplined until CLI space and scope controls improve
 Current application:
-- Yeoul should default to $HOME/.local/share/yeoul/work-memory.lbug for normal work
+- Yeoul should default to $HOME/.local/share/yeoul/work-memory.ltdb for normal work
 Revisit when:
 - CLI support for stronger per-project space selection or scoped retrieval becomes available
 ```

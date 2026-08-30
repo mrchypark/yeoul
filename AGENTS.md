@@ -3,9 +3,11 @@
 Use the `yeoul-memory` skill when a task depends on prior decisions, constraints, ownership, status changes, tradeoffs, or provenance in this repository.
 
 When working with repository memory in normal use, use a single user-level Yeoul database instead of a project-local database file.
-Default path: `$HOME/.local/share/yeoul/work-memory.lbug`
+Default path for new databases: `$HOME/.local/share/yeoul/work-memory.ltdb`
 
-Project-local `./yeoul.lbug` is only for quickstart examples, isolated tests, or temporary debugging.
+LatticeDB is the canonical storage engine and `.ltdb` is the standard extension for new databases. If only the legacy `$HOME/.local/share/yeoul/work-memory.lbug` exists, keep using that explicit path until its migration and optional rename are verified; do not silently create an empty `.ltdb` database.
+
+Project-local `./yeoul.ltdb` is only for quickstart examples, isolated tests, or temporary debugging.
 Prefer the workflows documented in `skills/yeoul-memory/SKILL.md` and `skills/yeoul-memory/references/cli-workflows.md`.
 Use `docs/10-examples/proactive-decision-support.md` as the default operating loop for proactive Yeoul usage in this repository.
 

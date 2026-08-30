@@ -9,7 +9,7 @@ import (
 	"time"
 
 	json "github.com/goccy/go-json"
-	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
+	latticedb "github.com/mrchypark/latticedb-go"
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/retrieval"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -155,7 +155,7 @@ Usage:
 			if !c.confirm {
 				return &usageError{message: usage + "\n\nThis operation is destructive. Re-run with --confirm."}
 			}
-			if err := os.Remove(dbPath); err != nil {
+			if err := os.RemoveAll(dbPath); err != nil {
 				return fmt.Errorf("remove existing database: %w", err)
 			}
 			created = true
@@ -167,7 +167,6 @@ Usage:
 	}
 
 	eng, err := yeoul.Open(ctx, yeoul.Config{
-		Driver:          yeoul.StorageDriverLadybug,
 		DatabasePath:    dbPath,
 		CreateIfMissing: true,
 	})
@@ -718,18 +717,15 @@ Usage:
 		resp, err = runRaxPrimarySearch(ctx, eng, dbPath, req, raxLib, raxBin)
 	} else {
 		resp, err = eng.Search(ctx, req)
+		if err == nil {
+			resp, err = maybeRerankSearchWithRax(ctx, eng, dbPath, query, backend, raxLib, raxBin, limit, resp)
+		}
 	}
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return err
-	}
-	if backend != "rax" {
-		resp, err = maybeRerankSearchWithRax(ctx, dbPath, query, backend, raxLib, raxBin, limit, resp)
-		if err != nil {
-			return err
-		}
 	}
 
 	if jsonOut {
@@ -862,7 +858,6 @@ Usage:
 }
 
 func (c cli) runInspectSchema(ctx context.Context, args []string) error {
-	_ = ctx
 	usage := strings.TrimSpace(`
 Usage:
   yeoul inspect schema --db PATH [--json]
@@ -887,34 +882,19 @@ Usage:
 		return err
 	}
 
-	store, err := openRawStore(dbPath, true)
+	eng, err := openReadEngine(ctx, dbPath)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	version, err := singleStringQuery(store, lstore.QueryVersion())
-	if err != nil {
-		return err
-	}
-	rows, err := queryRows(store, lstore.QueryTables())
-	if err != nil {
-		return err
-	}
+	defer func() { _ = closeEngine(ctx, eng) }()
 
 	result := inspectSchemaResult{
 		DatabasePath: dbPath,
-		Version:      version,
-		Tables:       make([]inspectSchemaTable, 0, len(rows)),
+		Version:      latticedb.Version(),
+		Tables:       make([]inspectSchemaTable, 0, 7),
 	}
-	for _, row := range rows {
-		table := inspectSchemaTable{
-			Name:     fmt.Sprint(row["name"]),
-			Type:     fmt.Sprint(row["type"]),
-			Database: fmt.Sprint(row["database name"]),
-			Comment:  fmt.Sprint(row["comment"]),
-		}
-		result.Tables = append(result.Tables, table)
+	for _, label := range []string{"Source", "Episode", "Entity", "Fact", "FactRevision", "EntityRevision", "YeoulMigration"} {
+		result.Tables = append(result.Tables, inspectSchemaTable{Name: label, Type: "NODE"})
 	}
 
 	if jsonOut {
@@ -932,7 +912,6 @@ Usage:
 }
 
 func (c cli) runInspectCounts(ctx context.Context, args []string) error {
-	_ = ctx
 	usage := strings.TrimSpace(`
 Usage:
   yeoul inspect counts --db PATH [--json]
@@ -957,27 +936,20 @@ Usage:
 		return err
 	}
 
-	store, err := openRawStore(dbPath, true)
+	eng, err := openReadEngine(ctx, dbPath)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	counts := map[string]int{}
-	for _, item := range []struct {
-		key   string
-		query string
-	}{
-		{key: "sources", query: lstore.QueryCount("Source")},
-		{key: "episodes", query: lstore.QueryCount("Episode")},
-		{key: "entities", query: lstore.QueryCount("Entity")},
-		{key: "facts", query: lstore.QueryCount("Fact")},
-	} {
-		value, err := singleIntQuery(store, item.query)
-		if err != nil {
-			return err
-		}
-		counts[item.key] = value
+	defer func() { _ = closeEngine(ctx, eng) }()
+	snapshot, err := yeoul.Snapshot(ctx, eng)
+	if err != nil {
+		return err
+	}
+	counts := map[string]int{
+		"sources":  len(snapshot.Sources),
+		"episodes": len(snapshot.Episodes),
+		"entities": len(snapshot.Entities),
+		"facts":    len(snapshot.Facts),
 	}
 
 	result := inspectCountsResult{

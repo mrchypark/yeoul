@@ -9,7 +9,6 @@ import (
 	"time"
 
 	json "github.com/goccy/go-json"
-	lstore "github.com/mrchypark/yeoul/internal/storage/ladybug"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
@@ -17,6 +16,7 @@ func (c cli) runAdmin(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul admin checkpoint --db PATH [--json]
+  yeoul admin migrate-db --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json]
   yeoul admin export --db PATH --out FILE [--json]
   yeoul admin import --db PATH --in FILE [--json] [--confirm]
@@ -27,6 +27,8 @@ Usage:
 	switch args[0] {
 	case "checkpoint":
 		return c.runAdminCheckpoint(ctx, args[1:])
+	case "migrate-db":
+		return c.runAdminMigrateDatabase(ctx, args[1:])
 	case "compact":
 		return c.runAdminCompact(ctx, args[1:])
 	case "export":
@@ -39,6 +41,41 @@ Usage:
 	default:
 		return &usageError{message: usage}
 	}
+}
+
+func (c cli) runAdminMigrateDatabase(ctx context.Context, args []string) error {
+	usage := strings.TrimSpace(`
+Usage:
+  yeoul admin migrate-db --db PATH [--json]
+`)
+	fs := newFlagSet("admin migrate-db")
+	var dbPath string
+	var jsonOut bool
+	fs.StringVar(&dbPath, "db", "", "database path")
+	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
+	handled, err := parseFlagSet(fs, usage, args, c.stdout)
+	if err != nil || handled {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return &usageError{message: usage}
+	}
+	if err := requireDB(dbPath, usage); err != nil {
+		return err
+	}
+	result, err := yeoul.MigrateDatabase(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return writeJSON(c.stdout, result)
+	}
+	if result.Migrated {
+		_, err = fmt.Fprintf(c.stdout, "migrated %s (backup: %s)\n", result.DatabasePath, result.BackupPath)
+		return err
+	}
+	_, err = fmt.Fprintf(c.stdout, "already lattice: %s\n", result.DatabasePath)
+	return err
 }
 
 func (c cli) runAdminCheckpoint(ctx context.Context, args []string) error {
@@ -64,11 +101,7 @@ Usage:
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
 	}
-	eng, err := openWriteEngine(ctx, dbPath)
-	if err != nil {
-		return err
-	}
-	if err := closeEngine(ctx, eng); err != nil {
+	if err := yeoul.CheckpointDatabase(ctx, dbPath); err != nil {
 		return err
 	}
 	result := map[string]any{
@@ -324,40 +357,28 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		return nil, err
 	}
 	defer func() { _ = closeEngine(ctx, eng) }()
+	return exportDatabaseFromEngine(ctx, eng)
+}
 
-	store, err := openRawStore(dbPath, true)
+func exportDatabaseFromEngine(ctx context.Context, eng yeoul.Engine) (*exportFile, error) {
+	snapshot, err := yeoul.Snapshot(ctx, eng)
 	if err != nil {
 		return nil, err
 	}
-	defer store.Close()
-
-	sourceRows, err := queryRows(store, lstore.QuerySourceRefs())
-	if err != nil {
-		return nil, err
-	}
-	sourceMap := make(map[string]yeoul.SourceInput, len(sourceRows))
-	for _, row := range sourceRows {
-		id := fmt.Sprint(row["id"])
+	sourceMap := make(map[string]yeoul.SourceInput, len(snapshot.Sources))
+	for id, source := range snapshot.Sources {
 		sourceMap[id] = yeoul.SourceInput{
-			ID:          id,
-			Kind:        fmt.Sprint(row["kind"]),
-			URI:         fmt.Sprint(row["uri"]),
-			ExternalRef: fmt.Sprint(row["external_ref"]),
+			ID:          source.ID,
+			SpaceID:     source.SpaceID,
+			Kind:        source.Kind,
+			URI:         source.URI,
+			ExternalRef: source.ExternalRef,
+			Metadata:    source.Metadata,
 		}
 	}
 
 	payload := &exportFile{}
-
-	episodeRows, err := queryRows(store, lstore.QueryAllIDs("Episode"))
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range episodeRows {
-		id := fmt.Sprint(row["id"])
-		record, err := eng.GetEpisode(ctx, id)
-		if err != nil {
-			return nil, err
-		}
+	for _, record := range snapshot.Episodes {
 		input := yeoul.EpisodeInput{
 			ID:         record.ID,
 			SpaceID:    record.SpaceID,
@@ -373,17 +394,7 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		}
 		payload.Episodes = append(payload.Episodes, input)
 	}
-
-	entityRows, err := queryRows(store, lstore.QueryAllIDs("Entity"))
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range entityRows {
-		id := fmt.Sprint(row["id"])
-		record, err := eng.GetEntity(ctx, id)
-		if err != nil {
-			return nil, err
-		}
+	for _, record := range snapshot.Entities {
 		payload.Entities = append(payload.Entities, yeoul.EntityInput{
 			ID:            record.ID,
 			SpaceID:       record.SpaceID,
@@ -395,16 +406,7 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		})
 	}
 
-	factRows, err := queryRows(store, lstore.QueryAllIDs("Fact"))
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range factRows {
-		id := fmt.Sprint(row["id"])
-		record, err := eng.GetFact(ctx, id)
-		if err != nil {
-			return nil, err
-		}
+	for _, record := range snapshot.Facts {
 		payload.Facts = append(payload.Facts, yeoul.FactInput{
 			ID:                   record.ID,
 			SpaceID:              record.SpaceID,
@@ -422,54 +424,11 @@ func exportDatabase(ctx context.Context, dbPath string) (*exportFile, error) {
 		})
 	}
 
-	entityRevisionRows, err := queryRowsAllowMissing(store, lstore.QueryEntityRevisionRows())
-	if err != nil {
-		return nil, err
+	for _, revision := range snapshot.EntityRevisions {
+		payload.EntityRevisions = append(payload.EntityRevisions, revision)
 	}
-	for _, row := range entityRevisionRows {
-		payload.EntityRevisions = append(payload.EntityRevisions, yeoul.EntityRevision{
-			ID:            rowString(row, "id"),
-			EntityID:      rowString(row, "entity_id"),
-			SpaceID:       rowString(row, "space_id"),
-			RevisionKind:  rowString(row, "revision_kind"),
-			TxTime:        rowTime(row, "tx_time"),
-			Namespace:     rowString(row, "namespace"),
-			Type:          rowString(row, "type"),
-			CanonicalName: rowString(row, "canonical_name"),
-			Aliases:       rowStringSlice(row, "aliases_json"),
-			CreatedAt:     rowTime(row, "created_at"),
-			UpdatedAt:     rowTime(row, "updated_at"),
-			Metadata:      rowMap(row, "metadata_json"),
-		})
-	}
-
-	factRevisionRows, err := queryRowsAllowMissing(store, lstore.QueryFactRevisionRows())
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range factRevisionRows {
-		payload.FactRevisions = append(payload.FactRevisions, yeoul.FactRevision{
-			ID:                   rowString(row, "id"),
-			FactID:               rowString(row, "fact_id"),
-			SpaceID:              rowString(row, "space_id"),
-			RevisionKind:         rowString(row, "revision_kind"),
-			TxTime:               rowTime(row, "tx_time"),
-			Predicate:            rowString(row, "predicate"),
-			SubjectID:            rowString(row, "subject_id"),
-			ObjectID:             rowString(row, "object_id"),
-			ValueText:            rowString(row, "value_text"),
-			Confidence:           rowFloat64(row, "confidence"),
-			Status:               rowString(row, "status"),
-			ValidFrom:            rowTime(row, "valid_from"),
-			ValidTo:              rowTime(row, "valid_to"),
-			ObservedAt:           rowTime(row, "observed_at"),
-			CreatedAt:            rowTime(row, "created_at"),
-			UpdatedAt:            rowTime(row, "updated_at"),
-			RetractedAt:          rowTime(row, "retracted_at"),
-			RetractionReason:     rowString(row, "retraction_reason"),
-			SupportingEpisodeIDs: rowStringSlice(row, "supporting_episode_ids_json"),
-			Metadata:             rowMap(row, "metadata_json"),
-		})
+	for _, revision := range snapshot.FactRevisions {
+		payload.FactRevisions = append(payload.FactRevisions, revision)
 	}
 
 	sort.Slice(payload.Episodes, func(i, j int) bool { return payload.Episodes[i].ID < payload.Episodes[j].ID })

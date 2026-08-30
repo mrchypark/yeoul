@@ -1,6 +1,6 @@
 # Yeoul Vision
 
-Yeoul is a local-first Temporal Graph Memory Engine written in Go and backed by Ladybug.
+Yeoul is a local-first Temporal Graph Memory Engine written in Go and backed by LatticeDB.
 
 Yeoul Core does not implement agents, LLM orchestration, prompt chains, or AI decision logic.
 Instead, it provides a durable temporal graph substrate for storing episodes, entities, facts,

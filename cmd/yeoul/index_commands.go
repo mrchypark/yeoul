@@ -459,7 +459,7 @@ func isExecutableFile(path string) bool {
 	return info.Mode()&0o111 != 0
 }
 
-func maybeRerankSearchWithRax(ctx context.Context, dbPath, query, backend, raxLib, raxBin string, limit int, resp *yeoul.SearchResponse) (*yeoul.SearchResponse, error) {
+func maybeRerankSearchWithRax(ctx context.Context, eng yeoul.Engine, dbPath, query, backend, raxLib, raxBin string, limit int, resp *yeoul.SearchResponse) (*yeoul.SearchResponse, error) {
 	if backend == "core" || resp == nil || len(resp.Hits) == 0 {
 		return resp, nil
 	}
@@ -470,7 +470,7 @@ func maybeRerankSearchWithRax(ctx context.Context, dbPath, query, backend, raxLi
 		}
 		return resp, nil
 	}
-	docIDs, err := runManagedRaxSearch(ctx, dbPath, query, limit, runtime)
+	docIDs, err := runManagedRaxSearch(ctx, eng, dbPath, query, limit, runtime)
 	if err != nil {
 		if backend == "rax" {
 			return nil, err
@@ -497,7 +497,7 @@ func runRaxPrimarySearch(ctx context.Context, eng yeoul.Engine, dbPath string, r
 		return nil, err
 	}
 	fetchLimit := raxPrimaryFetchLimit(limit)
-	docIDs, err := runManagedRaxSearch(ctx, dbPath, req.QueryText, fetchLimit, runtime)
+	docIDs, err := runManagedRaxSearch(ctx, eng, dbPath, req.QueryText, fetchLimit, runtime)
 	if err != nil {
 		return nil, err
 	}
@@ -692,8 +692,8 @@ func raxCoreRerankScores(ctx context.Context, eng yeoul.Engine, req yeoul.Search
 	return scores
 }
 
-func runManagedRaxSearch(ctx context.Context, dbPath, query string, limit int, runtime raxRuntime) ([]string, error) {
-	storePath, err := ensureManagedRaxStore(ctx, dbPath, runtime)
+func runManagedRaxSearch(ctx context.Context, eng yeoul.Engine, dbPath, query string, limit int, runtime raxRuntime) ([]string, error) {
+	storePath, err := ensureManagedRaxStore(ctx, eng, dbPath, runtime)
 	if err != nil {
 		return nil, err
 	}
@@ -708,7 +708,7 @@ func runManagedRaxSearch(ctx context.Context, dbPath, query string, limit int, r
 	return parseRaxDocIDs(output)
 }
 
-func ensureManagedRaxStore(ctx context.Context, dbPath string, runtime raxRuntime) (string, error) {
+func ensureManagedRaxStore(ctx context.Context, eng yeoul.Engine, dbPath string, runtime raxRuntime) (string, error) {
 	root, storePath, err := managedRaxIndexPaths(dbPath)
 	if err != nil {
 		return "", err
@@ -716,7 +716,12 @@ func ensureManagedRaxStore(ctx context.Context, dbPath string, runtime raxRuntim
 	if ok, err := managedRaxStoreFresh(root, storePath, dbPath, runtime); err != nil {
 		return "", err
 	} else if !ok {
-		payload, err := exportDatabase(ctx, dbPath)
+		var payload *exportFile
+		if eng == nil {
+			payload, err = exportDatabase(ctx, dbPath)
+		} else {
+			payload, err = exportDatabaseFromEngine(ctx, eng)
+		}
 		if err != nil {
 			return "", err
 		}

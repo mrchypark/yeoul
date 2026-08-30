@@ -78,5 +78,5 @@ A schema-first graph model is acceptable if it improves stability and performanc
 - Is the Go integration practical enough for local packaging?
 
 ## Current fit assessment
-Ladybug is a strong candidate because it matches embedded operation, local persistence, graph structure, and query-language requirements.
-Its key constraint is concurrency ownership, which Yeoul must explicitly respect.
+LatticeDB is the selected engine because it matches embedded operation, local persistence, graph structure, transactional writes, and Go-native packaging requirements.
+Its single-owner process model remains an explicit Yeoul operational constraint. Ladybug is retained only as a legacy migration reader.
