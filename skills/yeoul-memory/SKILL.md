@@ -25,7 +25,7 @@ When asked to install or upgrade Yeoul on this computer:
 - Install the requested release with the repository installer or `scripts/install.sh --version TAG`.
 - Verify the wrapper points at the expected install directory; the current CLI does not provide a `--version` command.
 - Verify the user-level database actually opens with the installed binary using `yeoul inspect counts --db "$YEOUL_DB"` and at least one `yeoul search`.
-- For a legacy Ladybug database, require Yeoul v0.5.1 or later with its bundled version-pinned migration helper. Stop other Yeoul processes, then run `yeoul admin migrate-db --db "$YEOUL_DB" --json` or allow the first default open to migrate it automatically. Require a verified LatticeDB result and retain the timestamped `.ladybug-backup-*` copy. Never use v0.5.0 to migrate a pristine v0.2.2 database.
+- For a legacy Ladybug database, require Yeoul v0.5.2 or later with its bundled version-pinned migration helper. Stop other Yeoul processes, then run `yeoul admin migrate-db --db "$YEOUL_DB" --json` or allow the first default open to migrate it automatically. Require a verified LatticeDB result and retain the timestamped `.ladybug-backup-*` copy. Never use v0.5.0 or v0.5.1 to migrate a pristine v0.2.2 database.
 - Do not treat an upgrade as complete until `inspect counts`, a representative search, lifecycle state, and the migration backup have been verified against the real user-level database.
 - Preserve inactive, superseded, or revision-backed facts during upgrades. If `admin export` refuses lifecycle or revision state because full-fidelity restore is not implemented, keep the old database backup and report the limitation instead of replacing `$YEOUL_DB`.
 

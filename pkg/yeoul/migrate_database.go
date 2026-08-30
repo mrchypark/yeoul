@@ -95,6 +95,7 @@ func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string) (
 	}
 
 	command := exec.CommandContext(ctx, helperPath, "admin", "migrate-db", "--db", databasePath, "--json")
+	command.Env = legacyMigrationHelperEnvironment(os.Environ())
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -124,6 +125,20 @@ func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string) (
 		}, nil)
 	}
 	return &result, nil
+}
+
+func legacyMigrationHelperEnvironment(environment []string) []string {
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		switch key {
+		case "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES":
+			continue
+		default:
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func legacyMigrationHelperPath() (string, error) {

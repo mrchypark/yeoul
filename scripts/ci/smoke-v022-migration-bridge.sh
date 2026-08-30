@@ -29,7 +29,12 @@ cp -R "${runtime_root}/lib" "${work_root}/package/lib"
 cp -R "${runtime_root}/libexec/ladybug-v0131" "${work_root}/package/libexec/ladybug-v0131"
 gzip -dc "${fixture}" >"${work_root}/work-memory.lbug"
 
-migration_json="$("${work_root}/package/bin/yeoul" admin migrate-db --db "${work_root}/work-memory.lbug" --json)"
+runtime_env_name="LD_LIBRARY_PATH"
+if [ "${target_os}" = "darwin" ]; then
+  runtime_env_name="DYLD_LIBRARY_PATH"
+fi
+migration_json="$(env "${runtime_env_name}=${work_root}/package/lib" \
+  "${work_root}/package/bin/yeoul" admin migrate-db --db "${work_root}/work-memory.lbug" --json)"
 printf '%s' "${migration_json}" | jq -e '
   .migrated == true and
   .source_driver == "ladybug" and
