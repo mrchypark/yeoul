@@ -2,16 +2,23 @@
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <target-os> <target-arch>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "usage: $0 <target-os> <target-arch> [modfile]" >&2
   exit 1
 fi
 
 target_os="$1"
 target_arch="$2"
-go mod download github.com/LadybugDB/go-ladybug >/dev/null
-module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
-module_version="$(go list -m -f '{{.Version}}' github.com/LadybugDB/go-ladybug)"
+if [[ -n "${3:-}" ]]; then
+  modfile="$3"
+  GOWORK=off go mod download "-modfile=${modfile}" github.com/LadybugDB/go-ladybug >/dev/null
+  module_dir="$(GOWORK=off go list "-modfile=${modfile}" -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
+  module_version="$(GOWORK=off go list "-modfile=${modfile}" -m -f '{{.Version}}' github.com/LadybugDB/go-ladybug)"
+else
+  go mod download github.com/LadybugDB/go-ladybug >/dev/null
+  module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
+  module_version="$(go list -m -f '{{.Version}}' github.com/LadybugDB/go-ladybug)"
+fi
 
 if [[ -z "${module_dir}" ]]; then
   echo "failed to resolve go-ladybug module directory" >&2

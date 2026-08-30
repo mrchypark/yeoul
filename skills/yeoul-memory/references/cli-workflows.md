@@ -47,7 +47,7 @@ yeoul inspect counts --db "$YEOUL_DB" --json
 yeoul search --db "$YEOUL_DB" --query "recent Yeoul memory" --backend auto --group-id "$YEOUL_GROUP" --limit 3
 ```
 
-Stop other Yeoul processes, then migrate a legacy Ladybug database in place through Yeoul's verified staging workflow:
+Require Yeoul v0.5.1 or later with its bundled version-pinned migration helper. Never use v0.5.0 to migrate a pristine v0.2.2 database. Stop other Yeoul processes, then migrate a legacy Ladybug database in place through Yeoul's verified staging workflow:
 
 ```bash
 yeoul admin migrate-db --db "$YEOUL_DB" --json

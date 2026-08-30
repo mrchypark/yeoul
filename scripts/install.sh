@@ -166,6 +166,11 @@ for executable in yeoul yeould; do
   fi
 done
 
+if [[ ! -x "${staging_dir}/libexec/ladybug-v0131/yeoul-migrate-v0131" ]]; then
+  echo "archive is missing the version-pinned Ladybug migration helper" >&2
+  exit 1
+fi
+
 if [[ -e "${target_dir}" || -L "${target_dir}" ]]; then
   mv "${target_dir}" "${backup_dir}"
 fi

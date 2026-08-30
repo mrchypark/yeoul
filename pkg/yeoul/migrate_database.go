@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,7 +19,12 @@ const (
 	migrationPhasePrepared  = "prepared"
 	migrationPhaseBackedUp  = "backed_up"
 	migrationPhaseInstalled = "installed"
+
+	legacyMigrationHelperEnv = "YEOUL_LEGACY_MIGRATION_HELPER"
 )
+
+// Set only on the version-pinned migration helper with go build -ldflags -X.
+var legacyMigrationReaderVersion string
 
 // DatabaseMigrationResult describes one legacy Ladybug to LatticeDB migration.
 type DatabaseMigrationResult struct {
@@ -66,6 +73,75 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 			}, nil
 		}
 	}
+	if legacyMigrationReaderVersion != "v0.13.1" {
+		return migrateDatabaseWithLegacyHelper(ctx, databasePath)
+	}
+
+	return migrateLegacyDatabaseInProcess(databasePath)
+}
+
+func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string) (*DatabaseMigrationResult, error) {
+	helperPath, err := legacyMigrationHelperPath()
+	if err != nil {
+		return nil, errorf(ErrStorageFailed, "locate version-pinned legacy migration helper", map[string]any{
+			"database_path": databasePath,
+		}, err)
+	}
+	if _, err := os.Stat(helperPath); err != nil {
+		return nil, errorf(ErrStorageFailed, "version-pinned legacy migration helper is unavailable", map[string]any{
+			"database_path": databasePath,
+			"helper_path":   helperPath,
+		}, err)
+	}
+
+	command := exec.CommandContext(ctx, helperPath, "admin", "migrate-db", "--db", databasePath, "--json")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, errorf(ErrStorageFailed, "version-pinned legacy migration helper failed", map[string]any{
+			"database_path": databasePath,
+			"helper_path":   helperPath,
+			"stderr":        strings.TrimSpace(stderr.String()),
+		}, err)
+	}
+
+	var result DatabaseMigrationResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return nil, errorf(ErrStorageFailed, "decode version-pinned legacy migration result", map[string]any{
+			"database_path": databasePath,
+			"helper_path":   helperPath,
+		}, err)
+	}
+	if filepath.Clean(result.DatabasePath) != filepath.Clean(databasePath) ||
+		result.SourceDriver != string(StorageDriverLadybug) ||
+		result.TargetDriver != string(StorageDriverLattice) ||
+		!result.Migrated || result.BackupPath == "" {
+		return nil, errorf(ErrStorageFailed, "version-pinned legacy migration helper returned an invalid result", map[string]any{
+			"database_path": databasePath,
+			"helper_path":   helperPath,
+		}, nil)
+	}
+	return &result, nil
+}
+
+func legacyMigrationHelperPath() (string, error) {
+	if configured := strings.TrimSpace(os.Getenv(legacyMigrationHelperEnv)); configured != "" {
+		return filepath.Abs(configured)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	helperName := "yeoul-migrate-v0131"
+	if runtime.GOOS == "windows" {
+		helperName += ".exe"
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(executable), "..", "libexec", "ladybug-v0131", helperName)), nil
+}
+
+func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResult, error) {
 
 	legacy, err := newLadybugStore(Config{Driver: StorageDriverLadybug, DatabasePath: databasePath, ReadOnly: true})
 	if err != nil {

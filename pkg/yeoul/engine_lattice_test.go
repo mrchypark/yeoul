@@ -75,6 +75,9 @@ func TestLatticeIsDefaultAndPersistsGraph(t *testing.T) {
 }
 
 func TestDefaultOpenMigratesLadybugWithFullStateAndBackup(t *testing.T) {
+	previousReaderVersion := legacyMigrationReaderVersion
+	legacyMigrationReaderVersion = "v0.13.1"
+	t.Cleanup(func() { legacyMigrationReaderVersion = previousReaderVersion })
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "legacy.lbug")
 	legacy, err := Open(ctx, Config{
@@ -163,6 +166,41 @@ func TestDefaultOpenMigratesLadybugWithFullStateAndBackup(t *testing.T) {
 	}
 	if markers, _ := filepath.Glob(dbPath + ".yeoul-migration.json"); len(markers) != 0 {
 		t.Fatalf("migration marker was not cleaned up: %v", markers)
+	}
+}
+
+func TestMigrateDatabaseFailsClosedWithoutLegacyHelper(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy.lbug")
+	legacy, err := Open(ctx, Config{
+		Driver:          StorageDriverLadybug,
+		DatabasePath:    dbPath,
+		CreateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("open legacy engine: %v", err)
+	}
+	if err := legacy.Close(ctx); err != nil {
+		t.Fatalf("close legacy engine: %v", err)
+	}
+	before, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat legacy database: %v", err)
+	}
+	t.Setenv(legacyMigrationHelperEnv, filepath.Join(t.TempDir(), "missing-helper"))
+
+	if _, err := MigrateDatabase(ctx, dbPath); err == nil {
+		t.Fatal("expected migration to fail when the version-pinned helper is missing")
+	}
+	after, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("legacy database was not preserved: %v", err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("legacy database size changed: before=%d after=%d", before.Size(), after.Size())
+	}
+	if backups, _ := filepath.Glob(dbPath + ".ladybug-backup-*"); len(backups) != 0 {
+		t.Fatalf("unexpected backup after failed helper lookup: %v", backups)
 	}
 }
 
