@@ -9,7 +9,7 @@ Use this layout for normal Codex work:
 
 ```text
 ~/.local/bin/yeoul                         # Yeoul CLI wrapper
-~/.local/share/yeoul/work-memory.lbug      # user-level Yeoul database
+~/.local/share/yeoul/work-memory.ltdb      # user-level Yeoul database
 ~/.codex/skills/yeoul-memory/              # reusable Codex skill
 <repo>/AGENTS.md                           # project-specific instruction hook
 <repo>/agent-pack/                         # optional Yeoul policy pack for that repo
@@ -45,12 +45,13 @@ Add `~/.local/bin` to your shell startup file if it is not already on `PATH`.
 For normal Codex work, use one user-level Yeoul database:
 
 ```sh
-export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
+export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.ltdb"
 mkdir -p "$(dirname "$YEOUL_DB")"
 yeoul init --db "$YEOUL_DB"
 ```
 
-Use project-local `./yeoul.lbug` only for quickstarts, isolated tests, or disposable debugging.
+Use project-local `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable debugging.
+Before initializing a new user-level database, check whether the legacy `work-memory.lbug` exists. If it does, keep using that explicit path until migration and any rename are verified so memory is not split across two databases.
 One global database keeps decisions and durable facts reusable across projects.
 Use `--group-id` or stable subject namespaces to keep repository-specific records scoped.
 
@@ -83,7 +84,7 @@ At minimum, include:
 Use the `yeoul-memory` skill when a task depends on prior decisions, constraints, ownership, status changes, tradeoffs, or provenance in this repository.
 
 Use a single user-level Yeoul database for normal work:
-`$HOME/.local/share/yeoul/work-memory.lbug`
+`$HOME/.local/share/yeoul/work-memory.ltdb`
 
 Search Yeoul before recommendations, design choices, prioritization, status interpretation, or conflict resolution when prior context may matter.
 
@@ -166,7 +167,7 @@ cp -R /path/to/yeoul/skills/yeoul-memory/. "$CODEX_HOME/skills/yeoul-memory/"
 Then verify the installed binary against the real user-level database, not just `--help`:
 
 ```sh
-export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.lbug"
+export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.ltdb"
 yeoul inspect counts --db "$YEOUL_DB" --json
 yeoul search --db "$YEOUL_DB" \
   --query "recent Yeoul memory" \
@@ -174,23 +175,15 @@ yeoul search --db "$YEOUL_DB" \
   --limit 3
 ```
 
-If the new binary cannot open an existing Ladybug database, keep a timestamped backup and migrate through export/import with the last known-good binary:
+For a legacy Ladybug database, point `YEOUL_DB` at the existing `.lbug` path and use the verified in-place migration workflow:
 
 ```sh
-old_tag="<old-tag>"
-new_tag="<new-tag>"
-old_bin="$HOME/.local/share/yeoul/${old_tag}/bin/yeoul"
-new_bin="$HOME/.local/share/yeoul/${new_tag}/bin/yeoul"
-backup_dir="$HOME/.local/share/yeoul/backups/upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$backup_dir"
-"$old_bin" admin export --db "$YEOUL_DB" --out "$backup_dir/export.json" --json
-"$new_bin" init --db "$backup_dir/work-memory.new.lbug" --json
-"$new_bin" admin import --db "$backup_dir/work-memory.new.lbug" --in "$backup_dir/export.json" --json --confirm
-"$new_bin" inspect counts --db "$backup_dir/work-memory.new.lbug" --json
+yeoul admin migrate-db --db "$YEOUL_DB" --json
+yeoul inspect counts --db "$YEOUL_DB" --json
+yeoul fact lookup --db "$YEOUL_DB" --include-inactive --limit 10 --json
 ```
 
-Replace `<old-tag>` and `<new-tag>` with the installed release tags for the last known-good binary and the target binary.
-Copy the existing `$YEOUL_DB` into the backup directory before replacing it. `admin export` is an importable snapshot, not a full-fidelity restore format; if it refuses inactive facts or revision history, keep the backup, inspect the state with `fact lookup --include-inactive` on the old binary, and report the limitation instead of replacing `$YEOUL_DB`.
+The command writes and verifies a staging LatticeDB database before replacement and reports the retained `.ladybug-backup-*` path. Keep that backup until counts, search, revisions, and lifecycle state have been verified. Existing `.lbug` paths remain valid after migration and contain LatticeDB data. With all Yeoul processes stopped, the verified migrated directory may then be renamed to `work-memory.ltdb`; update `YEOUL_DB` at the same time.
 
 Restart Codex after updating the skill.
 
@@ -198,5 +191,6 @@ Restart Codex after updating the skill.
 
 - If Codex does not mention `yeoul-memory`, confirm `~/.codex/skills/yeoul-memory/SKILL.md` exists and restart Codex.
 - If `yeoul` is not found, run `~/.local/bin/yeoul --help` and add `~/.local/bin` to `PATH`.
-- If records appear in `./yeoul.lbug`, switch commands back to `$HOME/.local/share/yeoul/work-memory.lbug` unless you are running an isolated test.
+- If records appear in `./yeoul.ltdb`, switch commands back to `$HOME/.local/share/yeoul/work-memory.ltdb` unless you are running an isolated test.
+- If the default `.ltdb` path is empty or absent but `work-memory.lbug` exists, stop and use the legacy path until its migration and optional rename are verified.
 - Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win.

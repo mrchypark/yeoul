@@ -131,7 +131,7 @@ func TestLookupRaxRuntimeExplicitBinOverridesBundledFFI(t *testing.T) {
 
 func TestCLIInitIngestEpisodeAndSearch(t *testing.T) {
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "yeoul.lbug")
+	dbPath := filepath.Join(t.TempDir(), "yeoul.ltdb")
 
 	runCLI := func(args ...string) string {
 		t.Helper()
@@ -170,7 +170,7 @@ func TestCLIInitIngestEpisodeAndSearch(t *testing.T) {
 func TestCLIIngestJSONAndGetFact(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	ingestPath := filepath.Join(tmpDir, "ingest.json")
 
 	payload := `{
@@ -222,7 +222,7 @@ func TestCLIIngestJSONAndGetFact(t *testing.T) {
 func TestCLIInspectCountsAndNeighborhood(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	ingestPath := filepath.Join(tmpDir, "graph.json")
 
 	payload := `{
@@ -280,7 +280,7 @@ func TestCLIInspectCountsAndNeighborhood(t *testing.T) {
 func TestCLIFactRetract(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	ingestPath := filepath.Join(tmpDir, "fact.json")
 
 	payload := `{
@@ -374,7 +374,7 @@ func TestCLIPolicyValidateAndListRecipes(t *testing.T) {
 func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	ingestPath := filepath.Join(tmpDir, "graph.json")
 	indexRoot := filepath.Join(tmpDir, "index")
 	storePath := filepath.Join(tmpDir, "projection.rax")
@@ -387,7 +387,7 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
     {
       "id":"ep-index",
       "kind":"note",
-      "content":"Yeoul keeps Ladybug as canonical truth and uses rax as derived retrieval.",
+      "content":"Yeoul keeps LatticeDB as canonical truth and uses rax as derived retrieval.",
       "source":{"kind":"note","external_ref":"thread-index"}
     }
   ],
@@ -480,6 +480,11 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 		t.Fatalf("expected rax metadata to preserve Yeoul projection metadata, got %q", string(raxDocs))
 	}
 
+	autoBench := runCLI("bench", "query", "--db", dbPath, "--query", "derived retrieval runtime", "--backend", "auto", "--rax-bin", fakeRaxPath, "--iterations", "1", "--json")
+	if !strings.Contains(autoBench, `"search"`) {
+		t.Fatalf("expected auto bench to build and use managed rax search while the database is open, got %q", autoBench)
+	}
+
 	search := runCLI("search", "--db", dbPath, "--query", "derived retrieval runtime", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
 	if !strings.Contains(search, `"record_id": "fact-index"`) || !strings.Contains(search, `"rax_candidate_rank:1"`) {
 		t.Fatalf("expected search to use managed rax reranking, got %q", search)
@@ -515,6 +520,40 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	}
 }
 
+func TestCLIAdminMigrateDatabase(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy.lbug")
+	legacy, err := yeoul.Open(ctx, yeoul.Config{
+		Driver:          yeoul.StorageDriverLadybug,
+		DatabasePath:    dbPath,
+		CreateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := legacy.IngestEpisode(ctx, yeoul.EpisodeInput{
+		Kind:    "note",
+		Content: "migrate through admin command",
+		Source:  yeoul.SourceInput{Kind: "test", ExternalRef: "admin-migrate"},
+	}); err != nil {
+		t.Fatalf("ingest legacy episode: %v", err)
+	}
+	if err := legacy.Close(ctx); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	var stdout strings.Builder
+	if err := run(ctx, []string{"admin", "migrate-db", "--db", dbPath, "--json"}, &stdout, &strings.Builder{}); err != nil {
+		t.Fatalf("run admin migrate-db: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"migrated": true`) || !strings.Contains(stdout.String(), `"target_driver": "lattice"`) {
+		t.Fatalf("unexpected migration output: %s", stdout.String())
+	}
+	if backups, _ := filepath.Glob(dbPath + ".ladybug-backup-*"); len(backups) != 1 {
+		t.Fatalf("expected one legacy backup, got %v", backups)
+	}
+}
+
 func TestRaxProjectionChunkIDsMapBackToRecords(t *testing.T) {
 	kind, id, ok := raxRecordKindID("episode:project:thread" + raxChunkMarker + "2")
 	if !ok || kind != "episode" || id != "project:thread" {
@@ -523,7 +562,7 @@ func TestRaxProjectionChunkIDsMapBackToRecords(t *testing.T) {
 }
 
 func TestRaxProjectionIncludesRevisionText(t *testing.T) {
-	projections, manifest := buildProjectionArtifacts("test.lbug", &exportFile{
+	projections, manifest := buildProjectionArtifacts("test.ltdb", &exportFile{
 		Entities: []yeoul.EntityInput{{
 			ID:            "project:rev",
 			SpaceID:       "default",
@@ -579,7 +618,7 @@ func TestParseRaxDocIDsAcceptsHitsAndStringIDs(t *testing.T) {
 func TestCLIIndexVerifyRejectsCorruptProjectionContent(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "index-corrupt.lbug")
+	dbPath := filepath.Join(tmpDir, "index-corrupt.ltdb")
 	indexRoot := filepath.Join(tmpDir, "index")
 
 	runCLI := func(args ...string) string {
@@ -620,7 +659,7 @@ func TestCLIIndexVerifyRejectsCorruptProjectionContent(t *testing.T) {
 func TestCLIIndexVerifyReadsLargeProjectionDocuments(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "index-large.lbug")
+	dbPath := filepath.Join(tmpDir, "index-large.ltdb")
 	indexRoot := filepath.Join(tmpDir, "index")
 	contentPath := filepath.Join(tmpDir, "large.txt")
 	if err := os.WriteFile(contentPath, []byte(strings.Repeat("A", 70_000)), 0o644); err != nil {
@@ -649,7 +688,7 @@ func TestCLIIndexVerifyReadsLargeProjectionDocuments(t *testing.T) {
 func TestCLIIndexClampsPreUnixEpochProjectionTimestamps(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "index-pre-epoch.lbug")
+	dbPath := filepath.Join(tmpDir, "index-pre-epoch.ltdb")
 	ingestPath := filepath.Join(tmpDir, "pre-epoch.json")
 	indexRoot := filepath.Join(tmpDir, "index")
 
@@ -706,7 +745,7 @@ func TestCLIIndexClampsPreUnixEpochProjectionTimestamps(t *testing.T) {
 func TestCLIIndexRejectsUnsafeProjectionManifestPath(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "index-unsafe-path.lbug")
+	dbPath := filepath.Join(tmpDir, "index-unsafe-path.ltdb")
 	indexRoot := filepath.Join(tmpDir, "index")
 
 	runCLI := func(args ...string) string {
@@ -747,7 +786,7 @@ func TestCLIIndexRejectsUnsafeProjectionManifestPath(t *testing.T) {
 func TestCLIAdminExportImport(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	exportPath := filepath.Join(tmpDir, "export.json")
 
 	runCLI := func(args ...string) string {
@@ -789,7 +828,7 @@ func TestCLIAdminExportImport(t *testing.T) {
 		t.Fatalf("expected importable export payload without revision history, got %q", string(data))
 	}
 
-	importedDB := filepath.Join(tmpDir, "imported.lbug")
+	importedDB := filepath.Join(tmpDir, "imported.ltdb")
 	runCLI("init", "--db", importedDB)
 	runCLI("admin", "import", "--confirm", "--db", importedDB, "--in", exportPath)
 	imported := runCLI("search", "--db", importedDB, "--query", "export me", "--json")
@@ -814,7 +853,7 @@ func TestCLIAdminExportImport(t *testing.T) {
 	if err := os.WriteFile(restorePath, []byte(restorePayload), 0o644); err != nil {
 		t.Fatalf("write restore payload: %v", err)
 	}
-	restoreDB := filepath.Join(tmpDir, "restore.lbug")
+	restoreDB := filepath.Join(tmpDir, "restore.ltdb")
 	runCLI("init", "--db", restoreDB)
 	if err := runCLIError("admin", "import", "--confirm", "--db", restoreDB, "--in", restorePath); err == nil {
 		t.Fatal("expected admin import to reject lifecycle-managed fact fields")
@@ -824,7 +863,7 @@ func TestCLIAdminExportImport(t *testing.T) {
 func TestCLIAdminExportRejectsLifecycleLoss(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	exportPath := filepath.Join(tmpDir, "export.json")
 
 	runCLI := func(args ...string) {
@@ -885,7 +924,7 @@ func TestCLIAdminExportRejectsLifecycleLoss(t *testing.T) {
 func TestCLIAdminExportRejectsRevisionLoss(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	exportPath := filepath.Join(tmpDir, "export.json")
 
 	runCLI := func(args ...string) {
@@ -941,7 +980,7 @@ func TestCLIAdminExportRejectsRevisionLoss(t *testing.T) {
 func TestCLIPolicyDrivenSearchAndIngestDrop(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "policy.lbug")
+	dbPath := filepath.Join(tmpDir, "policy.ltdb")
 	packPath, err := filepath.Abs(filepath.Join("..", "..", "agent-pack"))
 	if err != nil {
 		t.Fatalf("resolve pack path: %v", err)
@@ -1006,7 +1045,7 @@ func TestCLIPolicyDrivenSearchAndIngestDrop(t *testing.T) {
 
 func TestCLIBenchIngest(t *testing.T) {
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "bench.lbug")
+	dbPath := filepath.Join(t.TempDir(), "bench.ltdb")
 
 	runCLI := func(args ...string) string {
 		t.Helper()
@@ -1038,7 +1077,7 @@ func TestCLIBenchIngest(t *testing.T) {
 func TestCLIIngestFileAndBatchAliases(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "aliases.lbug")
+	dbPath := filepath.Join(tmpDir, "aliases.ltdb")
 	contentPath := filepath.Join(tmpDir, "note.txt")
 	batchPath := filepath.Join(tmpDir, "batch.json")
 
@@ -1071,7 +1110,7 @@ func TestCLIIngestFileAndBatchAliases(t *testing.T) {
 
 func TestManagedRaxFreshnessIncludesRuntimeIdentity(t *testing.T) {
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "yeoul.lbug")
+	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
 	root := filepath.Join(tmpDir, "rax")
 	storePath := filepath.Join(root, "projection.rax")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -1182,7 +1221,7 @@ func TestRaxPrimaryFallbackDecisionForFilteredTruncation(t *testing.T) {
 func TestCLITimelineProvenanceAndFactLookup(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "query.lbug")
+	dbPath := filepath.Join(tmpDir, "query.ltdb")
 	ingestPath := filepath.Join(tmpDir, "query.json")
 
 	payload := `{
@@ -1247,7 +1286,7 @@ func TestCLITimelineProvenanceAndFactLookup(t *testing.T) {
 func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "fact-upsert-subject.lbug")
+	dbPath := filepath.Join(tmpDir, "fact-upsert-subject.ltdb")
 	ingestPath := filepath.Join(tmpDir, "fact-upsert-subject.json")
 
 	payload := `{
@@ -1411,7 +1450,7 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 func TestCLIFactAssertUpsertFailureIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "fact-upsert-atomic.lbug")
+	dbPath := filepath.Join(tmpDir, "fact-upsert-atomic.ltdb")
 
 	runCLI := func(args ...string) string {
 		t.Helper()
@@ -1453,7 +1492,7 @@ func TestCLIFactAssertUpsertFailureIsAtomic(t *testing.T) {
 func TestCLIProvenanceShowsInactiveFactLifecycle(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "prov-inactive.lbug")
+	dbPath := filepath.Join(tmpDir, "prov-inactive.ltdb")
 	ingestPath := filepath.Join(tmpDir, "prov-inactive.json")
 
 	payload := `{
@@ -1517,7 +1556,7 @@ func TestCLIProvenanceShowsInactiveFactLifecycle(t *testing.T) {
 func TestCLIEntityMergePreviewAndCompact(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "compact.lbug")
+	dbPath := filepath.Join(tmpDir, "compact.ltdb")
 	ingestPath := filepath.Join(tmpDir, "compact.json")
 
 	payload := `{
@@ -1596,7 +1635,7 @@ func TestCLIEntityMergePreviewAndCompact(t *testing.T) {
 func TestCLIBenchQueryAndLifecycle(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "bench-plus.lbug")
+	dbPath := filepath.Join(tmpDir, "bench-plus.ltdb")
 	ingestPath := filepath.Join(tmpDir, "seed.json")
 
 	payload := `{
@@ -1645,7 +1684,7 @@ func TestCLIBenchQueryAndLifecycle(t *testing.T) {
 		t.Fatalf("expected bench query output, got %q", queryOutput)
 	}
 
-	lifecycleDB := filepath.Join(tmpDir, "lifecycle.lbug")
+	lifecycleDB := filepath.Join(tmpDir, "lifecycle.ltdb")
 	runCLI("init", "--db", lifecycleDB)
 	lifecycleOutput := runCLI("bench", "lifecycle", "--db", lifecycleDB, "--iterations", "2", "--json")
 	if !strings.Contains(lifecycleOutput, `"supersede_count": 2`) || !strings.Contains(lifecycleOutput, `"retraction_count": 2`) {
@@ -1886,7 +1925,7 @@ func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
 func TestCLISearchRejectsAmbiguousTemporalFlags(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "temporal-flags.lbug")
+	dbPath := filepath.Join(tmpDir, "temporal-flags.ltdb")
 	var stdout strings.Builder
 	var stderr strings.Builder
 	if err := run(ctx, []string{"init", "--db", dbPath}, &stdout, &stderr); err != nil {
@@ -1905,7 +1944,7 @@ func TestCLISearchRejectsAmbiguousTemporalFlags(t *testing.T) {
 func TestCLIContext(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "context.lbug")
+	dbPath := filepath.Join(tmpDir, "context.ltdb")
 	runCLI := func(args ...string) string {
 		t.Helper()
 		var stdout strings.Builder

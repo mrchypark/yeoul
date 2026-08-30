@@ -12,7 +12,7 @@ This document defines how Yeoul uses local storage in embedded and daemon modes.
 Yeoul should default to an explicit configured path.
 Example defaults:
 - embedded app: application-controlled path
-- CLI quickstart: `./yeoul.lbug`
+- CLI quickstart: `./yeoul.ltdb`
 - daemon mode: user-configurable application data directory
 
 ## Storage ownership
@@ -20,7 +20,7 @@ In embedded mode, the host process owns the database.
 In daemon mode, `yeould` owns the database and clients do not touch storage directly.
 
 ## Required storage artifacts
-- Ladybug database files/directories
+- LatticeDB database files/directories
 - Yeoul migration metadata
 - optional policy cache
 - logs and benchmark output outside the database path

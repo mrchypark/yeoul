@@ -82,4 +82,4 @@ Entity -> Entity
 
 ## Design Note
 
-Because Ladybug uses a schema-first graph model, Yeoul treats schema definition as a first-class design artifact rather than an implementation afterthought.
+Because Yeoul depends on stable labels, relationship types, indexes, and payload contracts, it treats graph schema definition as a first-class design artifact rather than an implementation afterthought.

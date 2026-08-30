@@ -14,9 +14,10 @@ Yeoul Core is a memory substrate, not an agent runtime. Keep agent behavior in s
 For normal work, prefer a single user-level Yeoul database instead of a project-local database file.
 
 Default path:
-- `$HOME/.local/share/yeoul/work-memory.lbug`
+- `$HOME/.local/share/yeoul/work-memory.ltdb`
 
-Project-local `./yeoul.lbug` is only for quickstarts, isolated tests, or temporary debugging.
+Project-local `./yeoul.ltdb` is only for quickstarts, isolated tests, or temporary debugging.
+LatticeDB is canonical storage and `.ltdb` is the standard extension for new databases. Existing `.lbug` paths remain valid migration inputs and may contain an in-place migrated LatticeDB database. If the default `.ltdb` path is absent but the legacy `.lbug` path exists, use the legacy path until migration and any rename are verified instead of creating a second empty database.
 
 ## Local install and upgrade checks
 
@@ -24,7 +25,8 @@ When asked to install or upgrade Yeoul on this computer:
 - Install the requested release with the repository installer or `scripts/install.sh --version TAG`.
 - Verify the wrapper points at the expected install directory; the current CLI does not provide a `--version` command.
 - Verify the user-level database actually opens with the installed binary using `yeoul inspect counts --db "$YEOUL_DB"` and at least one `yeoul search`.
-- If a new Ladybug-backed release cannot open an existing database, do not treat the install as complete. Keep a timestamped backup, export with the last known-good binary, import into a fresh database with the new binary, and verify counts and lifecycle state before replacing `$YEOUL_DB`.
+- For a legacy Ladybug database, stop other Yeoul processes, then run `yeoul admin migrate-db --db "$YEOUL_DB" --json` or allow the first default open to migrate it automatically. Require a verified LatticeDB result and retain the timestamped `.ladybug-backup-*` copy.
+- Do not treat an upgrade as complete until `inspect counts`, a representative search, lifecycle state, and the migration backup have been verified against the real user-level database.
 - Preserve inactive, superseded, or revision-backed facts during upgrades. If `admin export` refuses lifecycle or revision state because full-fidelity restore is not implemented, keep the old database backup and report the limitation instead of replacing `$YEOUL_DB`.
 
 ## Search first

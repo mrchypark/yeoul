@@ -1,3 +1,4 @@
 *.lbug
+*.ltdb
 go.work
 go.work.sum

@@ -7,7 +7,7 @@ Create a local Yeoul database, ingest a simple episode, and retrieve the resulti
 
 ## 1. Initialize the database
 ```bash
-yeoul init --db ./yeoul.lbug
+yeoul init --db ./yeoul.ltdb
 ```
 
 ## 2. Validate the bundled agent pack
@@ -17,22 +17,22 @@ yeoul policy validate --path ./agent-pack
 
 ## 3. Ingest an episode
 ```bash
-yeoul ingest episode   --db ./yeoul.lbug   --kind chat_message   --source-id thread_1   --observed-at 2026-04-16T12:00:00Z   --content "We decided to use Ladybug for Yeoul and keep AI behavior outside the core."
+yeoul ingest episode   --db ./yeoul.ltdb   --kind chat_message   --source-id thread_1   --observed-at 2026-04-16T12:00:00Z   --content "We decided to use LatticeDB for Yeoul and keep AI behavior outside the core."
 ```
 
 ## 4. Inspect counts
 ```bash
-yeoul inspect counts --db ./yeoul.lbug
+yeoul inspect counts --db ./yeoul.ltdb
 ```
 
 ## 5. Search recent context
 ```bash
-yeoul search --db ./yeoul.lbug --query "what did we decide about the storage engine?"
+yeoul search --db ./yeoul.ltdb --query "what did we decide about the storage engine?"
 ```
 
 ## 6. Inspect the stored episode
 ```bash
-yeoul get --db ./yeoul.lbug --kind episode --id ep_000001
+yeoul get --db ./yeoul.ltdb --kind episode --id ep_000001
 ```
 
 ## 7. List bundled search recipes
@@ -49,7 +49,7 @@ You should see:
 
 Plain-text episode ingest stores the source episode and makes it searchable, but it does not automatically materialize entities or facts from free text.
 To populate entities or facts, ingest structured JSON or use explicit fact lifecycle commands such as `yeoul fact assert`.
-For example, `yeoul fact assert --db ./yeoul.lbug --predicate DECIDED --upsert-subject --subject-type Project --subject-name Yeoul --value-text "Use Ladybug for storage" --supporting-episodes ep_000001` creates or updates the subject while asserting a fact.
+For example, `yeoul fact assert --db ./yeoul.ltdb --predicate DECIDED --upsert-subject --subject-type Project --subject-name Yeoul --value-text "Use LatticeDB for storage" --supporting-episodes ep_000001` creates or updates the subject while asserting a fact.
 Use `--observed-at RFC3339` when the fact observation time should be explicit; otherwise `fact assert` inherits the first non-empty `observed_at` from its supporting episodes, then falls back to system time.
 
 ## Next steps

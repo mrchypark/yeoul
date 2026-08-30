@@ -14,7 +14,7 @@ case "${temp_root}" in
 esac
 
 smoke_root=$(mktemp -d "${smoke_pattern}")
-smoke_db=${smoke_root}/memory.lbug
+smoke_db=${smoke_root}/memory.ltdb
 smoke_state=testing
 
 report_exit() {

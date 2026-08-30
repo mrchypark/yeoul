@@ -1,17 +1,17 @@
 # Roadmap
 
-This roadmap defines staged delivery for Yeoul. Dates are intentionally omitted; stages should be converted into milestones after the first Ladybug validation pass.
+This roadmap defines staged delivery for Yeoul. Dates are intentionally omitted; stages should be converted into milestones after the first LatticeDB validation pass.
 
 ## Stage 0: Foundation and validation
 
 ### Goals
-- validate Ladybug as the embedded storage engine
+- validate LatticeDB as the embedded storage engine
 - validate Go integration and build constraints
 - freeze product scope and non-goals
 - define schema and public engine interfaces
 
 ### Deliverables
-- Ladybug evaluation report
+- LatticeDB evaluation report
 - initial schema draft
 - engine interface draft
 - local persistence smoke tests
@@ -132,4 +132,4 @@ This stage is intentionally deferred until the embedded toolkit, CLI, and policy
 - wasm or browser-facing adapter
 - remote hosted mode
 - replication or distributed operation
-- non-Ladybug backend support
+- non-LatticeDB backend support

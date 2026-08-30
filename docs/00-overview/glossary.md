@@ -5,7 +5,7 @@ This glossary defines the terms used across Yeoul Core and Yeoul Agent Pack.
 ## Product terms
 
 ### Yeoul
-The overall project. A local-first Temporal Graph Memory Engine written in Go and backed by Ladybug.
+The overall project. A local-first Temporal Graph Memory Engine written in Go and backed by LatticeDB.
 
 ### Yeoul Core
 The storage and memory engine. It has no built-in LLM calls, prompt execution, agent planner, or autonomous runtime.

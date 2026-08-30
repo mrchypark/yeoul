@@ -1,10 +1,10 @@
 # Yeoul
 
-Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written in Go, backed by Ladybug for all durable on-disk storage, and designed to keep AI agent behavior outside the core through external skills, instructions, ontology files, episode rules, and search recipes.
+Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written in Go, backed by LatticeDB for durable on-disk storage, and designed to keep AI agent behavior outside the core through external skills, instructions, ontology files, episode rules, and search recipes.
 
 한국어 요약:
 
-여울은 Go와 Ladybug로 구현하는 로컬 우선 Temporal Graph Memory Engine이다. durable on-disk 저장소는 Ladybug만 사용하며, Core는 AI agent 로직을 포함하지 않고 agent 전용 행동은 skill, instruction, ontology, episode rule, search recipe 파일로 외부화한다.
+여울은 Go와 LatticeDB로 구현하는 로컬 우선 Temporal Graph Memory Engine이다. durable on-disk 저장소는 LatticeDB를 기본으로 사용하며, Core는 AI agent 로직을 포함하지 않고 agent 전용 행동은 skill, instruction, ontology, episode rule, search recipe 파일로 외부화한다.
 
 ## 왜 Yeoul인가
 
@@ -60,7 +60,7 @@ $env:YEOUL_VERSION = "v0.1.0"
 irm https://github.com/mrchypark/yeoul/releases/latest/download/install.ps1 | iex
 ```
 
-Windows builds currently target `x64` and still require the Microsoft Visual C++ 2015-2022 Redistributable because Ladybug ships as a native shared library.
+Windows builds currently target `x64`. Release archives still include the legacy Ladybug migration runtime; it is used only when converting an existing database.
 
 Homebrew:
 
@@ -81,10 +81,11 @@ See the full product-specific guide in [`agent-pack/integrations/README.md`](./a
 
 ## Local Development
 
-Requirements: Go 1.26+ and the `gcc` toolchain (cgo).
+Requirements: Go 1.27+ and the `gcc` toolchain (cgo for the legacy migration reader).
 
-The Ladybug runtime ships as a native shared library and must be staged into
-the Go module cache once per machine before building or testing:
+LatticeDB is the default storage engine. The Ladybug runtime is retained only
+to build and test automatic migration from legacy databases, and must be staged
+into the Go module cache once per machine:
 
 ```bash
 bash scripts/ci/setup-ladybug.sh darwin arm64   # darwin arm64|amd64, linux amd64|arm64, windows amd64
@@ -100,6 +101,28 @@ go test ./...
 
 The `rax` retrieval runtime is optional; CLI search degrades to core search
 when the bundled `librax_ffi` library is not present.
+
+## Database Migration
+
+Opening an existing Ladybug database with the default driver automatically
+converts it to LatticeDB. Yeoul writes and verifies a staging database first,
+keeps the original as a timestamped `.ladybug-backup-*` sibling, and then
+installs the verified Lattice database at the original path. New databases use
+the standard `.ltdb` extension. An existing `.lbug` path remains valid after
+in-place migration for backward compatibility.
+Stop other Yeoul processes before migrating a database; migration requires
+exclusive ownership of the database path.
+
+Run the same operation explicitly with:
+
+```bash
+yeoul admin migrate-db --db "$HOME/.local/share/yeoul/work-memory.lbug" --json
+```
+
+After verification and while all Yeoul processes are stopped, the migrated
+directory may be renamed to `work-memory.ltdb`. Update `YEOUL_DB` at the same
+time; never initialize a new empty `.ltdb` database while the legacy path still
+contains the authoritative data.
 
 ## Separation Rule
 

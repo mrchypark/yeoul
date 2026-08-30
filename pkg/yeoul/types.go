@@ -35,6 +35,33 @@ type Engine interface {
 	GetSource(ctx context.Context, id string) (*Source, error)
 }
 
+// Snapshotter is implemented by engines that can expose a consistent database snapshot.
+type Snapshotter interface {
+	Snapshot(ctx context.Context) (*DatabaseSnapshot, error)
+}
+
+// Snapshot returns a full-fidelity snapshot without expanding the core Engine interface.
+func Snapshot(ctx context.Context, eng Engine) (*DatabaseSnapshot, error) {
+	snapshotter, ok := eng.(Snapshotter)
+	if !ok {
+		return nil, errorf(ErrNotSupported, "engine does not support database snapshots", nil, nil)
+	}
+	return snapshotter.Snapshot(ctx)
+}
+
+// DatabaseSnapshot is a consistent, full-fidelity copy of persisted Yeoul state.
+type DatabaseSnapshot struct {
+	Version             int                           `json:"version"`
+	Sequence            uint64                        `json:"sequence"`
+	Sources             map[string]Source             `json:"sources"`
+	Episodes            map[string]Episode            `json:"episodes"`
+	Entities            map[string]Entity             `json:"entities"`
+	Facts               map[string]Fact               `json:"facts"`
+	FactRevisions       map[string]FactRevision       `json:"fact_revisions,omitempty"`
+	EntityRevisions     map[string]EntityRevision     `json:"entity_revisions,omitempty"`
+	MigrationWatermarks map[string]MigrationWatermark `json:"migration_watermarks,omitempty"`
+}
+
 type SourceInput struct {
 	ID          string         `json:"id,omitempty"`
 	SpaceID     string         `json:"space_id,omitempty"`
