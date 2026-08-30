@@ -522,35 +522,24 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 
 func TestCLIAdminMigrateDatabase(t *testing.T) {
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "legacy.lbug")
-	legacy, err := yeoul.Open(ctx, yeoul.Config{
-		Driver:          yeoul.StorageDriverLadybug,
+	dbPath := filepath.Join(t.TempDir(), "current.ltdb")
+	current, err := yeoul.Open(ctx, yeoul.Config{
 		DatabasePath:    dbPath,
 		CreateIfMissing: true,
 	})
 	if err != nil {
-		t.Fatalf("open legacy database: %v", err)
+		t.Fatalf("open lattice database: %v", err)
 	}
-	if _, err := legacy.IngestEpisode(ctx, yeoul.EpisodeInput{
-		Kind:    "note",
-		Content: "migrate through admin command",
-		Source:  yeoul.SourceInput{Kind: "test", ExternalRef: "admin-migrate"},
-	}); err != nil {
-		t.Fatalf("ingest legacy episode: %v", err)
-	}
-	if err := legacy.Close(ctx); err != nil {
-		t.Fatalf("close legacy database: %v", err)
+	if err := current.Close(ctx); err != nil {
+		t.Fatalf("close lattice database: %v", err)
 	}
 
 	var stdout strings.Builder
 	if err := run(ctx, []string{"admin", "migrate-db", "--db", dbPath, "--json"}, &stdout, &strings.Builder{}); err != nil {
 		t.Fatalf("run admin migrate-db: %v", err)
 	}
-	if !strings.Contains(stdout.String(), `"migrated": true`) || !strings.Contains(stdout.String(), `"target_driver": "lattice"`) {
+	if !strings.Contains(stdout.String(), `"migrated": false`) || !strings.Contains(stdout.String(), `"source_driver": "lattice"`) {
 		t.Fatalf("unexpected migration output: %s", stdout.String())
-	}
-	if backups, _ := filepath.Glob(dbPath + ".ladybug-backup-*"); len(backups) != 1 {
-		t.Fatalf("expected one legacy backup, got %v", backups)
 	}
 }
 

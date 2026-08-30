@@ -96,6 +96,11 @@ try {
         }
     }
 
+    $migrationHelper = Join-Path $stagingDir "libexec\ladybug-v0131\yeoul-migrate-v0131.exe"
+    if (-not (Test-Path -LiteralPath $migrationHelper)) {
+        throw "Archive is missing the version-pinned Ladybug migration helper."
+    }
+
     $hasBackup = $false
     $targetMoved = $false
     try {

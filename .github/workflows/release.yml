@@ -74,6 +74,10 @@ jobs:
           RELEASE_TARGET: "${{ matrix.goos }}-${{ matrix.goarch }}"
         run: goreleaser build --snapshot --clean --single-target
 
+      - name: Smoke v0.2.2 migration bridge
+        if: matrix.goos == 'linux'
+        run: sh scripts/ci/smoke-v022-migration-bridge.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
+
       - name: Smoke Yeoul memory guidance
         if: matrix.goos == 'linux'
         run: |

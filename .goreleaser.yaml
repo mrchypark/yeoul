@@ -165,6 +165,9 @@ archives:
       - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
         dst: lib
         strip_parent: true
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/libexec/ladybug-v0131/*
+        dst: libexec/ladybug-v0131
+        strip_parent: true
   - id: archive-linux-arm64
     ids:
       - yeoul-linux-arm64
@@ -175,6 +178,9 @@ archives:
     files:
       - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
         dst: lib
+        strip_parent: true
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/libexec/ladybug-v0131/*
+        dst: libexec/ladybug-v0131
         strip_parent: true
   - id: archive-darwin-amd64
     ids:
@@ -187,6 +193,9 @@ archives:
       - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
         dst: lib
         strip_parent: true
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/libexec/ladybug-v0131/*
+        dst: libexec/ladybug-v0131
+        strip_parent: true
   - id: archive-darwin-arm64
     ids:
       - yeoul-darwin-arm64
@@ -198,6 +207,9 @@ archives:
       - src: dist/runtime/{{ .Os }}_{{ .Arch }}/lib/*
         dst: lib
         strip_parent: true
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/libexec/ladybug-v0131/*
+        dst: libexec/ladybug-v0131
+        strip_parent: true
   - id: archive-windows-amd64
     ids:
       - yeoul-windows-amd64
@@ -208,4 +220,7 @@ archives:
     files:
       - src: dist/runtime/{{ .Os }}_{{ .Arch }}/bin/*
         dst: bin
+        strip_parent: true
+      - src: dist/runtime/{{ .Os }}_{{ .Arch }}/libexec/ladybug-v0131/*
+        dst: libexec/ladybug-v0131
         strip_parent: true
