@@ -12,7 +12,7 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/apache/arrow-go/v18 v18.6.0 // indirect
-	github.com/apache/thrift v0.23.0 // indirect
+	github.com/apache/thrift v0.24.0 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
