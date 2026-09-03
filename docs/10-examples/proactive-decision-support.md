@@ -24,6 +24,21 @@ Use `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable local exp
 
 Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win.
 
+## Recipe policy path
+
+For recipe-backed searches, select an absolute policy path before working. From this repository root, prefer its `agent-pack/`:
+
+```bash
+export YEOUL_POLICY_PATH="$(CDPATH= cd agent-pack && pwd -P)"
+```
+
+Relative `--policy-path` values are resolved from the current working directory, so use the selected absolute path. Yeoul has no default policy discovery and does not read `YEOUL_POLICY_PATH`; the variable is a shell convention that must be passed explicitly. Outside a repository with `agent-pack/`, set `YEOUL_POLICY_PATH` from the actual loaded `yeoul-memory` skill directory, which bundles `search_recipes.yaml`:
+
+```bash
+export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
+export YEOUL_POLICY_PATH="$(CDPATH= cd "$YEOUL_LOADED_SKILL_DIR" && pwd -P)"
+```
+
 ## Default loop
 
 ### 1. Recall before advising
@@ -34,7 +49,7 @@ Before recommending a direction, interpreting status, or resolving a tradeoff:
 yeoul search --db "$YEOUL_DB" \
   --query "current context for this task" \
   --backend auto \
-  --policy-path ./agent-pack \
+  --policy-path "$YEOUL_POLICY_PATH" \
   --recipe recent_context \
   --include-related
 ```

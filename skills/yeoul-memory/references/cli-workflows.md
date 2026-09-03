@@ -30,6 +30,27 @@ Default recipe choices:
 - `project_memory` for project, task, decision, and document context.
 - `contradiction_check` before asserting a fact that may conflict with active memory.
 
+## Select a recipe policy path
+
+Before any recipe-backed search, select an absolute `YEOUL_POLICY_PATH`. Prefer the repository's `agent-pack/` when it exists; otherwise select the directory containing the loaded `yeoul-memory` skill, which bundles `search_recipes.yaml`.
+
+Relative `--policy-path` values are resolved from the current working directory, so use the selected absolute path. Yeoul has no default policy discovery and no `YEOUL_POLICY_PATH` environment-variable contract: the variable below is only a shell convention, so every recipe command must pass it explicitly.
+
+From a repository root with an `agent-pack/`:
+
+```bash
+export YEOUL_POLICY_PATH="$(CDPATH= cd agent-pack && pwd -P)"
+```
+
+Outside such a repository, set `YEOUL_LOADED_SKILL_DIR` to the actual directory the agent host loads for `yeoul-memory` before running a command:
+
+```bash
+export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
+export YEOUL_POLICY_PATH="$(CDPATH= cd "$YEOUL_LOADED_SKILL_DIR" && pwd -P)"
+```
+
+Replace the placeholder with the actual loaded `yeoul-memory` skill directory for the active host.
+
 ## Search current context
 
 ```bash
@@ -63,7 +84,7 @@ Use `--policy-path` with `--recipe` when a pack should shape retrieval:
 yeoul search --db "$YEOUL_DB" \
   --query "recent project memory" \
   --group-id "$YEOUL_GROUP" \
-  --policy-path ./agent-pack \
+  --policy-path "$YEOUL_POLICY_PATH" \
   --recipe recent_context \
   --include-related
 ```
@@ -74,7 +95,7 @@ Use `project_memory` when the question is about repository-level context:
 yeoul search --db "$YEOUL_DB" \
   --query "release automation decisions" \
   --group-id "$YEOUL_GROUP" \
-  --policy-path ./agent-pack \
+  --policy-path "$YEOUL_POLICY_PATH" \
   --recipe project_memory \
   --include-related
 ```
@@ -85,12 +106,12 @@ Before non-trivial Yeoul repo work, run this preflight before planning, bulk exp
 yeoul search --db "$YEOUL_DB" \
   --query "what should I check before working on this task?" \
   --group-id "$YEOUL_GROUP" \
-  --policy-path ./agent-pack \
+  --policy-path "$YEOUL_POLICY_PATH" \
   --recipe preflight_briefing \
   --include-related
 ```
 
-If `preflight_briefing` is missing, run `yeoul policy list-recipes --path ./agent-pack`, use `recent_context` once as a fallback, and report that the policy pack is stale.
+If `preflight_briefing` is missing, run `yeoul policy list-recipes --path "$YEOUL_POLICY_PATH"`, use `recent_context` once as a fallback, and report that the selected policy pack is stale.
 
 ## Check whether a fact already exists
 
@@ -108,7 +129,7 @@ Before asserting a new fact, check for possible active conflicts:
 yeoul search --db "$YEOUL_DB" \
   --query "new claim to check" \
   --group-id "$YEOUL_GROUP" \
-  --policy-path ./agent-pack \
+  --policy-path "$YEOUL_POLICY_PATH" \
   --recipe contradiction_check \
   --include-related
 ```

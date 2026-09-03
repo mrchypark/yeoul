@@ -174,3 +174,9 @@ Do not let a one-off tool name, environment name, or implementation detail becom
 In this repo, prefer the local CLI over inventing raw storage queries.
 
 Read [references/cli-workflows.md](references/cli-workflows.md) when you need concrete command patterns for search, timeline, provenance, lifecycle changes, policy recipes, or maintenance flows.
+
+## Recipe policy paths
+
+Use this skill's bundled `search_recipes.yaml` when no repository `agent-pack/` is available. Before a recipe-backed search, select and export an absolute `YEOUL_POLICY_PATH`: prefer the repository's `agent-pack/` when present; otherwise use the directory containing the loaded `yeoul-memory` skill.
+
+Relative `--policy-path` values are resolved from the command's current working directory; use the selected absolute path instead. Yeoul does not discover a default policy path and does not read `YEOUL_POLICY_PATH` itself; the variable is an agent-selected shell convention that must be expanded explicitly as `--policy-path "$YEOUL_POLICY_PATH"`.
