@@ -7,6 +7,9 @@ if [ ! -x "${yeoul_bin}" ]; then
   exit 1
 fi
 
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
+source_skill_path=$(CDPATH= cd "${script_dir}/../../skills/yeoul-memory" && pwd -P)
+
 temp_root=$(CDPATH= cd "${TMPDIR:-/tmp}" && pwd -P)
 case "${temp_root}" in
   /) smoke_pattern=/yeoul-memory-guidance.XXXXXX ;;
@@ -35,6 +38,23 @@ trap report_exit EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [ "${YEOUL_INSTALLED_SKILL_PATH+x}" = x ]; then
+  installed_skill_path=${YEOUL_INSTALLED_SKILL_PATH}
+else
+  installed_skill_path=${smoke_root}/installed-skill/yeoul-memory
+  mkdir -p "${installed_skill_path}"
+  cp -R "${source_skill_path}/." "${installed_skill_path}/"
+fi
+if [ ! -d "${installed_skill_path}" ]; then
+  printf 'YEOUL_INSTALLED_SKILL_PATH is not a directory: %s\n' "${installed_skill_path}" >&2
+  exit 1
+fi
+skill_policy_path=$(CDPATH= cd "${installed_skill_path}" && pwd -P)
+if [ ! -f "${skill_policy_path}/SKILL.md" ] || [ ! -f "${skill_policy_path}/search_recipes.yaml" ]; then
+  printf 'installed Yeoul skill is missing SKILL.md or search_recipes.yaml: %s\n' "${skill_policy_path}" >&2
+  exit 1
+fi
 
 "${yeoul_bin}" init --db "${smoke_db}"
 "${yeoul_bin}" ingest episode --db "${smoke_db}" \
@@ -86,6 +106,18 @@ printf '%s\n' "${neighborhood_json}" | grep -Fq "${object_id}"
 
 search_json=$("${yeoul_bin}" search --db "${smoke_db}" --backend core --type fact --query DEPENDS_ON --json)
 printf '%s\n' "${search_json}" | grep -Fq "${fact_id}"
+
+recipe_workdir=${smoke_root}/recipe-working-directory
+mkdir "${recipe_workdir}"
+recipe_search_json=$(
+  CDPATH= cd "${recipe_workdir}"
+  "${yeoul_bin}" search --db "${smoke_db}" --backend core --type fact \
+    --query DEPENDS_ON \
+    --policy-path "${skill_policy_path}" \
+    --recipe recent_context \
+    --json
+)
+printf '%s\n' "${recipe_search_json}" | grep -Fq "${fact_id}"
 
 smoke_parent=$(CDPATH= cd "$(dirname "${smoke_root}")" && pwd -P)
 smoke_name=$(basename "${smoke_root}")

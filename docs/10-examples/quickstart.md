@@ -1,6 +1,7 @@
 # Quickstart
 
 This quickstart shows the intended first-run experience for Yeoul.
+Run these commands from the repository root, where `agent-pack/` exists, or replace `"$PWD/agent-pack"` with an absolute path to a policy pack.
 
 ## Goal
 Create a local Yeoul database, ingest a simple episode, and retrieve the resulting memory.
@@ -12,7 +13,7 @@ yeoul init --db ./yeoul.ltdb
 
 ## 2. Validate the bundled agent pack
 ```bash
-yeoul policy validate --path ./agent-pack
+yeoul policy validate --path "$PWD/agent-pack"
 ```
 
 ## 3. Ingest an episode
@@ -37,7 +38,7 @@ yeoul get --db ./yeoul.ltdb --kind episode --id ep_000001
 
 ## 7. List bundled search recipes
 ```bash
-yeoul policy list-recipes --path ./agent-pack
+yeoul policy list-recipes --path "$PWD/agent-pack"
 ```
 
 ## Expected outcome

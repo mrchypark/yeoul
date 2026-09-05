@@ -8,7 +8,7 @@ Use this guide after installing `yeoul` itself. If your repository already has a
 
 | Product | Team-shared project file | Optional reusable command surface |
 | --- | --- | --- |
-| Codex | `AGENTS.md` | Codex skill in `~/.codex/skills/yeoul-memory` |
+| Codex | `AGENTS.md` | Reusable skill in the active host's loaded `yeoul-memory` directory |
 | Gemini CLI | `GEMINI.md` | `.gemini/commands/*.toml` |
 | Claude Code | `CLAUDE.md` | `.claude/commands/*.md` |
 
@@ -16,18 +16,19 @@ Replace `<DB_PATH>` below with your actual Yeoul database path, or document your
 
 ## Codex
 
-Codex understands repository guidance through `AGENTS.md`. In the local Codex runtime, reusable skills are also loaded from `~/.codex/skills/<skill-name>`.
+Codex understands repository guidance through `AGENTS.md`. The active host determines where reusable skills are loaded; use the actual loaded `yeoul-memory` directory rather than assuming a host-specific path.
 
 For the full Codex placement guide, including the CLI, user-level database, reusable skill, repository `AGENTS.md`, and optional policy pack layout, see [`codex/install.md`](./codex/install.md).
 
 ### 1. Install the reusable Yeoul skill for Codex
 
 ```bash
-mkdir -p ~/.codex/skills/yeoul-memory
-cp -R /path/to/yeoul/skills/yeoul-memory/. ~/.codex/skills/yeoul-memory/
+export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
+mkdir -p "$YEOUL_LOADED_SKILL_DIR"
+cp -R /path/to/yeoul/skills/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
 ```
 
-This path reflects the current Codex local runtime convention.
+Replace the placeholder with the directory the active host actually loads for `yeoul-memory`.
 
 ### 2. Add or merge an `AGENTS.md` file in your repository root
 

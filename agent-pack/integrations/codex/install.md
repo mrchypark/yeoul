@@ -10,17 +10,18 @@ Use this layout for normal Codex work:
 ```text
 ~/.local/bin/yeoul                         # Yeoul CLI wrapper
 ~/.local/share/yeoul/work-memory.ltdb      # user-level Yeoul database
-~/.codex/skills/yeoul-memory/              # reusable Codex skill
+/absolute/path/to/loaded/yeoul-memory/     # agent host's loaded skill directory
 <repo>/AGENTS.md                           # project-specific instruction hook
 <repo>/agent-pack/                         # optional Yeoul policy pack for that repo
 ```
 
 `agent-pack/` and `skills/yeoul-memory/` are different things:
 
-- `skills/yeoul-memory/` is the Codex skill. Install it under `~/.codex/skills/` when you want Codex to discover Yeoul behavior globally.
+- `skills/yeoul-memory/` is the reusable Agent Skill. Install it in the directory that the agent host actually loads for `yeoul-memory`.
 - `agent-pack/` is the Yeoul policy pack. Keep it in a repository or shared policy location when you want CLI policy validation, ontology, episode rules, or search recipes.
 
 The repository's `skills/yeoul-memory/` directory is the canonical distributable source. Treat installed copies as derived artifacts: update them one-way from this directory, then restart Codex. Do not edit the installed copy independently.
+Its bundled `search_recipes.yaml` lets the skill run recipe-backed searches even when no repository `agent-pack/` is available.
 
 ## 1. Install the Yeoul CLI
 
@@ -57,12 +58,12 @@ Use `--group-id` or stable subject namespaces to keep repository-specific record
 
 ## 3. Install the Codex Skill
 
-Clone or unpack Yeoul, then copy the reusable skill into Codex's local skill directory:
+Clone or unpack Yeoul, then set `YEOUL_LOADED_SKILL_DIR` to the directory that the agent host actually loads for `yeoul-memory` and copy the reusable skill there:
 
 ```sh
-CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-mkdir -p "$CODEX_HOME/skills/yeoul-memory"
-cp -R /path/to/yeoul/skills/yeoul-memory/. "$CODEX_HOME/skills/yeoul-memory/"
+export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
+mkdir -p "$YEOUL_LOADED_SKILL_DIR"
+cp -R /path/to/yeoul/skills/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
 ```
 
 Restart Codex after installing or updating the skill so it reloads local skill metadata.
@@ -70,7 +71,7 @@ Restart Codex after installing or updating the skill so it reloads local skill m
 To verify placement:
 
 ```sh
-test -f "${CODEX_HOME:-$HOME/.codex}/skills/yeoul-memory/SKILL.md"
+test -f "$YEOUL_LOADED_SKILL_DIR/SKILL.md"
 ```
 
 ## 4. Add Repository Instructions
@@ -109,19 +110,31 @@ If the repository already has an `AGENTS.md`, merge this section instead of repl
 When a repository should carry Yeoul policy files, keep `agent-pack/` in that repository:
 
 ```sh
+# Run from the repository root.
 mkdir -p ./agent-pack
 cp -R /path/to/yeoul/agent-pack/. ./agent-pack/
-yeoul policy validate --path ./agent-pack
-yeoul policy show --path ./agent-pack --json
+yeoul policy validate --path "$PWD/agent-pack"
+yeoul policy show --path "$PWD/agent-pack" --json
 ```
 
-Use policy packs from CLI commands when you want named search recipes or policy-driven behavior:
+Use policy packs from CLI commands when you want named search recipes or policy-driven behavior. Select an absolute path before the command: prefer the repository pack when it exists, otherwise use the installed skill directory.
+
+```sh
+# Run this from the repository root when its agent-pack/ is present.
+export YEOUL_POLICY_PATH="$(CDPATH= cd agent-pack && pwd -P)"
+
+# Otherwise set this to the actual loaded skill directory for the active host.
+# export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
+# export YEOUL_POLICY_PATH="$(CDPATH= cd "$YEOUL_LOADED_SKILL_DIR" && pwd -P)"
+```
+
+Relative `--policy-path` values are resolved from the current working directory, so use the selected absolute path. Yeoul does not discover a default policy path and does not read `YEOUL_POLICY_PATH`; the variable is an explicit shell convention used in the command below.
 
 ```sh
 yeoul search --db "$YEOUL_DB" \
   --query "release decision" \
   --group-id "repo:example" \
-  --policy-path ./agent-pack \
+  --policy-path "$YEOUL_POLICY_PATH" \
   --recipe recent_context \
   --include-related
 ```
@@ -133,8 +146,12 @@ If `policy show --json` does not include `episode_rules.fact_promotion`, the ins
 Run the repository smoke script from a checkout with `AGENTS.md` installed. It uses a disposable database, preserves it on failure, and removes it only after every assertion passes:
 
 ```sh
-YEOUL_BIN="$HOME/.local/bin/yeoul" scripts/ci/smoke-yeoul-memory-guidance.sh
+YEOUL_BIN="$HOME/.local/bin/yeoul" \
+YEOUL_INSTALLED_SKILL_PATH="/absolute/path/to/loaded/yeoul-memory" \
+  scripts/ci/smoke-yeoul-memory-guidance.sh
 ```
+
+`YEOUL_INSTALLED_SKILL_PATH` is explicit so CI can validate the installed skill that an active host actually loads. In source-tree CI, omit it to use the repository skill source.
 
 Then ask Codex:
 
@@ -159,9 +176,9 @@ When Yeoul changes, update the installed skill one-way from the canonical reposi
 ```sh
 curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.sh | bash
 
-CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-mkdir -p "$CODEX_HOME/skills/yeoul-memory"
-cp -R /path/to/yeoul/skills/yeoul-memory/. "$CODEX_HOME/skills/yeoul-memory/"
+export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
+mkdir -p "$YEOUL_LOADED_SKILL_DIR"
+cp -R /path/to/yeoul/skills/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
 ```
 
 Then verify the installed binary against the real user-level database, not just `--help`:
@@ -189,7 +206,7 @@ Restart Codex after updating the skill.
 
 ## Troubleshooting
 
-- If Codex does not mention `yeoul-memory`, confirm `~/.codex/skills/yeoul-memory/SKILL.md` exists and restart Codex.
+- If Codex does not mention `yeoul-memory`, confirm the agent host's actual loaded skill directory contains `yeoul-memory/SKILL.md`, then restart Codex.
 - If `yeoul` is not found, run `~/.local/bin/yeoul --help` and add `~/.local/bin` to `PATH`.
 - If records appear in `./yeoul.ltdb`, switch commands back to `$HOME/.local/share/yeoul/work-memory.ltdb` unless you are running an isolated test.
 - If the default `.ltdb` path is empty or absent but `work-memory.lbug` exists, stop and use the legacy path until its migration and optional rename are verified.
