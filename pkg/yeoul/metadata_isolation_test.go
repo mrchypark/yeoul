@@ -447,7 +447,7 @@ func TestIncludedRecordsDoNotShareEngineMetadata(t *testing.T) {
 
 	lookup, err := eng.LookupFacts(ctx, FactLookupRequest{
 		Meta:    QueryMeta{SpaceID: "default"},
-		Include: Include{SupportingEpisodes: true, RelatedEntities: true},
+		Include: Include{SupportingFacts: true, SupportingEpisodes: true, RelatedEntities: true},
 	})
 	if err != nil {
 		t.Fatalf("lookup facts: %v", err)
@@ -464,7 +464,7 @@ func TestIncludedRecordsDoNotShareEngineMetadata(t *testing.T) {
 	search, err := eng.Search(ctx, SearchRequest{
 		QueryText: "isolation",
 		Types:     []string{"episode"},
-		Include:   Include{Snippets: true},
+		Include:   Include{SupportingEpisodes: true},
 	})
 	if err != nil {
 		t.Fatalf("search: %v", err)
