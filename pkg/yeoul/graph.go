@@ -19,11 +19,12 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
+	index := newTemporalIndex(e)
 
 	facts := make([]Fact, 0)
 	for _, fact := range e.facts {
-		factRecord := e.factVersionAt(fact, req.Temporal)
-		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) {
+		factRecord := e.factVersionAt(fact, req.Temporal, index)
+		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 			continue
 		}
 		if len(req.SubjectIDs) > 0 && !slices.Contains(req.SubjectIDs, factRecord.SubjectID) {
@@ -57,7 +58,7 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 		Facts: factPage,
 	}
 	resp.Meta.NextCursor = nextCursor
-	resp.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, factLookupHits(factPage), spaceID)
+	resp.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, factLookupHits(factPage), spaceID, index)
 	return resp, nil
 }
 
@@ -70,6 +71,7 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
+	index := newTemporalIndex(e)
 
 	nodeMap := make(map[string]GraphNode)
 	edgeMap := make(map[string]GraphEdge)
@@ -94,7 +96,7 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 	}
 
 	for _, entity := range e.entities {
-		entityRecord := e.entityVersionAt(entity, req.Temporal)
+		entityRecord := e.entityVersionAt(entity, req.Temporal, index)
 		if entityRecord == nil || entityRecord.SpaceID != spaceID {
 			continue
 		}
@@ -116,8 +118,8 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 		}
 	}
 	for _, fact := range e.facts {
-		factRecord := e.factVersionAt(fact, req.Temporal)
-		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) {
+		factRecord := e.factVersionAt(fact, req.Temporal, index)
+		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 			continue
 		}
 		addNode(GraphNode{ID: factRecord.ID, Type: "Fact", Label: factRecord.Predicate})
@@ -247,6 +249,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
+	index := newTemporalIndex(e)
 
 	events := make([]TimelineEvent, 0)
 	allowedEvents := req.EventTypes
@@ -279,8 +282,8 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	// fact, which would make timeline construction O(F x R).
 	revisionsByFact := e.factRevisionsByFact()
 	for _, fact := range e.facts {
-		factRecord := e.factVersionAt(fact, temporal)
-		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, temporal) || !matchesAnchors(req.AnchorIDs, append([]string{factRecord.SubjectID, factRecord.ObjectID, factRecord.ID}, factRecord.SupportingEpisodeIDs...)...) {
+		factRecord := e.factVersionAt(fact, temporal, index)
+		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, temporal, index) || !matchesAnchors(req.AnchorIDs, append([]string{factRecord.SubjectID, factRecord.ObjectID, factRecord.ID}, factRecord.SupportingEpisodeIDs...)...) {
 			continue
 		}
 		createdEvent := TimelineEvent{
@@ -396,6 +399,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
+	index := newTemporalIndex(e)
 	maxDepth := req.MaxDepth
 	if maxDepth <= 0 {
 		maxDepth = 8
@@ -422,7 +426,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 	switch req.Kind {
 	case "fact":
 		fact, ok := e.facts[req.ID]
-		factRecord := e.factVersionAt(fact, req.Temporal)
+		factRecord := e.factVersionAt(fact, req.Temporal, index)
 		if !ok || factRecord == nil || factRecord.SpaceID != spaceID {
 			return nil, errorf(ErrFactNotFound, "fact not found", map[string]any{"fact_id": req.ID}, nil)
 		}
@@ -452,7 +456,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		}
 		if nextID, _ := factRecord.Metadata["superseded_by"].(string); nextID != "" && maxDepth >= 1 {
 			if nextFact, ok := e.facts[nextID]; ok && nextFact.SpaceID == spaceID {
-				nextRecord := e.factVersionAt(nextFact, req.Temporal)
+				nextRecord := e.factVersionAt(nextFact, req.Temporal, index)
 				if nextRecord != nil && addNode(ProvenanceNode{ID: nextRecord.ID, Type: "Fact", Label: nextRecord.Predicate, Meta: factProvenanceMeta(*nextRecord)}, 1) {
 					addEdge(ProvenanceEdge{ID: compositeID("prov", "SUPERSEDES", nextFact.ID, fact.ID), Type: "SUPERSEDES", FromID: nextFact.ID, ToID: fact.ID}, 1)
 				}
@@ -470,7 +474,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		if len(previousIDs) > 0 && maxDepth >= 1 {
 			for previousID := range previousIDs {
 				if previousFact, ok := e.facts[previousID]; ok && previousFact.SpaceID == spaceID {
-					previousRecord := e.factVersionAt(previousFact, req.Temporal)
+					previousRecord := e.factVersionAt(previousFact, req.Temporal, index)
 					if previousRecord != nil && addNode(ProvenanceNode{ID: previousRecord.ID, Type: "Fact", Label: previousRecord.Predicate, Meta: factProvenanceMeta(*previousRecord)}, 1) {
 						addEdge(ProvenanceEdge{ID: compositeID("prov", "SUPERSEDES", fact.ID, previousFact.ID), Type: "SUPERSEDES", FromID: fact.ID, ToID: previousFact.ID}, 1)
 					}
@@ -479,14 +483,14 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		}
 	case "entity":
 		entity, ok := e.entities[req.ID]
-		entityRecord := e.entityVersionAt(entity, req.Temporal)
+		entityRecord := e.entityVersionAt(entity, req.Temporal, index)
 		if !ok || entityRecord == nil || entityRecord.SpaceID != spaceID {
 			return nil, errorf(ErrEntityNotFound, "entity not found", map[string]any{"entity_id": req.ID}, nil)
 		}
 		root.Label = entityRecord.CanonicalName
 		nodes = append(nodes, root)
 		for _, fact := range e.facts {
-			factRecord := e.factVersionAt(fact, req.Temporal)
+			factRecord := e.factVersionAt(fact, req.Temporal, index)
 			if factRecord == nil || factRecord.SpaceID != spaceID || (factRecord.SubjectID != entityRecord.ID && factRecord.ObjectID != entityRecord.ID) {
 				continue
 			}
@@ -512,7 +516,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 			}
 			if nextID, _ := factRecord.Metadata["superseded_by"].(string); nextID != "" && maxDepth >= 2 {
 				nextFact, ok := e.facts[nextID]
-				nextRecord := e.factVersionAt(nextFact, req.Temporal)
+				nextRecord := e.factVersionAt(nextFact, req.Temporal, index)
 				if ok && nextRecord != nil && nextRecord.SpaceID == spaceID && addNode(ProvenanceNode{ID: nextRecord.ID, Type: "Fact", Label: nextRecord.Predicate, Meta: factProvenanceMeta(*nextRecord)}, 2) {
 					addEdge(ProvenanceEdge{ID: compositeID("prov", "SUPERSEDES", nextFact.ID, fact.ID), Type: "SUPERSEDES", FromID: nextFact.ID, ToID: fact.ID}, 2)
 				}
@@ -532,7 +536,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		}
 		if maxDepth >= 1 {
 			for _, fact := range e.facts {
-				factRecord := e.factVersionAt(fact, req.Temporal)
+				factRecord := e.factVersionAt(fact, req.Temporal, index)
 				if factRecord == nil || factRecord.SpaceID != spaceID || !slices.Contains(factRecord.SupportingEpisodeIDs, episode.ID) {
 					continue
 				}
@@ -570,7 +574,7 @@ func factLookupHits(facts []Fact) []SearchHit {
 //
 // Shaping is delegated to AssembleIncludedRecords so the core engine and the Rax
 // backend honor identical flag implications and dedupe shared support.
-func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal TemporalFilter, page []SearchHit, spaceID string) IncludedRecords {
+func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal TemporalFilter, page []SearchHit, spaceID string, index *temporalIndex) IncludedRecords {
 	resolve := func(kind, id string) (any, bool) {
 		switch kind {
 		case "fact":
@@ -578,8 +582,8 @@ func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal T
 			if !ok {
 				return nil, false
 			}
-			version := e.factVersionAt(fact, temporal)
-			if version == nil || version.SpaceID != spaceID || !e.matchesScopeForFact(*version, scope, temporal) {
+			version := e.factVersionAt(fact, temporal, index)
+			if version == nil || version.SpaceID != spaceID || !e.matchesScopeForFact(*version, scope, temporal, index) {
 				return nil, false
 			}
 			return version, true
@@ -594,7 +598,7 @@ func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal T
 			if !ok {
 				return nil, false
 			}
-			version := e.entityVersionAt(entity, temporal)
+			version := e.entityVersionAt(entity, temporal, index)
 			if version == nil || version.SpaceID != spaceID || entityMarkedDuplicate(*version) || !matchesEntityType(*version, scope.EntityTypes) {
 				return nil, false
 			}

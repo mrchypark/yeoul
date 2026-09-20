@@ -32,16 +32,17 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
+	index := newTemporalIndex(e)
 
 	hits := make([]SearchHit, 0)
 	graphSeeds := map[string]float64{}
 	seenHits := map[string]bool{}
-	stats := e.searchCorpusStats(types, req, spaceID)
+	stats := e.searchCorpusStats(types, req, spaceID, index)
 
 	if slices.Contains(types, "fact") {
 		for _, fact := range e.facts {
-			factRecord := e.factVersionAt(fact, req.Temporal)
-			if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) {
+			factRecord := e.factVersionAt(fact, req.Temporal, index)
+			if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 				continue
 			}
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
@@ -119,7 +120,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	}
 	if slices.Contains(types, "entity") {
 		for _, entity := range e.entities {
-			entityRecord := e.entityVersionAt(entity, req.Temporal)
+			entityRecord := e.entityVersionAt(entity, req.Temporal, index)
 			if entityRecord == nil || entityRecord.SpaceID != spaceID || !matchesEntityType(*entityRecord, req.Scope.EntityTypes) {
 				continue
 			}
@@ -161,8 +162,8 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	if mode != SearchModeKeyword && slices.Contains(types, "fact") && len(graphSeeds) > 0 {
 		expandedSeeds := map[string]float64{}
 		for _, fact := range e.facts {
-			factRecord := e.factVersionAt(fact, req.Temporal)
-			if factRecord == nil || seenHits["fact:"+factRecord.ID] || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) {
+			factRecord := e.factVersionAt(fact, req.Temporal, index)
+			if factRecord == nil || seenHits["fact:"+factRecord.ID] || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 				continue
 			}
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
@@ -188,8 +189,8 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			addGraphSeeds(expandedSeeds, score, factRecord.SupportingEpisodeIDs...)
 		}
 		for _, fact := range e.facts {
-			factRecord := e.factVersionAt(fact, req.Temporal)
-			if factRecord == nil || seenHits["fact:"+factRecord.ID] || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) {
+			factRecord := e.factVersionAt(fact, req.Temporal, index)
+			if factRecord == nil || seenHits["fact:"+factRecord.ID] || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 				continue
 			}
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
@@ -231,7 +232,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 		Hits: hitsPage,
 	}
 	response.Meta.NextCursor = nextCursor
-	response.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, hitsPage, spaceID)
+	response.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, hitsPage, spaceID, index)
 	return response, nil
 }
 
@@ -240,7 +241,7 @@ type sparseCorpusStats struct {
 	DF       map[string]int
 }
 
-func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID string) *sparseCorpusStats {
+func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID string, index *temporalIndex) *sparseCorpusStats {
 	stats := &sparseCorpusStats{DF: map[string]int{}}
 	observe := func(text string) {
 		tokens := tokenize(text)
@@ -254,8 +255,8 @@ func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID st
 	}
 	if slices.Contains(types, "fact") {
 		for _, fact := range e.facts {
-			factRecord := e.factVersionAt(fact, req.Temporal)
-			if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) {
+			factRecord := e.factVersionAt(fact, req.Temporal, index)
+			if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 				continue
 			}
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
@@ -280,7 +281,7 @@ func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID st
 	}
 	if slices.Contains(types, "entity") && len(req.Predicates) == 0 {
 		for _, entity := range e.entities {
-			entityRecord := e.entityVersionAt(entity, req.Temporal)
+			entityRecord := e.entityVersionAt(entity, req.Temporal, index)
 			if entityRecord == nil || entityRecord.SpaceID != spaceID || !matchesEntityType(*entityRecord, req.Scope.EntityTypes) || entityMarkedDuplicate(*entityRecord) {
 				continue
 			}
