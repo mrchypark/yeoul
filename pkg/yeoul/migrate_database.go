@@ -69,6 +69,15 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 	if err != nil {
 		return nil, fmt.Errorf("resolve migration database path: %w", err)
 	}
+	// The ownership lock, the migration marker, and the native engine's own
+	// lock all have to name the same database. A path reached through a
+	// symlinked directory is one database to the engine but a second ownership
+	// namespace to Yeoul, so the aliases are resolved before any of them is
+	// used.
+	databasePath, err = resolveDatabasePathAliases(databasePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve migration database path: %w", err)
+	}
 	// Ownership spans loading the source, building and verifying the staging
 	// database, the marker phases, and the cutover, so no writer can commit
 	// records the snapshot misses and no competing migrator can move the file
@@ -85,9 +94,16 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 		return nil, err
 	}
 
-	if store, err := newLatticeStore(Config{DatabasePath: databasePath, ReadOnly: true}); err == nil {
-		_, loadErr := store.Load()
-		closeErr := store.Close()
+	lattice, latticeErr := newLatticeStore(Config{DatabasePath: databasePath, ReadOnly: true})
+	if latticeErr != nil && errors.Is(latticeErr, errUnsupportedStateVersion) {
+		// The path holds a LatticeDB state written under an application-state
+		// version this build cannot read. The legacy conversion below would replace
+		// the database, so the version rejection is reported as it stands.
+		return nil, latticeErr
+	}
+	if latticeErr == nil {
+		_, loadErr := lattice.Load()
+		closeErr := lattice.Close()
 		if loadErr == nil {
 			if closeErr != nil {
 				return nil, closeErr
@@ -695,7 +711,7 @@ func recoverDatabaseMigration(databasePath string) error {
 	if err := json.Unmarshal(data, &marker); err != nil {
 		return fmt.Errorf("decode migration marker: %w", err)
 	}
-	if marker.DatabasePath != databasePath || marker.BackupPath == "" || marker.StagingPath == "" {
+	if !sameDatabasePath(marker.DatabasePath, databasePath) || marker.BackupPath == "" || marker.StagingPath == "" {
 		return fmt.Errorf("migration marker does not match database path %q", databasePath)
 	}
 	if err := validateDatabaseMigrationPaths(marker); err != nil {
@@ -737,6 +753,13 @@ func recoverDatabaseMigration(databasePath string) error {
 			if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
 				return fmt.Errorf("sync recovered migration namespace: %w", err)
 			}
+			// The staged database is proved readable before the installation
+			// intent is published, because a staging copy this build cannot open
+			// would otherwise consume the backup and only be rejected after the
+			// rename.
+			if err := validateStagingDatabaseVersion(marker.StagingPath); err != nil {
+				return err
+			}
 			// installStagingDatabase records the backed-up phase before the
 			// rename, so a retry after the rename finalizes the installation
 			// instead of trying to roll it back.
@@ -761,6 +784,9 @@ func recoverDatabaseMigration(databasePath string) error {
 			return clearDatabaseMigrationState(marker, markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {
+			if err := validateStagingDatabaseVersion(marker.StagingPath); err != nil {
+				return err
+			}
 			_, err := installStagingDatabase(marker, markerPath)
 			return err
 		}
@@ -787,6 +813,18 @@ func validateDatabaseMigrationPaths(marker databaseMigrationMarker) error {
 		return fmt.Errorf("migration staging path is outside the expected database sibling namespace")
 	}
 	return nil
+}
+
+// validateStagingDatabaseVersion proves a staged migration result is a
+// database this build can read before recovery installs it at the canonical
+// path. A staging database left behind by another build is otherwise only
+// discovered after the rename, when the legacy backup has already been consumed
+// and the rejection can no longer be undone by a retry. A staging path the
+// native engine cannot open is refused for the same reason: installing it would
+// consume the backup for a database that cannot be opened, and the rejection
+// keeps the migration state intact so a later retry can still install it.
+func validateStagingDatabaseVersion(stagingPath string) error {
+	return readStateVersionReadOnly(stagingPath)
 }
 
 // syncMigrationDirectory is the directory durability hook for the migration

@@ -48,6 +48,19 @@ func enableInProcessLegacyMigration(t *testing.T) {
 	t.Cleanup(func() { legacyMigrationReaderVersion = previous })
 }
 
+// canonicalTestPath resolves the platform path aliases of a temporary path so
+// a test and the migration's own alias resolution name the same database. On
+// macOS a temporary directory is spelled /var/... but resolves to /private/var
+// ..., so the rename hooks and the recorded syncs carry the resolved spelling.
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := resolveDatabasePathAliases(path)
+	if err != nil {
+		t.Fatalf("resolve test database path %q: %v", path, err)
+	}
+	return resolved
+}
+
 // writeLegacyDatabaseFixture creates a committed legacy Ladybug database plus a
 // sidecar so the migration exercises the full backup move.
 func writeLegacyDatabaseFixture(t *testing.T, databasePath string) {
@@ -96,7 +109,7 @@ func TestMigrateDatabaseSyncsDirectoryTransitions(t *testing.T) {
 		t.Fatalf("expected the migration to report success: %#v", result)
 	}
 
-	parent := filepath.Dir(dbPath)
+	parent := filepath.Dir(canonicalTestPath(t, dbPath))
 	for index, call := range *calls {
 		if call != parent {
 			t.Fatalf("directory sync %d targeted %q, want %q", index, call, parent)
@@ -328,7 +341,7 @@ func TestMigrateDatabaseRestoresStrandedSidecarAfterBackupFailure(t *testing.T) 
 
 	backupFailure := errors.New("injected main backup failure")
 	restoreRenames := blockMigrationRenames(t, func(source, target string) error {
-		if filepath.Clean(source) == filepath.Clean(dbPath) {
+		if filepath.Clean(source) == filepath.Clean(canonicalTestPath(t, dbPath)) {
 			return backupFailure
 		}
 		return nil
@@ -504,7 +517,7 @@ func TestMigrateDatabaseKeepsStagingWhenRollbackFails(t *testing.T) {
 		if strings.HasPrefix(filepath.Base(source), filepath.Base(dbPath)+".ladybug-backup-") {
 			return rollbackFailure
 		}
-		if filepath.Clean(target) == filepath.Clean(dbPath) {
+		if filepath.Clean(target) == filepath.Clean(canonicalTestPath(t, dbPath)) {
 			return installFailure
 		}
 		return nil

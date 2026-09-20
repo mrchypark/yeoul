@@ -13,6 +13,11 @@ type Store struct {
 	db *latticedb.DB
 }
 
+// ErrDatabaseLocked reports that the native engine refused an open because
+// another handle owns the database. Callers that must not proceed on a
+// database they could not inspect check for it instead of matching error text.
+var ErrDatabaseLocked = latticedb.ErrDatabaseLocked
+
 func Open(path string, create, readOnly bool) (*Store, error) {
 	db, err := latticedb.Open(path, latticedb.OpenOptions{
 		Create:   create,

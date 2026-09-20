@@ -60,6 +60,13 @@ func CheckpointDatabase(ctx context.Context, databasePath string) error {
 	return errors.Join(checkpointErr, store.Close())
 }
 
+// currentStateVersion is the only application-state version this build can read
+// or write. A database persisted under any other version is rejected on open
+// instead of being silently rewritten, because a version transition is only
+// allowed through an explicit migration. The loader and the snapshot writer
+// both use this constant so they cannot drift apart.
+const currentStateVersion = 1
+
 type persistedState struct {
 	Version             int                           `json:"version"`
 	Sequence            uint64                        `json:"sequence"`
@@ -78,9 +85,16 @@ func openStateStore(cfg Config) (stateStore, error) {
 	}
 
 	// Normalize the path before any ownership or marker lookup, so equivalent
-	// spellings (a trailing separator or a relative path) locate the same
-	// ownership file and the same migration marker instead of bypassing them.
+	// spellings (a trailing separator, a relative path, or a path reached
+	// through a symlinked directory) locate the same ownership file and the
+	// same migration marker instead of bypassing them.
 	databasePath, err := filepath.Abs(cfg.DatabasePath)
+	if err != nil {
+		return nil, errorf(ErrConfigInvalid, "resolve database path", map[string]any{
+			"database_path": cfg.DatabasePath,
+		}, err)
+	}
+	databasePath, err = resolveDatabasePathAliases(databasePath)
 	if err != nil {
 		return nil, errorf(ErrConfigInvalid, "resolve database path", map[string]any{
 			"database_path": cfg.DatabasePath,
@@ -102,7 +116,7 @@ func openStateStore(cfg Config) (stateStore, error) {
 	// One attempt may be spent converting a legacy database, which has to
 	// happen while this open holds no ownership at all.
 	for attempt := 0; attempt < openStoreAttempts; attempt++ {
-		// Shared ownership is held across the driver open and the store's whole
+		// Ownership is held across the driver open and the store's whole
 		// lifetime. A migration needs the exclusive lock, so it can neither
 		// snapshot a database this store will keep changing nor install a
 		// replacement underneath it.
@@ -137,6 +151,19 @@ func openStateStore(cfg Config) (stateStore, error) {
 		}
 		if releaseErr := ownership.Release(); releaseErr != nil {
 			return nil, errors.Join(openErr, releaseErr)
+		}
+		if errors.Is(openErr, errUnsupportedStateVersion) {
+			// The database holds a LatticeDB state written under an application-state
+			// version this build cannot read. The legacy conversion below would replace
+			// the database, so the version rejection is reported as it stands.
+			return nil, openErr
+		}
+		if errors.Is(openErr, errLatticeStateVersionUnestablished) {
+			// The version could not be established through the read-only inspection,
+			// which is not evidence that this is a legacy database. Converting here
+			// could replace a database this build simply could not inspect, so the
+			// refusal is reported instead of deferring to the migration fallback.
+			return nil, openErr
 		}
 		if !openMayRequireMigration(cfg) {
 			return nil, openErr
@@ -177,22 +204,30 @@ func (s *ownershipStore) Checkpoint() error {
 	return checkpoint.Checkpoint()
 }
 
-// acquireOpenOwnership takes the shared ownership lock that an open holds for
-// the store's lifetime.
+// acquireOpenOwnership takes the ownership lock that an open holds for the
+// store's lifetime: shared for a read-only open, exclusive for a writable one.
 //
 // A contended lock means a migration owns the database. A migration holds it for
 // the whole conversion, far longer than the retry window below, so the retries
 // only absorb the moment another opener spends recovering an interrupted
 // migration.
 //
+// A writable open takes the exclusive lock because the native engine refuses a
+// writable handle while any other handle is open, and because its version
+// inspection and its writable open have to be one uninterrupted step: a
+// database that another owner creates or replaces between those two steps would
+// otherwise reach a writable open before this build established that it can
+// read it. The exclusive lock makes the pair of steps a critical section
+// against every other Yeoul owner of the same database.
+//
 // A read-only open never proceeds without ownership. Ownership that cannot be
 // established may mean another process is migrating this database right now, and
 // an open without the lock could read a half-converted database or install a
 // recovery over a live one, so the failure is reported instead.
 func acquireOpenOwnership(cfg Config, databasePath string) (*databaseOwnershipLock, error) {
-	_ = cfg
+	exclusive := !cfg.ReadOnly
 	for attempt := 0; attempt < ownershipAcquireAttempts; attempt++ {
-		ownership, err := acquireDatabaseOwnership(databasePath, false)
+		ownership, err := acquireDatabaseOwnership(databasePath, exclusive)
 		if err == nil {
 			return ownership, nil
 		}
@@ -235,22 +270,37 @@ func migrationRecoveryPending(databasePath string) (bool, error) {
 // It reports retry when another opener is already recovering this database.
 func recoverPendingMigration(shared *databaseOwnershipLock, cfg Config, databasePath string) (bool, error) {
 	_ = cfg
-	if err := shared.Release(); err != nil {
-		return false, err
-	}
-	exclusive, err := acquireDatabaseOwnership(databasePath, true)
-	if errors.Is(err, errDatabaseOwnershipBusy) {
-		return true, nil
-	}
-	if err != nil {
-		return false, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
-			"database_path": databasePath,
-			"reason":        "database ownership could not be established",
-		}, err)
+	exclusive := shared
+	if !shared.exclusive {
+		// A writable open already owns the database exclusively, so its
+		// ownership is kept rather than released and taken again: the gap
+		// between the two would let another owner change the database that
+		// recovery is about to act on.
+		if err := shared.Release(); err != nil {
+			return false, err
+		}
+		acquired, err := acquireDatabaseOwnership(databasePath, true)
+		if errors.Is(err, errDatabaseOwnershipBusy) {
+			return true, nil
+		}
+		if err != nil {
+			return false, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
+				"database_path": databasePath,
+				"reason":        "database ownership could not be established",
+			}, err)
+		}
+		exclusive = acquired
 	}
 	recoverErr := recoverDatabaseMigration(databasePath)
 	releaseErr := exclusive.Release()
 	if recoverErr != nil {
+		// A recovery that refuses the staged database already reports the reason
+		// as a typed error, and that reason is what tells the caller which
+		// database it cannot read. Wrapping it in a storage failure would hide
+		// the compatibility decision behind an unreadable database.
+		if unwrapYeoulError(recoverErr) != nil {
+			return false, recoverErr
+		}
 		return false, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
 			"database_path": databasePath,
 		}, recoverErr)
@@ -299,7 +349,7 @@ func resolveStorageDriver(cfg Config) StorageDriver {
 
 func emptyPersistedState() persistedState {
 	return persistedState{
-		Version:             1,
+		Version:             currentStateVersion,
 		Sources:             make(map[string]Source),
 		Episodes:            make(map[string]Episode),
 		Entities:            make(map[string]Entity),
