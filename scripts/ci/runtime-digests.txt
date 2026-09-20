@@ -1,0 +1,29 @@
+# Committed SHA-256 digests for the native runtime release assets that
+# scripts/ci/setup-ladybug.sh and scripts/ci/stage-runtime.sh download.
+#
+# Format: <release-ref> <asset-name> <sha256-hex>
+#
+# These pin the exact upstream bytes so that rebuilding the same Yeoul source
+# cannot silently accept a replaced binary published under the same asset name.
+# Update a line only when intentionally moving to a new upstream release, and
+# re-derive the digest from the release's own asset listing rather than from a
+# local download alone.
+
+# LadybugDB/ladybug releases used by go.mod (github.com/LadybugDB/go-ladybug v0.17.0)
+v0.17.0 liblbug-linux-aarch64.tar.gz a486000f7305cb601e3074eb06026e9eddcf3d7517df7bbc913d2d36e3108121
+v0.17.0 liblbug-linux-x86_64.tar.gz f546b37616347533c5d08a38fd1c9f51bfe5e2c97c56d68582e07e675f546d4d
+v0.17.0 liblbug-osx-arm64.tar.gz f2acc15c9a90874aa25cebd49921080e44774525b061ec7189fae18d1878d018
+v0.17.0 liblbug-osx-x86_64.tar.gz 8ab59121a1aadeaeeca1f855cfc4d3a596620a737461976e6e084f02c6cf5b0a
+v0.17.0 liblbug-windows-x86_64.zip 4e00186f7634eb8688e1c0e77855ef302114b7ff289757bd5f33044850ccdfc5
+
+# LadybugDB/ladybug release used by go.legacy-v0131.mod (v0.13.1)
+v0.13.1 liblbug-linux-aarch64.tar.gz f037a9e237cd0f9182b08fdabd73569b5afdcc3098e4d0b92687e678ce7736e4
+v0.13.1 liblbug-linux-x86_64.tar.gz ce6387bd46a5bcecbf7d59608694c540274b6bfb690ea8e5c92d9cb373d73439
+v0.13.1 liblbug-osx-universal.tar.gz 4195a05e42671e5f8d036c5d035617ca05d25a1813b2ed8b46ab6cf9d8f0c426
+v0.13.1 liblbug-windows-x86_64.zip 68e0dffb16cf54158ca5780e0e62042e03873eb7287d10bdc2bf79f105998caa
+
+# mrchypark/rax release used by scripts/ci/stage-runtime.sh (YEOUL_RAX_VERSION default v0.4.4)
+v0.4.4 rax-ffi-v0.4.4-linux-x86_64.tar.gz a2f4f0ecce18d80ad9b06c2fd8f5ba06bad89c8d9d995afa5189e5af6ba5e1f7
+v0.4.4 rax-ffi-v0.4.4-macos-arm64.tar.gz ff2e7df1af47fa4089dad39c9d0b002e2318b4ff7622b93b3f93dfcb17b926ab
+v0.4.4 rax-ffi-v0.4.4-macos-x86_64.tar.gz 7a7b9f424f6818d1f01c2f8a8134e28891195a803e006279e36366174a790fbd
+v0.4.4 rax-ffi-v0.4.4-windows-x86_64.zip f83d63225aa129ff7e87d8360b0b9b661b71a7645573b4dee057bf1af52d520b

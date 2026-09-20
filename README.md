@@ -98,6 +98,13 @@ into the Go module cache once per machine:
 bash scripts/ci/setup-ladybug.sh darwin arm64   # darwin arm64|amd64, linux amd64|arm64, windows amd64
 ```
 
+`setup-ladybug.sh` and the release `stage-runtime.sh` verify each downloaded
+native archive against the committed SHA-256 pins in
+`scripts/ci/runtime-digests.txt` before extracting or staging it. An asset with
+no pin, or bytes that do not match its pin, is refused, so rebuilding the same
+Yeoul source cannot silently accept a replaced upstream binary. Add or update a
+pin only when intentionally moving to a new upstream release.
+
 Then build, vet, and test normally:
 
 ```bash
