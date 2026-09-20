@@ -17,7 +17,7 @@ Example defaults:
 
 ## Storage ownership
 In embedded mode, the host process owns the database.
-In daemon mode, `yeould` owns the database and clients do not touch storage directly.
+Daemon mode is not available in current releases: the `yeould` service adapter is deferred, so every supported deployment uses embedded ownership.
 
 ## Required storage artifacts
 - LatticeDB database files/directories
