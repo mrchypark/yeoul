@@ -1,8 +1,10 @@
 package policy
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -30,11 +32,28 @@ type ValidationResult struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// SchemaError reports a policy file that does not match the recognized schema,
+// such as a misspelled structural field. LoadPack returns it so callers fail
+// fast; ValidatePack converts it into a validation issue.
+type SchemaError struct {
+	File    string
+	Message string
+}
+
+func (e *SchemaError) Error() string {
+	return e.Message
+}
+
 type Ontology struct {
 	Version     int                  `yaml:"version" json:"version"`
 	EntityTypes []string             `yaml:"entity_types" json:"entity_types,omitempty"`
 	Predicates  []string             `yaml:"predicates" json:"predicates,omitempty"`
 	Dedup       map[string]DedupRule `yaml:"dedup" json:"dedup,omitempty"`
+	// Extensions carries advisory ontology content that Yeoul Core does not
+	// interpret, such as exclusivity hints. It is the only place unknown
+	// ontology keys are allowed, so misspelled structural fields fail
+	// validation instead of being silently ignored.
+	Extensions map[string]any `yaml:"extensions" json:"extensions,omitempty"`
 }
 
 type DedupRule struct {
@@ -63,7 +82,8 @@ type EpisodeRule struct {
 }
 
 type RuleWhen struct {
-	ContainsAny []string `yaml:"contains_any" json:"contains_any,omitempty"`
+	ContainsAny       []string `yaml:"contains_any" json:"contains_any,omitempty"`
+	ContainsSubstring []string `yaml:"contains_substring" json:"contains_substring,omitempty"`
 }
 
 type SearchRecipes struct {
@@ -77,18 +97,28 @@ type SearchRecipe struct {
 	Filters     map[string]any     `yaml:"filters" json:"filters,omitempty"`
 	Ranking     map[string]float64 `yaml:"ranking" json:"ranking,omitempty"`
 	Expand      map[string]any     `yaml:"expand" json:"expand,omitempty"`
+	// Extensions carries advisory recipe content that Yeoul Core does not
+	// interpret. Unknown keys are only allowed here, so misspelled structural
+	// fields fail validation instead of being silently ignored.
+	Extensions map[string]any `yaml:"extensions" json:"extensions,omitempty"`
 }
-
-// searchRecipeStrategies lists the strategies the CLI executes.
-var searchRecipeStrategies = []string{"hybrid", "neighborhood", "predicate_subject_lookup"}
 
 // supportedRecipeFilterKeys lists the recipe filters that map to real request
 // fields. Any other filter is rejected instead of being silently accepted.
 var supportedRecipeFilterKeys = []string{"fact_status", "window_days", "predicate"}
 
+// supportedRecipeStrategies lists the strategies the CLI executes.
+var supportedRecipeStrategies = []string{"hybrid", "neighborhood", "predicate_subject_lookup"}
+
 // supportedRecipeExpandKeys lists the recipe expand settings that map to real
-// request fields.
-var supportedRecipeExpandKeys = []string{"entity_types"}
+// request fields. "hops" is accepted as advisory metadata for backward
+// compatibility: it is validated when present but never applied to the search
+// request, so a recipe that carries it keeps loading.
+var supportedRecipeExpandKeys = []string{"entity_types", "hops"}
+
+// supportedRecipeFactStatuses lists the fact lifecycle states a recipe filter
+// may select, mirroring the status domain the search runtime accepts.
+var supportedRecipeFactStatuses = []string{"active", "superseded", "retracted"}
 
 // expandSettingStrategies maps each supported expand setting to the strategies
 // that actually apply it. applySearchRecipe reads entity_types only inside the
@@ -97,10 +127,6 @@ var supportedRecipeExpandKeys = []string{"entity_types"}
 var expandSettingStrategies = map[string][]string{
 	"entity_types": {"neighborhood"},
 }
-
-// supportedRecipeFactStatuses lists the fact lifecycle states a recipe filter
-// may select, mirroring the status domain the search runtime accepts.
-var supportedRecipeFactStatuses = []string{"active", "superseded", "retracted"}
 
 // ValidateSearchRecipe reports recipe controls that the runtime does not
 // implement. Every accepted setting must change the executed request, so a
@@ -126,15 +152,35 @@ func ValidateSearchRecipe(name string, recipe SearchRecipe) []string {
 			issues = append(issues, fmt.Sprintf("recipe %q declares unsupported expand setting %q", name, key))
 			continue
 		}
-		if _, _, err := RecipeEntityTypes(recipe); err != nil {
+		if err := validateRecipeExpandValue(key, recipe); err != nil {
 			issues = append(issues, fmt.Sprintf("recipe %q declares invalid expand setting %q: %v", name, key, err))
 			continue
 		}
-		if !slices.Contains(expandSettingStrategies[key], recipe.Strategy) {
+		// Only keys that map to a real request field are strategy-checked.
+		// Advisory keys such as hops are validated for shape but never applied.
+		strategies, applied := expandSettingStrategies[key]
+		if applied && !slices.Contains(strategies, recipe.Strategy) {
 			issues = append(issues, fmt.Sprintf("recipe %q declares expand setting %q, which the %q strategy does not apply", name, key, recipe.Strategy))
 		}
 	}
 	return issues
+}
+
+// validateRecipeExpandValue checks the value shape of a supported expand key.
+// The accepted shapes match what applySearchRecipe can execute, so validation
+// and execution can never disagree about a control. Advisory keys such as
+// hops are still shape-checked even though execution ignores their value.
+func validateRecipeExpandValue(key string, recipe SearchRecipe) error {
+	switch key {
+	case "entity_types":
+		_, _, err := RecipeEntityTypes(recipe)
+		return err
+	case "hops":
+		_, _, err := RecipeHops(recipe)
+		return err
+	default:
+		return nil
+	}
 }
 
 // validateRecipeFilterValue checks the value shape of a supported filter key.
@@ -221,6 +267,25 @@ func RecipeEntityTypes(recipe SearchRecipe) ([]string, bool, error) {
 		return nil, true, err
 	}
 	return values, true, nil
+}
+
+// RecipeHops returns the expand.hops value declared by the recipe. The bool
+// reports whether the recipe declares the setting at all. hops is advisory
+// metadata: execution never applies it, but a declared value must still be a
+// non-negative integer so a malformed recipe cannot pass validation.
+func RecipeHops(recipe SearchRecipe) (int, bool, error) {
+	raw, ok := recipe.Expand["hops"]
+	if !ok {
+		return 0, false, nil
+	}
+	hops, err := recipeInteger(raw)
+	if err != nil {
+		return 0, true, err
+	}
+	if hops < 0 {
+		return 0, true, fmt.Errorf("must not be negative, found %d", hops)
+	}
+	return hops, true, nil
 }
 
 // recipeStringList coerces a scalar string or a string list into a non-empty
@@ -317,6 +382,13 @@ func sortedKeys(values map[string]any) []string {
 }
 
 func LoadPack(path string) (*Pack, error) {
+	return loadPack(path, true)
+}
+
+// loadPack reads a policy directory. When sanitize is true, blank episode-rule
+// tokens are removed from the returned rules; validation uses sanitize=false so
+// it can report the blank tokens it is meant to reject.
+func loadPack(path string, sanitize bool) (*Pack, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat policy path: %w", err)
@@ -337,20 +409,73 @@ func LoadPack(path string) (*Pack, error) {
 		return nil, fmt.Errorf("read agent_instructions.md: %w", err)
 	}
 	if err := loadYAML(filepath.Join(path, "ontology.yaml"), &pack.Ontology); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read ontology.yaml: %w", err)
+		return nil, schemaError("ontology.yaml", err)
 	}
 	if err := loadYAML(filepath.Join(path, "episode_rules.yaml"), &pack.EpisodeRules); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read episode_rules.yaml: %w", err)
+		return nil, schemaError("episode_rules.yaml", err)
+	}
+	if sanitize {
+		dropBlankTokens(&pack.EpisodeRules)
 	}
 	if err := loadYAML(filepath.Join(path, "search_recipes.yaml"), &pack.SearchRecipes); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read search_recipes.yaml: %w", err)
+		return nil, schemaError("search_recipes.yaml", err)
 	}
 	return pack, nil
 }
 
+// schemaError wraps a decode failure. Read failures stay plain errors; only
+// schema mismatches become SchemaError so validation can report them as issues.
+func schemaError(file string, err error) error {
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) || errors.Is(err, errMultipleDocuments) || strings.Contains(err.Error(), "not found in type") {
+		return &SchemaError{File: file, Message: fmt.Sprintf("%s: %v", file, err)}
+	}
+	return fmt.Errorf("read %s: %w", file, err)
+}
+
+// dropBlankTokens defensively removes blank episode-rule tokens after load.
+// Validation rejects such packs, but direct LoadPack callers still use the
+// returned rules; dropping the tokens keeps a blank entry from matching every
+// episode and suppressing all captures.
+func dropBlankTokens(rules *EpisodeRules) {
+	if rules == nil {
+		return
+	}
+	all := make([][]EpisodeRule, 0, 2)
+	all = append(all, rules.PromoteToEpisode, rules.Drop)
+	for _, group := range all {
+		for i := range group {
+			group[i].When.ContainsAny = trimBlankTokens(group[i].When.ContainsAny)
+			group[i].When.ContainsSubstring = trimBlankTokens(group[i].When.ContainsSubstring)
+		}
+	}
+}
+
+func trimBlankTokens(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
 func ValidatePack(path string) (*ValidationResult, error) {
-	pack, err := LoadPack(path)
+	pack, err := loadPack(path, false)
 	if err != nil {
+		var schemaErr *SchemaError
+		if errors.As(err, &schemaErr) {
+			return &ValidationResult{
+				Path:   path,
+				Valid:  false,
+				Issues: []string{schemaErr.Message},
+			}, nil
+		}
 		return nil, err
 	}
 
@@ -400,9 +525,11 @@ func ValidatePack(path string) (*ValidationResult, error) {
 		if strings.TrimSpace(rule.Name) == "" {
 			addIssue("episode rule name must not be empty")
 		}
-		if len(rule.When.ContainsAny) == 0 {
-			addIssue(fmt.Sprintf("episode rule %q must declare when.contains_any", rule.Name))
+		if len(rule.When.ContainsAny) == 0 && len(rule.When.ContainsSubstring) == 0 {
+			addIssue(fmt.Sprintf("episode rule %q must declare when.contains_any or when.contains_substring", rule.Name))
 		}
+		validateNonBlankTokens(addIssue, fmt.Sprintf("episode rule %q when.contains_any", rule.Name), rule.When.ContainsAny)
+		validateNonBlankTokens(addIssue, fmt.Sprintf("episode rule %q when.contains_substring", rule.Name), rule.When.ContainsSubstring)
 	}
 
 	if pack.SearchRecipes.Version != 1 {
@@ -415,7 +542,7 @@ func ValidatePack(path string) (*ValidationResult, error) {
 		recipe := pack.SearchRecipes.Recipes[name]
 		if strings.TrimSpace(recipe.Strategy) == "" {
 			addIssue(fmt.Sprintf("recipe %q must declare strategy", name))
-		} else if !slices.Contains(searchRecipeStrategies, recipe.Strategy) {
+		} else if !slices.Contains(supportedRecipeStrategies, recipe.Strategy) {
 			addIssue(fmt.Sprintf("recipe %q declares unsupported strategy %q", name, recipe.Strategy))
 		}
 		for _, issue := range ValidateSearchRecipe(name, recipe) {
@@ -448,10 +575,52 @@ func validateNonEmptyList(addIssue func(string), field string, values []string) 
 	}
 }
 
+// validateNonBlankTokens rejects empty and whitespace-only tokens. A blank
+// token would otherwise become an empty substring at match time and suppress
+// every episode, so a pack that relies on intentional match-all behavior must
+// say so explicitly instead of hiding it in a blank list entry.
+func validateNonBlankTokens(addIssue func(string), field string, values []string) {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			addIssue(fmt.Sprintf("%s must not contain blank tokens", field))
+			return
+		}
+	}
+}
+
 func loadYAML(path string, out any) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	return yaml.Unmarshal(data, out)
+	return decodeYAML(data, out)
 }
+
+// decodeYAML decodes YAML while rejecting keys that do not map to a struct
+// field. Permissive decoding silently dropped misspelled structural fields, so
+// a pack could report valid while excluding no episodes or failing later at
+// search time.
+func decodeYAML(data []byte, out any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(out); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	// A second document would escape KnownFields strictness and be silently
+	// ignored, so trailing content is rejected instead of accepted.
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return errMultipleDocuments
+	} else if !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
+}
+
+// errMultipleDocuments marks policy files that carry more than one YAML
+// document. Only the first document would be validated, so the extra content
+// must fail loudly instead of being silently dropped.
+var errMultipleDocuments = errors.New("must contain a single YAML document, found additional content")

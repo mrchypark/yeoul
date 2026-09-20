@@ -1071,7 +1071,7 @@ func TestCLIPolicyDrivenSearchAndIngestDrop(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dropPack, "ontology.yaml"), []byte("version: 1\n"), 0o644); err != nil {
 		t.Fatalf("write ontology: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dropPack, "episode_rules.yaml"), []byte("version: 1\ndrop:\n  - name: drop_me\n    when:\n      contains_any: [\"ignore me\"]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dropPack, "episode_rules.yaml"), []byte("version: 1\ndrop:\n  - name: drop_me\n    when:\n      contains_substring: [\"ignore me\"]\n"), 0o644); err != nil {
 		t.Fatalf("write episode rules: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dropPack, "search_recipes.yaml"), []byte("version: 1\nrecipes: {}\n"), 0o644); err != nil {
@@ -1090,6 +1090,71 @@ func TestCLIPolicyDrivenSearchAndIngestDrop(t *testing.T) {
 	)
 	if !strings.Contains(drop, `"skipped": true`) {
 		t.Fatalf("expected policy drop output, got %q", drop)
+	}
+}
+
+func TestCLIPolicyDropRuleKeepsSubstantiveDecisions(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "drop-decisions.ltdb")
+	packPath, err := filepath.Abs(filepath.Join("..", "..", "agent-pack"))
+	if err != nil {
+		t.Fatalf("resolve pack path: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+
+	cases := []struct {
+		id      string
+		content string
+		dropped bool
+	}{
+		{id: "ep-ack-exact", content: "ok", dropped: true},
+		{id: "ep-ack-punct", content: "OK.", dropped: true},
+		{id: "ep-ack-thanks", content: "thanks", dropped: true},
+		{id: "ep-decision", content: "We decided to rotate tokens every hour.", dropped: false},
+		{id: "ep-broken", content: "The deployment is broken and needs a rollback.", dropped: false},
+		{id: "ep-book", content: "Return the book to the shelf.", dropped: false},
+		{id: "ep-thanks-decision", content: "thanks - we decided to ship on Friday.", dropped: false},
+		{id: "ep-ack-decision", content: "ok, but we decided to keep LatticeDB as canonical.", dropped: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			out := runCLI(
+				"ingest", "episode",
+				"--db", dbPath,
+				"--id", tc.id,
+				"--kind", "note",
+				"--content", tc.content,
+				"--source-kind", "note",
+				"--source-external-ref", tc.id,
+				"--policy-path", packPath,
+				"--json",
+			)
+			if tc.dropped {
+				if !strings.Contains(out, `"skipped": true`) {
+					t.Fatalf("expected %q to be dropped, got %q", tc.content, out)
+				}
+				return
+			}
+			if strings.Contains(out, `"skipped": true`) {
+				t.Fatalf("expected %q to be retained, got %q", tc.content, out)
+			}
+			stored := runCLI("get", "--db", dbPath, "--kind", "episode", "--id", tc.id, "--json")
+			if !strings.Contains(stored, tc.content) {
+				t.Fatalf("expected stored episode %s to contain %q, got %q", tc.id, tc.content, stored)
+			}
+		})
 	}
 }
 
