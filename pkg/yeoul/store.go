@@ -3,7 +3,6 @@ package yeoul
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -89,6 +88,17 @@ func openStateStore(cfg Config) (stateStore, error) {
 	}
 	cfg.DatabasePath = databasePath
 
+	// An explicit creation is allowed to bring its own directory into being.
+	// This happens before ownership is acquired, because the ownership file
+	// lives next to the database.
+	if cfg.CreateIfMissing {
+		if err := ensureDatabaseOwnershipDirectory(databasePath); err != nil {
+			return nil, errorf(ErrStorageFailed, "create database directory", map[string]any{
+				"database_path": databasePath,
+			}, err)
+		}
+	}
+
 	// One attempt may be spent converting a legacy database, which has to
 	// happen while this open holds no ownership at all.
 	for attempt := 0; attempt < openStoreAttempts; attempt++ {
@@ -111,10 +121,7 @@ func openStateStore(cfg Config) (stateStore, error) {
 			return nil, pendingErr
 		}
 		if pending {
-			if releaseErr := ownership.Release(); releaseErr != nil {
-				return nil, releaseErr
-			}
-			retry, recoverErr := recoverPendingMigration(cfg, databasePath)
+			retry, recoverErr := recoverPendingMigration(ownership, cfg, databasePath)
 			if recoverErr != nil {
 				return nil, recoverErr
 			}
@@ -177,20 +184,19 @@ func (s *ownershipStore) Checkpoint() error {
 // the whole conversion, far longer than the retry window below, so the retries
 // only absorb the moment another opener spends recovering an interrupted
 // migration.
+//
+// A read-only open never proceeds without ownership. Ownership that cannot be
+// established may mean another process is migrating this database right now, and
+// an open without the lock could read a half-converted database or install a
+// recovery over a live one, so the failure is reported instead.
 func acquireOpenOwnership(cfg Config, databasePath string) (*databaseOwnershipLock, error) {
+	_ = cfg
 	for attempt := 0; attempt < ownershipAcquireAttempts; attempt++ {
 		ownership, err := acquireDatabaseOwnership(databasePath, false)
 		if err == nil {
 			return ownership, nil
 		}
 		if !errors.Is(err, errDatabaseOwnershipBusy) {
-			// A read-only open of a database in a directory that forbids creating
-			// the ownership file proceeds without ownership: it cannot create or
-			// replace the database, and the marker protocol still refuses to
-			// install over an unknown path.
-			if cfg.ReadOnly && errors.Is(err, fs.ErrPermission) {
-				return nil, nil
-			}
 			return nil, err
 		}
 		time.Sleep(ownershipRetryDelay)
@@ -211,27 +217,36 @@ func migrationRecoveryPending(databasePath string) (bool, error) {
 	return true, nil
 }
 
-// recoverPendingMigration completes an interrupted migration under the
-// exclusive ownership lock, so no other opener can observe the half-finished
-// protocol while it runs. A crash after the source backup rename leaves the
-// marker, the backup, and the staging database behind without the original
-// path, and an open that created a fresh database there would strand the only
-// complete snapshot in staging.
+// recoverPendingMigration completes an interrupted migration under exclusive
+// ownership, so no other opener can observe the half-finished protocol while it
+// runs. A crash after the source backup rename leaves the marker, the backup,
+// and the staging database behind without the original path, and an open that
+// created a fresh database there would strand the only complete snapshot in
+// staging.
+//
+// The caller's shared lock is released first, because the exclusive lock that
+// recovery requires cannot be taken while this process still holds the shared
+// one. Ownership is therefore acquired again, and recovery only runs when that
+// succeeds: recovery moves and replaces files, so it must never run without
+// ownership. A database whose ownership cannot be established keeps its pending
+// marker and reports the failure, which is safer than installing a recovery over
+// a database another process may be migrating.
 //
 // It reports retry when another opener is already recovering this database.
-func recoverPendingMigration(cfg Config, databasePath string) (bool, error) {
+func recoverPendingMigration(shared *databaseOwnershipLock, cfg Config, databasePath string) (bool, error) {
+	_ = cfg
+	if err := shared.Release(); err != nil {
+		return false, err
+	}
 	exclusive, err := acquireDatabaseOwnership(databasePath, true)
 	if errors.Is(err, errDatabaseOwnershipBusy) {
 		return true, nil
 	}
 	if err != nil {
-		if !cfg.ReadOnly || !errors.Is(err, fs.ErrPermission) {
-			return false, err
-		}
-		// A read-only open that cannot take ownership still completes a pending
-		// recovery: recovery is idempotent, and the alternative is opening over
-		// a half-renamed database.
-		return false, recoverInterruptedMigration(databasePath)
+		return false, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
+			"database_path": databasePath,
+			"reason":        "database ownership could not be established",
+		}, err)
 	}
 	recoverErr := recoverDatabaseMigration(databasePath)
 	releaseErr := exclusive.Release()
@@ -241,15 +256,6 @@ func recoverPendingMigration(cfg Config, databasePath string) (bool, error) {
 		}, recoverErr)
 	}
 	return false, releaseErr
-}
-
-func recoverInterruptedMigration(databasePath string) error {
-	if err := recoverDatabaseMigration(databasePath); err != nil {
-		return errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
-			"database_path": databasePath,
-		}, err)
-	}
-	return nil
 }
 
 func migrationInProgressError(databasePath string) error {

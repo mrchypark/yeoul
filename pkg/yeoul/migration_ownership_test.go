@@ -132,6 +132,71 @@ func TestOpenHoldsOwnershipForTheStoreLifetime(t *testing.T) {
 }
 
 // TestConcurrentReadersShareOwnership guards against over-locking: readers take
+// TestOpenRefusesRecoveryWithoutOwnership verifies that an open never runs
+// migration recovery without ownership. A pending marker is visible to this
+// process only while another owner holds the lock, and recovery moves files, so
+// the open has to fail instead of installing a recovery over a live database.
+func TestOpenRefusesRecoveryWithoutOwnership(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "pending.ltdb")
+
+	marker := databaseMigrationMarker{
+		Phase:        migrationPhaseBackedUp,
+		DatabasePath: dbPath,
+		BackupPath:   dbPath + ".ladybug-backup-20240101T000000.000000000Z",
+		StagingPath:  dbPath + ".lattice-migrate-20240101T000000.000000000Z",
+	}
+	if err := writeDatabaseMigrationMarker(marker); err != nil {
+		t.Fatalf("write migration marker: %v", err)
+	}
+
+	exclusive, err := acquireDatabaseOwnership(dbPath, true)
+	if err != nil {
+		t.Fatalf("acquire exclusive ownership: %v", err)
+	}
+	defer func() { _ = exclusive.Release() }()
+
+	for _, readOnly := range []bool{true, false} {
+		if _, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: readOnly}); err == nil {
+			t.Fatalf("expected an open with read_only=%v to refuse recovery without ownership", readOnly)
+		} else if !strings.Contains(err.Error(), "database migration is in progress") {
+			t.Fatalf("expected a migration-in-progress refusal for read_only=%v, got %v", readOnly, err)
+		}
+	}
+
+	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); err != nil {
+		t.Fatalf("a refused recovery must leave the marker in place: %v", err)
+	}
+	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused recovery must not create a database at %q, got %v", dbPath, err)
+	}
+}
+
+// TestCreateIfMissingCreatesTheParentDirectory verifies that an explicit
+// creation still works for a database whose parent directory does not exist.
+// Ownership is acquired through a sibling file, so the directory has to exist
+// before the lock is taken, while the database itself is still created only
+// after the lock is held.
+func TestCreateIfMissingCreatesTheParentDirectory(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "nested", "deeper", "memory.ltdb")
+
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatalf("open database in a missing directory: %v", err)
+	}
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected the database to be created at %q: %v", dbPath, err)
+	}
+	if _, err := os.Stat(databaseOwnershipPath(dbPath)); err != nil {
+		t.Fatalf("expected the ownership file to live next to the database: %v", err)
+	}
+}
+
+// TestConcurrentReadersShareOwnership guards against over-locking: readers take
 // the shared ownership lock, so they must not exclude each other. A writer
 // still takes the canonical engine's exclusive path lock, which is separate.
 func TestConcurrentReadersShareOwnership(t *testing.T) {

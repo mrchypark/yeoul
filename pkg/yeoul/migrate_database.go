@@ -23,10 +23,13 @@ const (
 
 	legacyMigrationHelperEnv = "YEOUL_LEGACY_MIGRATION_HELPER"
 
-	// legacyMigrationOwnershipEnv marks the pinned helper child of a migration
-	// that already owns the database. The parent holds the exclusive ownership
-	// lock for the child's whole lifetime, so the child must not contend for it.
-	legacyMigrationOwnershipEnv = "YEOUL_INTERNAL_MIGRATION_OWNERSHIP_HELD"
+	// migrationOwnershipAttempts and migrationOwnershipRetryDelay bound how long
+	// a migration waits for a contended ownership lock. The wait absorbs the
+	// handoff window where this process has released the lock and the pinned
+	// helper has not acquired it yet, plus a short-lived reader. A real
+	// migration or a long-lived store holds the lock for far longer than this.
+	migrationOwnershipAttempts   = 8
+	migrationOwnershipRetryDelay = 25 * time.Millisecond
 )
 
 // legacyMigrationSidecarSuffixes lists the native Ladybug sidecars that belong
@@ -97,13 +100,25 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 		}
 	}
 	if legacyMigrationReaderVersion != "v0.13.1" {
-		return migrateDatabaseWithLegacyHelper(ctx, databasePath)
+		return migrateDatabaseWithLegacyHelper(ctx, databasePath, ownership)
 	}
 
 	return migrateLegacyDatabaseInProcess(databasePath)
 }
 
-func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string) (*DatabaseMigrationResult, error) {
+// migrateDatabaseWithLegacyHelper converts the database with the version-pinned
+// helper binary. The helper is a separate process that has to own the database
+// itself, so this process hands ownership over instead of delegating it: it
+// releases the exclusive lock before spawning, and the helper acquires the same
+// operating-system lock on startup and refuses to touch the database when it
+// cannot.
+//
+// Delegating the lock by flag alone is not enough. A parent that is killed
+// while the helper runs would drop the lock and let a competing migration or
+// writer proceed while the orphaned helper still held a stale snapshot, so the
+// helper re-acquires ownership and re-verifies the on-disk state under that
+// lock before it changes anything.
+func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string, ownership *databaseOwnershipLock) (*DatabaseMigrationResult, error) {
 	helperPath, err := legacyMigrationHelperPath()
 	if err != nil {
 		return nil, errorf(ErrStorageFailed, "locate version-pinned legacy migration helper", map[string]any{
@@ -112,6 +127,16 @@ func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string) (
 	}
 	if _, err := os.Stat(helperPath); err != nil {
 		return nil, errorf(ErrStorageFailed, "version-pinned legacy migration helper is unavailable", map[string]any{
+			"database_path": databasePath,
+			"helper_path":   helperPath,
+		}, err)
+	}
+
+	// Release before spawning: the helper owns the database for the whole
+	// conversion, so both processes must never hold the same lock at once. The
+	// deferred release in MigrateDatabase is a no-op after this.
+	if err := ownership.Release(); err != nil {
+		return nil, errorf(ErrStorageFailed, "release database ownership for the legacy migration helper", map[string]any{
 			"database_path": databasePath,
 			"helper_path":   helperPath,
 		}, err)
@@ -139,9 +164,26 @@ func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string) (
 		}, err)
 	}
 	if filepath.Clean(result.DatabasePath) != filepath.Clean(databasePath) ||
-		result.SourceDriver != string(StorageDriverLadybug) ||
-		result.TargetDriver != string(StorageDriverLattice) ||
-		!result.Migrated || result.BackupPath == "" {
+		result.TargetDriver != string(StorageDriverLattice) {
+		return nil, errorf(ErrStorageFailed, "version-pinned legacy migration helper returned an invalid result", map[string]any{
+			"database_path": databasePath,
+			"helper_path":   helperPath,
+		}, nil)
+	}
+	if !result.Migrated {
+		// The helper owns the database itself and re-checks it under that lock,
+		// so a competing migration that finished during the handoff makes the
+		// helper report the database as already converted. That is a valid
+		// outcome, not a broken helper.
+		if result.SourceDriver != string(StorageDriverLattice) {
+			return nil, errorf(ErrStorageFailed, "version-pinned legacy migration helper returned an invalid result", map[string]any{
+				"database_path": databasePath,
+				"helper_path":   helperPath,
+			}, nil)
+		}
+		return &result, nil
+	}
+	if result.SourceDriver != string(StorageDriverLadybug) || result.BackupPath == "" {
 		return nil, errorf(ErrStorageFailed, "version-pinned legacy migration helper returned an invalid result", map[string]any{
 			"database_path": databasePath,
 			"helper_path":   helperPath,
@@ -157,15 +199,11 @@ func legacyMigrationHelperEnvironment(environment []string) []string {
 		switch key {
 		case "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES":
 			continue
-		case legacyMigrationOwnershipEnv:
-			// The parent owns the database for this child's whole lifetime, so
-			// drop any inherited value and set the marker explicitly below.
-			continue
 		default:
 			filtered = append(filtered, entry)
 		}
 	}
-	return append(filtered, legacyMigrationOwnershipEnv+"=1")
+	return filtered
 }
 
 func legacyMigrationHelperPath() (string, error) {
@@ -582,21 +620,18 @@ func databaseMigrationMarkerPath(databasePath string) string {
 // file, so the kernel releases it when this process exits: a crash can never
 // leave a lock that later opens have to reclaim, and no caller ever removes an
 // ownership file on behalf of another owner.
-//
-// The pinned legacy helper is a child of this process and inherits ownership
-// through legacyMigrationOwnershipEnv, so it does not contend with its parent.
 func acquireMigrationOwnership(databasePath string) (*databaseOwnershipLock, error) {
-	if os.Getenv(legacyMigrationOwnershipEnv) == "1" {
-		return nil, nil
+	for attempt := 0; attempt < migrationOwnershipAttempts; attempt++ {
+		ownership, err := acquireDatabaseOwnership(databasePath, true)
+		if err == nil {
+			return ownership, nil
+		}
+		if !errors.Is(err, errDatabaseOwnershipBusy) {
+			return nil, err
+		}
+		time.Sleep(migrationOwnershipRetryDelay)
 	}
-	ownership, err := acquireDatabaseOwnership(databasePath, true)
-	if err == nil {
-		return ownership, nil
-	}
-	if errors.Is(err, errDatabaseOwnershipBusy) {
-		return nil, errorf(ErrStorageFailed, "another database migration is in progress", map[string]any{
-			"database_path": databasePath,
-		}, nil)
-	}
-	return nil, err
+	return nil, errorf(ErrStorageFailed, "another database migration is in progress", map[string]any{
+		"database_path": databasePath,
+	}, nil)
 }

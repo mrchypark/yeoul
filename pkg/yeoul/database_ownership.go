@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // databaseOwnershipSuffix names the sibling file that carries the OS lock
@@ -51,6 +52,27 @@ func acquireDatabaseOwnership(databasePath string, exclusive bool) (*databaseOwn
 		return nil, err
 	}
 	return &databaseOwnershipLock{file: file}, nil
+}
+
+// ensureDatabaseOwnershipDirectory creates the directory that will hold a new
+// database before ownership is acquired for it, so an explicit creation of a
+// database in a path whose parent does not exist yet still gets the ownership
+// lock instead of failing with a missing-directory error. The database itself
+// is still created only after the lock is held.
+func ensureDatabaseOwnershipDirectory(databasePath string) error {
+	parent := filepath.Dir(databasePath)
+	if parent == "" || parent == "." {
+		return nil
+	}
+	if _, err := os.Stat(parent); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create database directory %q: %w", parent, err)
+	}
+	return nil
 }
 
 // openDatabaseOwnershipFile opens the ownership file, creating it when the
