@@ -221,3 +221,33 @@ func TestMaintenanceWindowStateCannotChangeUnderneathTheOperation(t *testing.T) 
 		t.Fatalf("expected the change made in the window to persist, got %q", persisted.CanonicalName)
 	}
 }
+
+// TestOpenMaintenanceRecoversInterruptedMigration covers the recovery branch a
+// maintenance window takes when it finds a migration marker: the window already
+// holds the exclusive lock recovery needs, so it recovers under its own lock
+// instead of releasing it and reacquiring. The window must return a usable,
+// recovered database rather than deadlocking on the lock it already owns or
+// handing back a database that is still half-converted.
+func TestOpenMaintenanceRecoversInterruptedMigration(t *testing.T) {
+	ctx := context.Background()
+	dbPath := prepareInterruptedMigration(t)
+
+	maintenance, err := OpenMaintenance(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open maintenance window over an interrupted migration: %v", err)
+	}
+	assertRecoveredDatabase(t, ctx, maintenance, dbPath)
+	if err := maintenance.Close(ctx); err != nil {
+		t.Fatalf("close maintenance window: %v", err)
+	}
+
+	// Recovery left the database in the canonical namespace with the marker
+	// cleared, so an ordinary open works again once the window is released.
+	reopened, err := Open(ctx, Config{DatabasePath: dbPath})
+	if err != nil {
+		t.Fatalf("reopen recovered database: %v", err)
+	}
+	if err := reopened.Close(ctx); err != nil {
+		t.Fatalf("close reopened database: %v", err)
+	}
+}
