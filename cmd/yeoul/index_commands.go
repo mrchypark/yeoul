@@ -534,15 +534,24 @@ func runRaxPrimarySearch(ctx context.Context, eng yeoul.Engine, dbPath string, r
 	if err != nil {
 		return nil, err
 	}
-	if raxPrimaryShouldFallbackToCore(req, len(docIDs), fetchLimit) {
+	resp, err := buildRaxPrimarySearchResponse(ctx, eng, req, docIDs)
+	if err != nil {
+		return nil, err
+	}
+	if raxPrimaryShouldFallbackToCore(req, raxPrimaryEligibleCount(resp), len(docIDs), fetchLimit) {
 		if cursor != "" {
 			return nil, fmt.Errorf("cursor_invalid: filtered rax cursor cannot continue after core fallback; restart search")
 		}
 		return eng.Search(ctx, req)
 	}
-	resp, err := buildRaxPrimarySearchResponse(ctx, eng, req, docIDs)
-	if err != nil {
-		return nil, err
+	if len(docIDs) >= fetchLimit {
+		// The native window is bounded by fetchLimit, so a saturated search
+		// cannot prove there are no more eligible matches. Surface the horizon
+		// as an explicit truncation signal instead of ending pagination
+		// silently, which is the complete-results contract for queries that
+		// were not answered by a core fallback.
+		horizon := int64(fetchLimit)
+		resp.Meta.TotalApprox = &horizon
 	}
 	return resp, nil
 }
@@ -798,11 +807,45 @@ func raxPrimaryFetchLimit(limit int) int {
 	return limit + 1000
 }
 
-func raxPrimaryShouldFallbackToCore(req yeoul.SearchRequest, fetched, fetchLimit int) bool {
-	if fetched < fetchLimit || !raxPrimaryHasPostFilters(req) {
+// raxPrimaryShouldFallbackToCore decides when the native candidate window is
+// too small to answer a filtered query completely. The window is saturated when
+// the runtime returned exactly the fetch limit. A query is filtered either by an
+// explicit post-filter or by an implicit restriction the native store does not
+// apply, such as core's current-space constraint. When the window saturates and
+// the core-reranked response cannot fill the requested page, eligible records
+// may lie beyond the window, so the search falls back to core for a complete
+// result set.
+func raxPrimaryShouldFallbackToCore(req yeoul.SearchRequest, eligible, fetched, fetchLimit int) bool {
+	if fetched < fetchLimit {
 		return false
 	}
-	return true
+	if !raxPrimaryHasPostFilters(req) && !raxPrimaryHasImplicitRestrictions(req) {
+		return false
+	}
+	limit := req.Page.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	return eligible < limit
+}
+
+// raxPrimaryHasImplicitRestrictions reports whether core search would apply a
+// restriction that the native candidate window does not encode. Core always
+// restricts results to the request space, so a non-default space query cannot
+// be answered completely from a saturated native window.
+func raxPrimaryHasImplicitRestrictions(req yeoul.SearchRequest) bool {
+	spaceID := strings.TrimSpace(req.Meta.SpaceID)
+	return spaceID != "" && spaceID != "default"
+}
+
+// raxPrimaryEligibleCount counts the hydrated hits the response can serve after
+// every post-filter, which is how much of the requested page the window can
+// actually fill.
+func raxPrimaryEligibleCount(resp *yeoul.SearchResponse) int {
+	if resp == nil {
+		return 0
+	}
+	return len(resp.Hits)
 }
 
 func raxPrimaryHasPostFilters(req yeoul.SearchRequest) bool {

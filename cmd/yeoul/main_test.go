@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -47,6 +48,15 @@ func runFakeRax() int {
 		return 2
 	}
 	if len(args) > 0 && args[0] == "search" {
+		if idsPath := os.Getenv("YEOUL_FAKE_RAX_SEARCH_IDS"); idsPath != "" {
+			data, err := os.ReadFile(idsPath)
+			if err != nil {
+				_, _ = os.Stderr.WriteString(err.Error() + "\n")
+				return 2
+			}
+			_, _ = os.Stdout.Write(data)
+			return 0
+		}
 		_, _ = os.Stdout.WriteString(`[{"doc_id":"fact:fact-index"}]`)
 		return 0
 	}
@@ -1242,18 +1252,18 @@ func TestRaxPrimaryFallbackDecisionForFilteredTruncation(t *testing.T) {
 		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
 		Page:      yeoul.Page{Limit: 1},
 	}
-	if !raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+	if !raxPrimaryShouldFallbackToCore(req, 0, 1001, 1001) {
 		t.Fatal("expected filtered full fetch to fall back to core")
 	}
-	if raxPrimaryShouldFallbackToCore(req, 20, 1001) {
+	if raxPrimaryShouldFallbackToCore(req, 1, 20, 1001) {
 		t.Fatal("did not expect fallback when rax did not hit fetch cap")
 	}
 	req.Page.Cursor = "key:1:fact:fact-1"
-	if !raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+	if !raxPrimaryShouldFallbackToCore(req, 0, 1001, 1001) {
 		t.Fatal("expected filtered cursor page at fetch cap to fall back to core")
 	}
 	req = yeoul.SearchRequest{QueryText: "needle", Page: yeoul.Page{Limit: 1}}
-	if raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+	if raxPrimaryShouldFallbackToCore(req, 0, 1001, 1001) {
 		t.Fatal("did not expect fallback without post-filters")
 	}
 }
@@ -2072,6 +2082,116 @@ func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
 		t.Fatalf("expected core fallback offset page, got %#v", resp.Hits)
 	}
 }
+
+// TestRaxPrimarySearchTruncationContract pins how a saturated native candidate
+// window is surfaced. The window is bounded by fetchLimit, so a query that does
+// not fall back to core must report the horizon instead of ending pagination
+// silently, and a filtered query whose eligible records sit beyond the window
+// must fall back to a complete core result set.
+func TestRaxPrimarySearchTruncationContract(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "thing:window", Type: "Thing", CanonicalName: "window"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-window", Kind: "note", Content: "window needle", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "window"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("fact-window-%d", i)
+		if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: id, Predicate: "HAS_WINDOW", SubjectID: entity.ID, ValueText: "window needle", SupportingEpisodeIDs: []string{episode.EpisodeID}}); err != nil {
+			t.Fatalf("assert fact %s: %v", id, err)
+		}
+	}
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "projection.rax")
+	argsPath := filepath.Join(tmpDir, "rax-args.txt")
+	projectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	idsPath := filepath.Join(tmpDir, "rax-search-ids.json")
+	fetchLimit := raxPrimaryFetchLimit(10)
+	// The fake runtime ignores top-k and returns this fixed list, so it must
+	// saturate the native window to exercise the truncation contract.
+	var idsJSON strings.Builder
+	idsJSON.WriteString("[")
+	for i := 0; i < fetchLimit; i++ {
+		fmt.Fprintf(&idsJSON, `{"doc_id":"fact:fact-missing-%d"},`, i)
+	}
+	idsJSON.WriteString(`{"doc_id":"fact:fact-window-0"},{"doc_id":"fact:fact-window-1"}]`)
+	if err := os.WriteFile(idsPath, []byte(idsJSON.String()), 0o644); err != nil {
+		t.Fatalf("write fake search ids: %v", err)
+	}
+	if err := os.WriteFile(storePath, []byte("store"), 0o644); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	manifest := projectionManifest{Version: projectionManifestVersion, ProjectionCount: 3, RaxRuntime: "cli:" + os.Args[0], BuiltAt: time.Now().UTC()}
+	if _, err := writeProjectionManifest(tmpDir, manifest); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", argsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", projectionPath)
+	t.Setenv("YEOUL_FAKE_RAX_SEARCH_IDS", idsPath)
+
+	query := yeoul.SearchRequest{QueryText: "window needle", Types: []string{"fact"}, Page: yeoul.Page{Limit: 10}}
+	saturated := make([]string, 0, fetchLimit+2)
+	for i := 0; i < fetchLimit; i++ {
+		saturated = append(saturated, "fact:fact-missing")
+	}
+	saturated = append(saturated, "fact:fact-window-0", "fact:fact-window-1")
+	resp, err := buildRaxPrimarySearchResponse(ctx, eng, query, saturated)
+	if err != nil {
+		t.Fatalf("build saturated response: %v", err)
+	}
+	if len(resp.Hits) != 2 {
+		t.Fatalf("expected two eligible hits, got %#v", resp.Hits)
+	}
+	if !raxPrimaryShouldFallbackToCore(query, raxPrimaryEligibleCount(resp), len(saturated), fetchLimit) {
+		t.Fatal("expected fallback when the saturated window cannot fill the requested page")
+	}
+	if raxPrimaryShouldFallbackToCore(query, 10, fetchLimit, fetchLimit) {
+		t.Fatal("did not expect fallback when the saturated window fills the requested page")
+	}
+	if !raxPrimaryShouldFallbackToCore(query, 0, fetchLimit, fetchLimit) {
+		t.Fatal("expected fallback when the saturated window yields no eligible hits")
+	}
+
+	// A filtered query whose eligible records sit beyond the window must return
+	// the complete core result set instead of an empty truncated page.
+	fallback, err := runRaxPrimarySearch(ctx, eng, tmpDir, yeoul.SearchRequest{
+		QueryText: "window needle",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
+		Page:      yeoul.Page{Limit: 10},
+	}, "", os.Args[0])
+	if err != nil {
+		t.Fatalf("filtered rax search: %v", err)
+	}
+	if len(fallback.Hits) != 3 {
+		t.Fatalf("expected core fallback to return every eligible fact, got %#v", fallback.Hits)
+	}
+	if fallback.Meta.TotalApprox != nil {
+		t.Fatalf("did not expect a truncation horizon after core fallback, got %d", *fallback.Meta.TotalApprox)
+	}
+
+	// An unfiltered query that saturates the window must surface the horizon so
+	// callers can detect that pagination is bounded.
+	truncated, err := runRaxPrimarySearch(ctx, eng, tmpDir, yeoul.SearchRequest{QueryText: "window needle", Page: yeoul.Page{Limit: 10}}, "", os.Args[0])
+	if err != nil {
+		t.Fatalf("unfiltered rax search: %v", err)
+	}
+	if truncated.Meta.TotalApprox == nil || *truncated.Meta.TotalApprox != int64(fetchLimit) {
+		t.Fatalf("expected the saturated window to report a truncation horizon of %d, got %#v", fetchLimit, truncated.Meta.TotalApprox)
+	}
+	if len(truncated.Hits) != 2 {
+		t.Fatalf("expected the unfiltered page to keep its eligible hits, got %#v", truncated.Hits)
+	}
+}
+
 
 // TestRaxPrimarySearchIncludeFlagsAreIndependent mirrors the core flag-shaping
 // contract on the Rax path and checks that support shared by multiple hits is
