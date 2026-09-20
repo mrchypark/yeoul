@@ -2,14 +2,14 @@ package yeoul
 
 import (
 	"context"
-	"strings"
 	"time"
 )
 
-// EntityID returns the deterministic entity ID generated from entity identity fields.
+// EntityID returns the deterministic entity ID generated from entity identity
+// fields. The readable slug keeps IDs recognizable; the fingerprint suffix
+// keeps case, separator, and whitespace-distinct identities distinct.
 func EntityID(namespace, entityType, canonical string) string {
-	parts := []string{normalizeIDPart(namespace), normalizeIDPart(entityType), normalizeIDPart(canonical)}
-	return strings.Trim(strings.Join(parts, ":"), ":")
+	return readableIdentitySlug(namespace, entityType, canonical) + "~" + identityFingerprint(namespace, entityType, canonical)
 }
 
 type Engine interface {

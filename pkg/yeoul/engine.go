@@ -179,6 +179,7 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 			}
 			result.EpisodeIDs = append(result.EpisodeIDs, item.EpisodeID)
 		}
+		referenceRewrites := make(map[string]string)
 		for _, entity := range input.Entities {
 			if strings.TrimSpace(entity.Type) == "" || strings.TrimSpace(entity.CanonicalName) == "" {
 				return errorf(ErrInputInvalid, "entity type and canonical_name are required", map[string]any{"id": entity.ID}, nil)
@@ -188,10 +189,30 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 				return err
 			}
 			result.EntityIDs = append(result.EntityIDs, item.ID)
+			// Register explicit IDs verbatim: trimming them here would
+			// redirect references meant for a different entity.
+			reference := entity.ID
+			if reference == "" {
+				reference = EntityID(entity.Namespace, entity.Type, firstNonEmpty(entity.StableKey, entity.CanonicalName))
+			}
+			if existing, ok := referenceRewrites[reference]; ok && existing != item.ID {
+				return errorf(ErrLifecycleInvalid, "ambiguous entity reference in batch", map[string]any{
+					"reference":   reference,
+					"entity_id":   existing,
+					"conflict_id": item.ID,
+				}, nil)
+			}
+			referenceRewrites[reference] = item.ID
 		}
 		for _, fact := range input.Facts {
 			if strings.TrimSpace(fact.Predicate) == "" || strings.TrimSpace(fact.SubjectID) == "" || len(fact.SupportingEpisodeIDs) == 0 {
 				return errorf(ErrInputInvalid, "fact predicate, subject_id, and supporting_episode_ids are required", map[string]any{"id": fact.ID}, nil)
+			}
+			if rewritten, ok := referenceRewrites[fact.SubjectID]; ok {
+				fact.SubjectID = rewritten
+			}
+			if rewritten, ok := referenceRewrites[fact.ObjectID]; ok {
+				fact.ObjectID = rewritten
 			}
 			item, err := e.assertFactLocked(normalizeSpaceID(fact.SpaceID), fact, false)
 			if err != nil {
@@ -236,6 +257,9 @@ func (e *engine) ingestEpisodeLocked(spaceID string, input EpisodeInput, source 
 		if existing.SpaceID != spaceID {
 			return nil, errorf(ErrLifecycleInvalid, "source id already exists in another space", map[string]any{"source_id": source.ID, "space_id": spaceID}, nil)
 		}
+		if input.SourceID == "" && input.Source.ID == "" && (existing.SpaceID != source.SpaceID || existing.Kind != source.Kind || existing.ExternalRef != source.ExternalRef) {
+			return nil, errorf(ErrLifecycleInvalid, "source id already exists with different identity", map[string]any{"source_id": source.ID}, nil)
+		}
 	} else {
 		e.sources[source.ID] = source
 	}
@@ -276,10 +300,24 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 	now := e.now()
 	spaceID := normalizeSpaceID(input.SpaceID)
 	id := input.ID
-	if id == "" {
-		id = normalizeEntityID(input.Namespace, input.Type, firstNonEmpty(input.StableKey, input.CanonicalName))
+	derived := id == ""
+	if derived {
+		identity := firstNonEmpty(input.StableKey, input.CanonicalName)
+		id = EntityID(input.Namespace, input.Type, identity)
+		if _, ok := e.entities[id]; !ok {
+			if legacyID := legacyEntityID(input.Namespace, input.Type, identity); legacyID != id {
+				if legacy, ok := e.entities[legacyID]; ok && legacyEntityIdentityMatches(legacy, input) {
+					id = legacyID
+				}
+			}
+		}
 	}
 	metadata := cloneAnyMap(input.Metadata)
+	if metadata != nil {
+		// stable_key is engine-managed: ordinary metadata must not be able to
+		// change a stored strong identity.
+		delete(metadata, "stable_key")
+	}
 	if strings.TrimSpace(input.StableKey) != "" {
 		metadata = mergeAnyMap(metadata, map[string]any{"stable_key": input.StableKey})
 	}
@@ -300,6 +338,12 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 		e.entities[id] = entity
 		e.appendEntityRevisionLocked(entity, "assert")
 		return cloneEntity(entity), nil
+	}
+
+	if derived && !entityIdentityMatches(entity, input) {
+		return nil, errorf(ErrLifecycleInvalid, "entity id already exists with different identity", map[string]any{
+			"entity_id": id,
+		}, nil)
 	}
 
 	if entity.SpaceID != "" && entity.SpaceID != spaceID {
@@ -692,9 +736,14 @@ func (e *engine) resolveSource(spaceID, sourceID string, input SourceInput, now 
 			input.Kind = "inline"
 		}
 		sourceID = normalizeSourceID(spaceID, input.Kind, input.ExternalRef)
-		legacyID := normalizeLegacySourceID(input.Kind, input.ExternalRef)
-		if source, ok := e.sources[legacyID]; ok && sourceMatches(source, spaceID, input.Kind, input.ExternalRef) {
-			sourceID = legacyID
+		for _, legacyID := range []string{
+			legacySourceID(spaceID, input.Kind, input.ExternalRef),
+			normalizeLegacySourceID(input.Kind, input.ExternalRef),
+		} {
+			if source, ok := e.sources[legacyID]; ok && sourceMatches(source, spaceID, input.Kind, input.ExternalRef) {
+				sourceID = legacyID
+				break
+			}
 		}
 	}
 	if sourceID == "" {
