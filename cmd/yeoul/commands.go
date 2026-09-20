@@ -103,6 +103,8 @@ type benchQueryResult struct {
 	DatabasePath string             `json:"database_path"`
 	Query        string             `json:"query"`
 	Iterations   int                `json:"iterations"`
+	SearchHits   int                `json:"search_hits"`
+	RecordIDs    []string           `json:"record_ids,omitempty"`
 	Metrics      map[string]latency `json:"metrics"`
 }
 

@@ -34,7 +34,6 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 
 	hits := make([]SearchHit, 0)
-	included := IncludedRecords{}
 	graphSeeds := map[string]float64{}
 	seenHits := map[string]bool{}
 	stats := e.searchCorpusStats(types, req, spaceID)
@@ -57,7 +56,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if matched {
 				score := baseScore + 0.4
 				reasons := []string{reason}
-				if anchorMatched {
+				if anchorMatched && len(req.AnchorIDs) > 0 {
 					score += 0.15
 					reasons = append(reasons, "anchor_match")
 				}
@@ -79,8 +78,6 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				seenHits["fact:"+factRecord.ID] = true
 				addGraphSeeds(graphSeeds, score, factRecord.ID, factRecord.SubjectID, factRecord.ObjectID)
 				addGraphSeeds(graphSeeds, score, factRecord.SupportingEpisodeIDs...)
-				included.Facts = append(included.Facts, *factRecord)
-				e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal)
 			}
 		}
 	}
@@ -100,7 +97,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if matched {
 				score := baseScore + 0.2
 				reasons := []string{reason}
-				if anchorMatched {
+				if anchorMatched && len(req.AnchorIDs) > 0 {
 					score += 0.15
 					reasons = append(reasons, "anchor_match")
 				}
@@ -117,10 +114,6 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				})
 				seenHits["episode:"+episode.ID] = true
 				addGraphSeeds(graphSeeds, score, episode.ID, episode.SourceID)
-				included.Episodes = append(included.Episodes, episode)
-				if source, ok := e.sources[episode.SourceID]; ok && source.SpaceID == spaceID && e.sourceVisibleAt(source, req.Temporal) {
-					included.Sources = append(included.Sources, source)
-				}
 			}
 		}
 	}
@@ -145,7 +138,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if matched {
 				score := baseScore
 				reasons := []string{reason}
-				if anchorMatched {
+				if anchorMatched && len(req.AnchorIDs) > 0 {
 					score += 0.15
 					reasons = append(reasons, "anchor_match")
 				}
@@ -162,7 +155,6 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				})
 				seenHits["entity:"+entityRecord.ID] = true
 				addGraphSeeds(graphSeeds, score, entityRecord.ID)
-				included.Entities = append(included.Entities, *entityRecord)
 			}
 		}
 	}
@@ -194,8 +186,6 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			seenHits["fact:"+factRecord.ID] = true
 			addGraphSeeds(expandedSeeds, score, factRecord.ID, factRecord.SubjectID, factRecord.ObjectID)
 			addGraphSeeds(expandedSeeds, score, factRecord.SupportingEpisodeIDs...)
-			included.Facts = append(included.Facts, *factRecord)
-			e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal)
 		}
 		for _, fact := range e.facts {
 			factRecord := e.factVersionAt(fact, req.Temporal)
@@ -221,8 +211,6 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				Reasons:     []string{"graph_expansion_bfs"},
 			})
 			seenHits["fact:"+factRecord.ID] = true
-			included.Facts = append(included.Facts, *factRecord)
-			e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal)
 		}
 	}
 
@@ -243,9 +231,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 		Hits: hitsPage,
 	}
 	response.Meta.NextCursor = nextCursor
-	if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
-		response.Included = dedupeIncluded(included)
-	}
+	response.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, hitsPage, spaceID)
 	return response, nil
 }
 
@@ -413,6 +399,34 @@ func RecordPassesSearchFilters(ctx context.Context, eng Engine, record any, req 
 
 func matchesEntityType(entity Entity, types []string) bool {
 	return len(types) == 0 || slices.Contains(types, entity.Type)
+}
+
+// RecordSearchText returns the canonical, lowercased text a search matches a
+// record against. Core search and derived indexes must share this text so
+// keyword and semantic decisions agree across backends.
+func RecordSearchText(record any) string {
+	switch value := record.(type) {
+	case *Fact:
+		return strings.ToLower(value.ValueText + " " + value.Predicate + " " + value.SubjectID + " " + value.ObjectID)
+	case *Episode:
+		return strings.ToLower(value.Content)
+	case *Entity:
+		return strings.ToLower(value.CanonicalName + " " + strings.Join(value.Aliases, " "))
+	default:
+		return ""
+	}
+}
+
+// RecordMatchesQuery reports whether a record matches a query under mode using
+// the same canonical text and matcher as core search. Derived indexes use it so
+// a native candidate is validated with core's semantics rather than a laxer
+// substring rule.
+func RecordMatchesQuery(mode SearchMode, query string, record any) bool {
+	if mode == "" {
+		mode = SearchModeHybrid
+	}
+	matched, _, _ := matchSearchWithStats(mode, query, RecordSearchText(record), nil)
+	return matched
 }
 
 func validFactStatus(status string) bool {
