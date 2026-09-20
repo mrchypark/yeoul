@@ -1958,3 +1958,51 @@ func TestSupersedeFactPersistsOnce(t *testing.T) {
 		t.Fatalf("expected exactly one durable save during supersede, got %d", got)
 	}
 }
+
+type closeFailureStore struct {
+	saveErr  error
+	closeErr error
+	closed   bool
+}
+
+func (s *closeFailureStore) Load() (*persistedState, error) {
+	return &persistedState{Version: 1}, nil
+}
+
+func (s *closeFailureStore) Save(persistedState) error {
+	return s.saveErr
+}
+
+func (s *closeFailureStore) Close() error {
+	s.closed = true
+	return s.closeErr
+}
+
+func TestEngineCloseReleasesStoreAfterSaveFailure(t *testing.T) {
+	saveErr := errors.New("save failed")
+	store := &closeFailureStore{saveErr: saveErr}
+	eng := newEngine(Config{DatabasePath: "test.ltdb"}, store)
+
+	err := eng.Close(context.Background())
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("expected the save failure to be reported, got %v", err)
+	}
+	if !store.closed {
+		t.Fatal("expected the store to be closed even when saving fails")
+	}
+}
+
+func TestEngineCloseJoinsStoreCloseError(t *testing.T) {
+	saveErr := errors.New("save failed")
+	closeErr := errors.New("close failed")
+	store := &closeFailureStore{saveErr: saveErr, closeErr: closeErr}
+	eng := newEngine(Config{DatabasePath: "test.ltdb"}, store)
+
+	err := eng.Close(context.Background())
+	if !errors.Is(err, saveErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected both failures to be reported, got %v", err)
+	}
+	if !store.closed {
+		t.Fatal("expected the store close to be attempted")
+	}
+}

@@ -2,6 +2,7 @@ package yeoul
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -90,13 +91,16 @@ func (e *engine) Close(ctx context.Context) error {
 	_ = ctx
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var errs []error
 	if err := e.saveLocked(); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	if e.store == nil {
-		return nil
+	if e.store != nil {
+		if err := e.store.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return e.store.Close()
+	return errors.Join(errs...)
 }
 
 func (e *engine) Snapshot(ctx context.Context) (*DatabaseSnapshot, error) {
