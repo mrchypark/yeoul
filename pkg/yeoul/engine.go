@@ -321,9 +321,12 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 				}
 			}
 		}
-	} else if err := e.ensureGlobalIDAvailableLocked(id, kindEntity); err != nil {
-		// Only explicit IDs are cross-checked: derived IDs are content-addressed
-		// and never collide with an unrelated record of another kind.
+	}
+	// Both explicit and derived IDs are cross-checked. Derived IDs are
+	// content-addressed, but an explicit episode, fact, or source ID can still
+	// claim the same raw string first, so the global uniqueness invariant must
+	// not depend on write order. Same-kind replays stay with the caller.
+	if err := e.ensureGlobalIDAvailableLocked(id, kindEntity); err != nil {
 		return nil, err
 	}
 	metadata := cloneAnyMap(input.Metadata)

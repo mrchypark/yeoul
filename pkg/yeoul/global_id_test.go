@@ -228,6 +228,48 @@ func TestSameKindExplicitIDReplayStillWorks(t *testing.T) {
 	}
 }
 
+// TestDerivedEntityIDRespectsGlobalUniqueness covers the order-dependent hole
+// the explicit-ID checks left open: a derived entity ID is content-addressed,
+// but an explicit episode, fact, or source ID can claim the same raw string
+// first. The entity must be rejected instead of writing a state that its own
+// Open-time global ID validation would refuse to load.
+func TestDerivedEntityIDRespectsGlobalUniqueness(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	defer func() { _ = eng.Close(ctx) }()
+
+	derived := EntityID("", "Thing", "Derived Collision")
+	if _, err := eng.IngestEpisode(ctx, EpisodeInput{
+		ID: derived, Kind: "note", Content: "claims the derived entity id",
+		Source: SourceInput{Kind: "note", ExternalRef: "derived-collision"},
+	}); err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+
+	_, err = eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "Derived Collision"})
+	details := requireInputInvalid(t, err, "derived entity reusing an episode id")
+	if kinds := conflictKinds(t, details); !slices.Contains(kinds, kindEpisode) {
+		t.Fatalf("expected the episode kind in the conflict, got %#v", kinds)
+	}
+
+	// The legacy-ID lookup must not open a second hole: the legacy spelling of
+	// the same identity is also rejected when another kind owns it.
+	legacy := legacyEntityID("", "Thing", "Derived Collision")
+	if legacy != derived {
+		if _, err := eng.IngestEpisode(ctx, EpisodeInput{
+			ID: legacy, Kind: "note", Content: "claims the legacy entity id",
+			Source: SourceInput{Kind: "note", ExternalRef: "legacy-collision"},
+		}); err != nil {
+			t.Fatalf("ingest legacy-claiming episode: %v", err)
+		}
+		_, err = eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "Derived Collision"})
+		requireInputInvalid(t, err, "derived entity reusing a legacy episode id")
+	}
+}
+
 // TestCompositeIDEncodingIsUnambiguous pins the length-prefixed encoding that
 // replaced plain delimiter concatenation.
 func TestCompositeIDEncodingIsUnambiguous(t *testing.T) {
