@@ -1853,6 +1853,80 @@ func TestCLIBenchQueryAndLifecycle(t *testing.T) {
 	}
 }
 
+// TestCLIBenchQueryMatchesProductionRaxSearch checks that `bench query` measures
+// the production planner instead of a differently filtered query. The benchmark
+// used to inject the first entity as an unrequested anchor, so an eligible
+// episode hit was filtered out and the reported latency measured empty work.
+func TestCLIBenchQueryMatchesProductionRaxSearch(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "bench-rax.ltdb")
+	ingestPath := filepath.Join(tmpDir, "seed.json")
+	fakeRaxPath := os.Args[0]
+	argsPath := filepath.Join(tmpDir, "rax-args.txt")
+	projectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	idsPath := filepath.Join(tmpDir, "rax-search-ids.json")
+
+	// The only eligible hit is an episode. An injected entity anchor can never
+	// match it, so the benchmark must not add one.
+	payload := `{
+  "episodes": [
+    {"id":"ep-eligible","kind":"note","content":"needle episode","source":{"kind":"note","external_ref":"eligible"}}
+  ],
+  "entities": [
+    {"id":"project:first","type":"Project","canonical_name":"First"}
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+	if err := os.WriteFile(idsPath, []byte(`[{"doc_id":"episode:ep-eligible"}]`), 0o644); err != nil {
+		t.Fatalf("write fake search ids: %v", err)
+	}
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", argsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", projectionPath)
+	t.Setenv("YEOUL_FAKE_RAX_SEARCH_IDS", idsPath)
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+
+	var bench struct {
+		SearchHits int      `json:"search_hits"`
+		RecordIDs  []string `json:"record_ids"`
+	}
+	benchOut := runCLI("bench", "query", "--db", dbPath, "--query", "needle", "--backend", "rax", "--rax-bin", fakeRaxPath, "--iterations", "1", "--json")
+	if err := json.Unmarshal([]byte(benchOut), &bench); err != nil {
+		t.Fatalf("decode bench output %q: %v", benchOut, err)
+	}
+	var search struct {
+		Hits []struct {
+			RecordID string `json:"record_id"`
+		} `json:"hits"`
+	}
+	searchOut := runCLI("search", "--db", dbPath, "--query", "needle", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
+	if err := json.Unmarshal([]byte(searchOut), &search); err != nil {
+		t.Fatalf("decode search output %q: %v", searchOut, err)
+	}
+	if len(search.Hits) != 1 || search.Hits[0].RecordID != "ep-eligible" {
+		t.Fatalf("expected the ordinary rax search to find ep-eligible, got %#v", search.Hits)
+	}
+	if bench.SearchHits != len(search.Hits) {
+		t.Fatalf("expected bench search_hits=%d to match the ordinary search, got %d", len(search.Hits), bench.SearchHits)
+	}
+	if !slices.Equal(bench.RecordIDs, []string{"ep-eligible"}) {
+		t.Fatalf("expected bench to measure the same hit as the ordinary search, got %#v", bench.RecordIDs)
+	}
+}
 func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
 	ctx := context.Background()
 	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
@@ -2191,7 +2265,6 @@ func TestRaxPrimarySearchTruncationContract(t *testing.T) {
 		t.Fatalf("expected the unfiltered page to keep its eligible hits, got %#v", truncated.Hits)
 	}
 }
-
 
 // TestRaxPrimarySearchIncludeFlagsAreIndependent mirrors the core flag-shaping
 // contract on the Rax path and checks that support shared by multiple hits is

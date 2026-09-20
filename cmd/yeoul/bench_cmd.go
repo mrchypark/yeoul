@@ -186,9 +186,6 @@ Usage:
 		if err != nil {
 			return err
 		}
-		if entityID == "" && len(payload.Entities) > 0 {
-			entityID = payload.Entities[0].ID
-		}
 		if factID == "" && len(payload.Facts) > 0 {
 			factID = payload.Facts[0].ID
 		}
@@ -200,31 +197,13 @@ Usage:
 		"timeline":     {},
 		"provenance":   {},
 	}
-	var benchRaxRuntime raxRuntime
-	var benchRaxStorePath string
-	var benchRaxSearcher *raxFFISearcher
 	if backend == "rax" {
-		var ok bool
-		benchRaxRuntime, ok = lookupRaxRuntime(raxLib, raxBin)
-		if !ok {
+		if _, ok := lookupRaxRuntime(raxLib, raxBin); !ok {
 			return fmt.Errorf("rax search failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
 		}
-		if benchRaxRuntime.Kind == "ffi" {
-			var err error
-			var empty bool
-			benchRaxStorePath, empty, err = ensureManagedRaxStore(ctx, eng, dbPath, benchRaxRuntime)
-			if err != nil {
-				return err
-			}
-			if !empty {
-				benchRaxSearcher, err = openRaxFFISearcher(benchRaxRuntime.Path, benchRaxStorePath)
-				if err != nil {
-					return err
-				}
-				defer benchRaxSearcher.close()
-			}
-		}
 	}
+	var searchHits int
+	var searchRecordIDs []string
 	for i := 0; i < iterations; i++ {
 		start := time.Now()
 		searchReq := yeoul.SearchRequest{
@@ -232,32 +211,24 @@ Usage:
 			AnchorIDs: compactStrings(entityID),
 			Page:      yeoul.Page{Limit: 10},
 		}
+		// Run the same planner the search command uses so the benchmark measures
+		// production work rather than a truncated or differently filtered query.
+		var searchResp *yeoul.SearchResponse
 		if backend == "rax" {
-			if benchRaxSearcher != nil {
-				output, err := benchRaxSearcher.searchText(benchRaxStorePath, searchReq.QueryText, searchReq.Page.Limit*4)
-				if err != nil {
-					return fmt.Errorf("rax search failed: %w", err)
-				}
-				docIDs, err := parseRaxDocIDs(output)
-				if err != nil {
-					return err
-				}
-				if _, err := buildRaxPrimarySearchResponse(ctx, eng, searchReq, docIDs); err != nil {
-					return err
-				}
-			} else {
-				if _, err := runRaxPrimarySearch(ctx, eng, dbPath, searchReq, raxLib, raxBin); err != nil {
-					return err
-				}
-			}
+			searchResp, err = runRaxPrimarySearch(ctx, eng, dbPath, searchReq, raxLib, raxBin)
 		} else {
-			searchResp, err := eng.Search(ctx, searchReq)
-			if err != nil {
-				return err
+			searchResp, err = eng.Search(ctx, searchReq)
+			if err == nil {
+				searchResp, err = maybeRerankSearchWithRax(ctx, eng, dbPath, query, backend, raxLib, raxBin, 10, searchResp)
 			}
-			if _, err := maybeRerankSearchWithRax(ctx, eng, dbPath, query, backend, raxLib, raxBin, 10, searchResp); err != nil {
-				return err
-			}
+		}
+		if err != nil {
+			return err
+		}
+		searchHits = len(searchResp.Hits)
+		searchRecordIDs = searchRecordIDs[:0]
+		for _, hit := range searchResp.Hits {
+			searchRecordIDs = append(searchRecordIDs, hit.RecordID)
 		}
 		metrics["search"] = append(metrics["search"], time.Since(start))
 
@@ -299,6 +270,8 @@ Usage:
 		DatabasePath: dbPath,
 		Query:        query,
 		Iterations:   iterations,
+		SearchHits:   searchHits,
+		RecordIDs:    searchRecordIDs,
 		Metrics:      make(map[string]latency),
 	}
 	for key, samples := range metrics {
