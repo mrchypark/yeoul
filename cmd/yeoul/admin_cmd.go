@@ -299,11 +299,19 @@ Usage:
 // created there inherits no grants for other accounts, so no window exists in
 // which another local account can open the payload and keep a read handle
 // across a later permission change. The finished file is published with a
-// rename, so a failed write leaves any previous export intact.
+// rename, so a failed write leaves any previous export intact, and the
+// containing directory is synced so the rename itself survives a crash.
 func writePrivateFile(path string, data []byte) error {
 	if err := ensurePrivateFileSupported(); err != nil {
 		return err
 	}
+	return writePrivateFileStaged(path, data)
+}
+
+// writePrivateFileStaged performs the platform-independent staging and publish
+// steps. It is separate from the support check so the durability behavior can
+// be exercised on platforms where export is refused.
+func writePrivateFileStaged(path string, data []byte) error {
 	stageDir, err := os.MkdirTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -328,7 +336,7 @@ func writePrivateFile(path string, data []byte) error {
 		_ = temp.Close()
 		return err
 	}
-	if _, err := temp.Write(data); err != nil {
+	if err := writePrivateFileContents(temp, data); err != nil {
 		_ = temp.Close()
 		return err
 	}
@@ -339,7 +347,32 @@ func writePrivateFile(path string, data []byte) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return syncPrivateFileDir(filepath.Dir(path))
+}
+
+// writePrivateFileContents is a seam for tests to inject a partial-write
+// failure and prove the previous export survives it.
+var writePrivateFileContents = func(file *os.File, data []byte) error {
+	_, err := file.Write(data)
+	return err
+}
+
+// syncPrivateFileDir flushes the directory entry created by the publish
+// rename so the replacement export is durable, not only the file contents.
+func syncPrivateFileDir(dir string) error {
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func (c cli) runAdminImport(ctx context.Context, args []string) error {
