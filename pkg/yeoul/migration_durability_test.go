@@ -569,3 +569,200 @@ func TestMigrateDatabaseKeepsStagingWhenRollbackFails(t *testing.T) {
 		t.Fatalf("expected the recovered episode: %v", err)
 	}
 }
+
+// writeVerifiedStagingFixture fills a staging database with the converted
+// episode the protocol verified before the cutover, so a test can tell the
+// readable converted copy apart from a file that merely exists at the live
+// path.
+func writeVerifiedStagingFixture(t *testing.T, stagingPath string) {
+	t.Helper()
+	ctx := context.Background()
+	staging, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: stagingPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatalf("create staging database: %v", err)
+	}
+	if _, err := staging.IngestEpisode(ctx, EpisodeInput{
+		ID:      "ep-staging",
+		Kind:    "note",
+		Content: "converted staging fixture",
+		Source:  SourceInput{Kind: "test", ExternalRef: "migration-durability"},
+	}); err != nil {
+		t.Fatalf("ingest staging episode: %v", err)
+	}
+	if err := staging.Close(ctx); err != nil {
+		t.Fatalf("close staging database: %v", err)
+	}
+}
+
+// assertStagingReadable reports whether the preserved staging database still
+// holds the converted episode, which is the property an unverified rollback
+// must not destroy. It closes the store before returning so it cannot hold the
+// staging namespace open while the protocol cleans it up.
+func assertStagingReadable(t *testing.T, stagingPath string) {
+	t.Helper()
+	ctx := context.Background()
+	staging, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: stagingPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open the preserved staging database: %v", err)
+	}
+	if _, err := staging.GetEpisode(ctx, "ep-staging"); err != nil {
+		_ = staging.Close(ctx)
+		t.Fatalf("expected the preserved staging episode: %v", err)
+	}
+	if err := staging.Close(ctx); err != nil {
+		t.Fatalf("close the preserved staging database: %v", err)
+	}
+}
+
+// TestCleanupAbandonedMigrationStagingKeepsUnverifiedRollback reproduces the
+// ST-05 window where the failure cleanup runs after a rollback that put the
+// file names back but did not restore a readable database: the live path holds
+// a leftover file, the backup namespace is empty, and the verified staging
+// database is the only readable copy of the converted data. The cleanup must
+// keep the marker and the staging database, and it must still discard them once
+// the live path holds a readable database again.
+func TestCleanupAbandonedMigrationStagingKeepsUnverifiedRollback(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "unverified-cleanup.lbug")
+	backupPath := dbPath + ".ladybug-backup-0010"
+	stagingPath := dbPath + ".lattice-migrate-0010"
+	markerPath := databaseMigrationMarkerPath(dbPath)
+
+	// The rollback left a file at the live path that no reader can open.
+	if err := os.WriteFile(dbPath, []byte("truncated legacy database"), 0o600); err != nil {
+		t.Fatalf("write unreadable live database: %v", err)
+	}
+	writeVerifiedStagingFixture(t, stagingPath)
+
+	marker := databaseMigrationMarker{
+		Phase:        migrationPhasePrepared,
+		DatabasePath: dbPath,
+		BackupPath:   backupPath,
+		StagingPath:  stagingPath,
+	}
+	if err := writeDatabaseMigrationMarker(marker); err != nil {
+		t.Fatalf("write prepared marker: %v", err)
+	}
+
+	cleanupAbandonedMigrationStaging(marker, markerPath)
+
+	if _, err := os.Stat(stagingPath); err != nil {
+		t.Fatalf("expected the verified staging database to survive an unverified rollback: %v", err)
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("expected the migration marker to survive an unverified rollback: %v", err)
+	}
+	assertStagingReadable(t, stagingPath)
+
+	// Once the live path holds a readable legacy database the staging copy is
+	// no longer a recovery input, so the same cleanup must complete. The
+	// restored set is built beside the live path and copied in, because a store
+	// opened at the live path would resume the preserved migration instead of
+	// describing a namespace that a rollback already restored.
+	fixturePath := filepath.Join(t.TempDir(), "restored.lbug")
+	writeLegacyDatabaseFixture(t, fixturePath)
+	restored, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read the restored legacy database: %v", err)
+	}
+	if err := os.WriteFile(dbPath, restored, 0o600); err != nil {
+		t.Fatalf("restore the legacy database at the live path: %v", err)
+	}
+	restoredSidecar, err := os.ReadFile(fixturePath + ".wal")
+	if err != nil {
+		t.Fatalf("read the restored legacy sidecar: %v", err)
+	}
+	if err := os.WriteFile(dbPath+".wal", restoredSidecar, 0o600); err != nil {
+		t.Fatalf("restore the legacy sidecar at the live path: %v", err)
+	}
+	cleanupAbandonedMigrationStaging(marker, markerPath)
+
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the staging database to be discarded after a verified restore, got %v", err)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the marker to be cleared after a verified restore, got %v", err)
+	}
+}
+
+// TestRecoverDatabaseMigrationKeepsUnverifiedRollbackState reproduces the crash
+// window where the previous process interrupted a rollback: the marker still
+// records the prepared phase, the backup namespace is empty, the live path
+// holds a truncated database, and the verified staging database is the only
+// readable copy of the converted data. Recovery must report the unverified live
+// path instead of discarding that copy, and it must complete once the live path
+// holds the restored legacy database again.
+func TestRecoverDatabaseMigrationKeepsUnverifiedRollbackState(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "unverified-recovery.lbug")
+	backupPath := dbPath + ".ladybug-backup-0011"
+	stagingPath := dbPath + ".lattice-migrate-0011"
+
+	writeLegacyDatabaseFixture(t, dbPath)
+	original, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read legacy database: %v", err)
+	}
+	// A truncated restoration is present but is not a readable database.
+	if err := os.WriteFile(dbPath, original[:len(original)/2], 0o600); err != nil {
+		t.Fatalf("truncate the restored legacy database: %v", err)
+	}
+	writeVerifiedStagingFixture(t, stagingPath)
+	if err := writeDatabaseMigrationMarker(databaseMigrationMarker{
+		Phase:        migrationPhasePrepared,
+		DatabasePath: dbPath,
+		BackupPath:   backupPath,
+		StagingPath:  stagingPath,
+	}); err != nil {
+		t.Fatalf("write prepared marker: %v", err)
+	}
+
+	if err := recoverDatabaseMigration(dbPath); err == nil {
+		t.Fatal("expected recovery to report the unreadable database at the live path")
+	}
+
+	// The recovery inputs must stay in place: the marker still describes the
+	// interrupted migration and the staging database is still the only
+	// readable copy of the converted data.
+	if _, err := os.Stat(stagingPath); err != nil {
+		t.Fatalf("expected the staging database to survive the unverified rollback: %v", err)
+	}
+	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); err != nil {
+		t.Fatalf("expected the migration marker to survive the unverified rollback: %v", err)
+	}
+	assertStagingReadable(t, stagingPath)
+	truncated, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read the truncated live database: %v", err)
+	}
+	if len(truncated) != len(original)/2 {
+		t.Fatalf("expected the unverified live database to stay untouched, got %d bytes", len(truncated))
+	}
+	if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no backup member to be created, got %v", err)
+	}
+
+	// The preserved state stays retryable: once the live path holds the restored
+	// legacy database again, recovery completes and discards the staging copy.
+	if err := os.WriteFile(dbPath, original, 0o600); err != nil {
+		t.Fatalf("restore the legacy database: %v", err)
+	}
+	if err := recoverDatabaseMigration(dbPath); err != nil {
+		t.Fatalf("recover the preserved migration state: %v", err)
+	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the staging database to be discarded after recovery, got %v", err)
+	}
+	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the marker to be cleared after recovery, got %v", err)
+	}
+	legacy, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open the recovered legacy database: %v", err)
+	}
+	defer func() { _ = legacy.Close(ctx) }()
+	if _, err := legacy.GetEpisode(ctx, "ep-durability"); err != nil {
+		t.Fatalf("expected the recovered legacy episode: %v", err)
+	}
+}
