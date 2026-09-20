@@ -133,7 +133,7 @@ Usage:
 	var force bool
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
-	fs.BoolVar(&force, "force", false, "replace an existing database file")
+	fs.BoolVar(&force, "force", false, "accepted for compatibility; in-place replacement of an existing database is refused")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -155,10 +155,7 @@ Usage:
 			if !c.confirm {
 				return &usageError{message: usage + "\n\nThis operation is destructive. Re-run with --confirm."}
 			}
-			if err := os.RemoveAll(dbPath); err != nil {
-				return fmt.Errorf("remove existing database: %w", err)
-			}
-			created = true
+			return &usageError{message: usage + "\n\nReplacing an existing database in place is not supported: a reset cannot be made atomic while another process may own the database. Move or remove " + dbPath + " explicitly, then run init again."}
 		}
 	} else if os.IsNotExist(err) {
 		created = true

@@ -1951,3 +1951,68 @@ func TestCLIContext(t *testing.T) {
 		t.Fatalf("expected context blocks, got %q", output)
 	}
 }
+
+func TestCLIInitForceRefusesExistingDatabase(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "locked.ltdb")
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	if err := run(ctx, []string{"init", "--db", dbPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	eng, err := yeoul.Open(ctx, yeoul.Config{DatabasePath: dbPath})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+
+	var resetOut strings.Builder
+	resetErr := run(ctx, []string{"init", "--db", dbPath, "--force", "--confirm"}, &resetOut, &resetOut)
+	if resetErr == nil {
+		t.Fatal("expected forced init on an existing database to be refused")
+	}
+	if !strings.Contains(resetErr.Error(), "not supported") {
+		t.Fatalf("expected an explicit refusal, got %v", resetErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dbPath, "state.json")); statErr != nil {
+		t.Fatalf("database must remain intact after the refused reset: %v", statErr)
+	}
+
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
+	var retryOut strings.Builder
+	if err := run(ctx, []string{"init", "--db", dbPath, "--force", "--confirm"}, &retryOut, &retryOut); err == nil {
+		t.Fatal("expected forced init to keep refusing an existing database after the owner closed")
+	}
+}
+
+func TestCLIInitForcePreservesForeignDirectory(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	keepPath := filepath.Join(dir, "keep.txt")
+	tmpPath := filepath.Join(dir, ".state-important.tmp")
+	if err := os.WriteFile(keepPath, []byte("precious"), 0o600); err != nil {
+		t.Fatalf("write keep file: %v", err)
+	}
+	if err := os.WriteFile(tmpPath, []byte("temporary-but-foreign"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	var out strings.Builder
+	err := run(ctx, []string{"init", "--db", dir, "--force", "--confirm"}, &out, &out)
+	if err == nil {
+		t.Fatal("expected forced init to refuse a directory that is not a Yeoul database")
+	}
+	for path, want := range map[string]string{keepPath: "precious", tmpPath: "temporary-but-foreign"} {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("expected %s to survive the refusal: %v", path, readErr)
+		}
+		if string(got) != want {
+			t.Fatalf("expected %s to keep its bytes, got %q", path, string(got))
+		}
+	}
+}
