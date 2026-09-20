@@ -208,6 +208,168 @@ func TestLoadPackDropsBlankEpisodeRuleTokens(t *testing.T) {
 	}
 }
 
+func TestValidatePackRejectsUnknownAndUnsupportedRecipeFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		recipe string
+		issues []string
+	}{
+		{
+			name:   "misspelled recipe field",
+			recipe: "version: 1\nrecipes:\n  recent_context:\n    strategy: hybrid\n    stratgy: hybrid\n",
+			issues: []string{"stratgy"},
+		},
+		{
+			name:   "unsupported strategy",
+			recipe: "version: 1\nrecipes:\n  recent_context:\n    strategy: vector_only\n",
+			issues: []string{`recipe "recent_context" declares unsupported strategy "vector_only"`},
+		},
+		{
+			name:   "unsupported filter",
+			recipe: "version: 1\nrecipes:\n  recent_context:\n    strategy: hybrid\n    filters:\n      confidence_min: 0.5\n",
+			issues: []string{`recipe "recent_context" declares unsupported filter "confidence_min"`},
+		},
+		{
+			name:   "wrong window_days type",
+			recipe: "version: 1\nrecipes:\n  recent_context:\n    strategy: hybrid\n    filters:\n      window_days: soon\n",
+			issues: []string{`recipe "recent_context" declares invalid filter "window_days"`},
+		},
+		{
+			name:   "unsupported expand key",
+			recipe: "version: 1\nrecipes:\n  recent_context:\n    strategy: hybrid\n    expand:\n      edges: [SUPERSEDES]\n",
+			issues: []string{`recipe "recent_context" declares unsupported expand setting "edges"`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+			writeFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+			writeFile(t, filepath.Join(dir, "episode_rules.yaml"), "version: 1\n")
+			writeFile(t, filepath.Join(dir, "search_recipes.yaml"), tc.recipe)
+
+			result, err := ValidatePack(dir)
+			if err != nil {
+				t.Fatalf("validate recipe pack: %v", err)
+			}
+			if result.Valid {
+				t.Fatalf("expected invalid pack, got issues=%v", result.Issues)
+			}
+			joined := strings.Join(result.Issues, "\n")
+			for _, expected := range tc.issues {
+				if !strings.Contains(joined, expected) {
+					t.Fatalf("expected issue %q in %q", expected, joined)
+				}
+			}
+		})
+	}
+}
+
+func TestValidatePackRejectsMisspelledStructuralFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+	writeFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+	writeFile(t, filepath.Join(dir, "episode_rules.yaml"),
+		"version: 1\ndrop:\n  - name: low_signal\n    when:\n      contains_anyy: [\"ok\"]\n")
+	writeFile(t, filepath.Join(dir, "search_recipes.yaml"), "version: 1\nrecipes: {}\n")
+
+	result, err := ValidatePack(dir)
+	if err != nil {
+		t.Fatalf("validate misspelled pack: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected misspelled structural field to fail validation")
+	}
+	joined := strings.Join(result.Issues, "\n")
+	if !strings.Contains(joined, "contains_anyy") {
+		t.Fatalf("expected issue to name the unknown field, got %q", joined)
+	}
+
+	if _, err := LoadPack(dir); err == nil {
+		t.Fatal("expected LoadPack to reject a misspelled structural field")
+	}
+}
+
+func TestValidatePackAcceptsOntologyExtensions(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+	writeFile(t, filepath.Join(dir, "ontology.yaml"),
+		"version: 1\npredicates: [OWNS]\nextensions:\n  exclusive_predicates: [CURRENT_OWNER]\n")
+	writeFile(t, filepath.Join(dir, "episode_rules.yaml"), "version: 1\n")
+	writeFile(t, filepath.Join(dir, "search_recipes.yaml"), "version: 1\nrecipes: {}\n")
+
+	result, err := ValidatePack(dir)
+	if err != nil {
+		t.Fatalf("validate ontology extension pack: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid pack, got issues=%v", result.Issues)
+	}
+
+	pack, err := LoadPack(dir)
+	if err != nil {
+		t.Fatalf("load ontology extension pack: %v", err)
+	}
+	if pack.Ontology.Extensions == nil {
+		t.Fatal("expected ontology extensions to be preserved")
+	}
+}
+
+// TestDocumentedOntologyExampleDecodes ties the accepted ontology reference to
+// the implementation: the documented example must decode without unknown-field
+// errors and keep its supported meaning, with advisory content confined to
+// extensions.
+func TestDocumentedOntologyExampleDecodes(t *testing.T) {
+	docPath := filepath.Join("..", "..", "docs", "10-examples", "example-ontology.md")
+	data, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", docPath, err)
+	}
+	yamlBlock := extractYAMLBlock(t, string(data))
+
+	var ontology Ontology
+	if err := decodeYAML([]byte(yamlBlock), &ontology); err != nil {
+		t.Fatalf("decode documented ontology example: %v", err)
+	}
+	if ontology.Version != 1 {
+		t.Fatalf("expected version 1, got %d", ontology.Version)
+	}
+	if !contains(ontology.EntityTypes, "Repository") {
+		t.Fatalf("expected Repository entity type, got %v", ontology.EntityTypes)
+	}
+	if !contains(ontology.Predicates, "DEPENDS_ON") {
+		t.Fatalf("expected DEPENDS_ON predicate, got %v", ontology.Predicates)
+	}
+	if len(ontology.Dedup["Repository"].Keys) == 0 {
+		t.Fatalf("expected Repository dedup keys, got %v", ontology.Dedup)
+	}
+	if _, ok := ontology.Extensions["exclusive_predicates"]; !ok {
+		t.Fatalf("expected advisory exclusive_predicates under extensions, got %v", ontology.Extensions)
+	}
+}
+
+func extractYAMLBlock(t *testing.T, markdown string) string {
+	t.Helper()
+	lines := strings.Split(markdown, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "```yaml" {
+			start = i + 1
+			break
+		}
+	}
+	if start == -1 {
+		t.Fatal("documented example is missing a yaml block")
+	}
+	for i := start; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "```" {
+			return strings.Join(lines[start:i], "\n")
+		}
+	}
+	t.Fatal("documented example yaml block is not closed")
+	return ""
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o644); err != nil {

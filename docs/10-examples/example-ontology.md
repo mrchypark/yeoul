@@ -25,8 +25,9 @@ predicates:
   - RELATED_TO
   - CHANGED_TO
 
-exclusive_predicates:
-  - CURRENT_OWNER
+extensions:
+  exclusive_predicates:
+    - CURRENT_OWNER
 
 dedup:
   Person:
@@ -38,3 +39,8 @@ dedup:
   Issue:
     keys: [tracker, external_id]
 ```
+
+`extensions` carries advisory content Yeoul Core does not interpret. Put
+exclusivity hints and other non-core notes there; unknown top-level keys
+outside `extensions` fail `yeoul policy validate` so that misspelled
+structural fields are caught instead of silently ignored.
