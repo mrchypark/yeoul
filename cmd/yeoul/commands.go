@@ -1139,17 +1139,29 @@ Usage:
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
 	}
-	if entityID != "" {
-		kind, id = "entity", entityID
-	}
-	if factID != "" {
-		kind, id = "fact", factID
-	}
-	if episodeID != "" {
-		kind, id = "episode", episodeID
-	}
-	if strings.TrimSpace(kind) == "" || strings.TrimSpace(id) == "" {
+	// The selector forms are mutually exclusive. Counting them prevents a
+	// conflicting invocation such as --entity A --fact B from silently
+	// querying only one of the requested records.
+	kindSet := strings.TrimSpace(kind) != ""
+	idSet := strings.TrimSpace(id) != ""
+	if kindSet != idSet {
 		return &usageError{message: usage}
+	}
+	anchors := compactStrings(entityID, factID, episodeID)
+	if kindSet {
+		if len(anchors) > 0 {
+			return &usageError{message: usage}
+		}
+	} else if len(anchors) != 1 {
+		return &usageError{message: usage}
+	}
+	switch {
+	case entityID != "":
+		kind, id = "entity", entityID
+	case factID != "":
+		kind, id = "fact", factID
+	case episodeID != "":
+		kind, id = "episode", episodeID
 	}
 	temporal, err := parseTemporalFlags(asOfRaw, "", "", true)
 	if err != nil {
