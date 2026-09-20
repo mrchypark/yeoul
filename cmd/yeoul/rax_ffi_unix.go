@@ -185,8 +185,9 @@ func openRaxFFISearcher(libPath, storePath string) (*raxFFISearcher, error) {
 		var handle unsafe.Pointer
 		status := C.yeoul_rax_open_read_only(api.openReadOnly, cStore, &handle)
 		if status != 0 {
+			errMsg := C.GoString(C.yeoul_rax_last_error(api.lastError))
 			api.close()
-			return nil, errors.New(C.GoString(C.yeoul_rax_last_error(api.lastError)))
+			return nil, errors.New(errMsg)
 		}
 		searcher.handle = handle
 	}

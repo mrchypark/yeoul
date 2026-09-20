@@ -598,84 +598,11 @@ Usage:
 		return err
 	}
 
-	target, err := eng.GetEntity(ctx, targetID)
+	updated, mergedFrom, err := mergeEntities(ctx, eng, targetID, sourceIDs, reason)
+	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
+		err = closeErr
+	}
 	if err != nil {
-		_ = closeEngine(ctx, eng)
-		return err
-	}
-	if duplicateOf, ok := target.Metadata["duplicate_of"]; ok && fmt.Sprint(duplicateOf) != "" {
-		_ = closeEngine(ctx, eng)
-		return fmt.Errorf("entity merge target %s must be a canonical entity (not a duplicate); duplicate_of=%v", target.ID, duplicateOf)
-	}
-	sources := make([]*yeoul.Entity, 0, len(sourceIDs))
-	for _, sourceID := range sourceIDs {
-		if sourceID == targetID {
-			_ = closeEngine(ctx, eng)
-			return fmt.Errorf("entity merge source %s must not equal target %s", sourceID, targetID)
-		}
-		source, err := eng.GetEntity(ctx, sourceID)
-		if err != nil {
-			_ = closeEngine(ctx, eng)
-			return err
-		}
-		if source.SpaceID != target.SpaceID {
-			_ = closeEngine(ctx, eng)
-			return fmt.Errorf("entity merge source %s has a different space_id than target %s (source=%q, target=%q)", source.ID, target.ID, source.SpaceID, target.SpaceID)
-		}
-		if source.Namespace != target.Namespace {
-			_ = closeEngine(ctx, eng)
-			return fmt.Errorf("entity merge source %s has a different namespace than target %s (source=%q, target=%q)", source.ID, target.ID, source.Namespace, target.Namespace)
-		}
-		if source.Type != target.Type {
-			_ = closeEngine(ctx, eng)
-			return fmt.Errorf("entity merge source %s has a different type than target %s (source=%q, target=%q)", source.ID, target.ID, source.Type, target.Type)
-		}
-		sources = append(sources, source)
-	}
-
-	mergedFrom := make([]string, 0, len(sources))
-	aliases := append([]string{}, target.Aliases...)
-	for _, source := range sources {
-		mergedFrom = append(mergedFrom, source.ID)
-		aliases = append(aliases, source.CanonicalName)
-		aliases = append(aliases, source.Aliases...)
-		if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
-			ID:            source.ID,
-			SpaceID:       source.SpaceID,
-			Namespace:     source.Namespace,
-			Type:          source.Type,
-			CanonicalName: source.CanonicalName,
-			Aliases:       source.Aliases,
-			Metadata: mergeMaps(source.Metadata, map[string]any{
-				"duplicate_of": targetID,
-				"merge_reason": reason,
-				"merge_marked": time.Now().UTC().Format(time.RFC3339),
-				"merge_target": targetID,
-			}),
-		}); err != nil {
-			_ = closeEngine(ctx, eng)
-			return err
-		}
-	}
-	targetMeta := mergeMaps(target.Metadata, map[string]any{
-		"merged_from":  mergeStringSlices(anyStrings(target.Metadata["merged_from"]), mergedFrom),
-		"merge_reason": reason,
-		"merge_marked": time.Now().UTC().Format(time.RFC3339),
-	})
-	updated, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
-		ID:            target.ID,
-		SpaceID:       target.SpaceID,
-		Namespace:     target.Namespace,
-		Type:          target.Type,
-		CanonicalName: target.CanonicalName,
-		Aliases:       aliases,
-		Metadata:      targetMeta,
-	})
-	if err != nil {
-		_ = closeEngine(ctx, eng)
-		return err
-	}
-	if err := closeEngine(ctx, eng); err != nil {
 		return err
 	}
 	result := map[string]any{
@@ -688,4 +615,84 @@ Usage:
 	}
 	_, err = fmt.Fprintf(c.stdout, "marked duplicates %s -> %s\n", strings.Join(mergedFrom, ","), updated.ID)
 	return err
+}
+
+// mergeEntities validates every merge participant before writing, then commits
+// the duplicate markers and target aliases in one IngestBatch. A missing source
+// or a storage failure therefore leaves every entity, alias, and revision
+// unchanged instead of persisting a partial merge.
+func mergeEntities(ctx context.Context, eng yeoul.Engine, targetID string, sourceIDs []string, reason string) (*yeoul.Entity, []string, error) {
+	target, err := eng.GetEntity(ctx, targetID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if duplicateOf, ok := target.Metadata["duplicate_of"]; ok && fmt.Sprint(duplicateOf) != "" {
+		return nil, nil, fmt.Errorf("entity merge target %s must be a canonical entity (not a duplicate); duplicate_of=%v", target.ID, duplicateOf)
+	}
+	sources := make([]*yeoul.Entity, 0, len(sourceIDs))
+	for _, sourceID := range sourceIDs {
+		if sourceID == targetID {
+			return nil, nil, fmt.Errorf("entity merge source %s must not equal target %s", sourceID, targetID)
+		}
+		source, err := eng.GetEntity(ctx, sourceID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if source.SpaceID != target.SpaceID {
+			return nil, nil, fmt.Errorf("entity merge source %s has a different space_id than target %s (source=%q, target=%q)", source.ID, target.ID, source.SpaceID, target.SpaceID)
+		}
+		if source.Namespace != target.Namespace {
+			return nil, nil, fmt.Errorf("entity merge source %s has a different namespace than target %s (source=%q, target=%q)", source.ID, target.ID, source.Namespace, target.Namespace)
+		}
+		if source.Type != target.Type {
+			return nil, nil, fmt.Errorf("entity merge source %s has a different type than target %s (source=%q, target=%q)", source.ID, target.ID, source.Type, target.Type)
+		}
+		sources = append(sources, source)
+	}
+
+	markedAt := time.Now().UTC().Format(time.RFC3339)
+	mergedFrom := make([]string, 0, len(sources))
+	aliases := append([]string{}, target.Aliases...)
+	batch := yeoul.BatchInput{Entities: make([]yeoul.EntityInput, 0, len(sources)+1)}
+	for _, source := range sources {
+		mergedFrom = append(mergedFrom, source.ID)
+		aliases = append(aliases, source.CanonicalName)
+		aliases = append(aliases, source.Aliases...)
+		batch.Entities = append(batch.Entities, yeoul.EntityInput{
+			ID:            source.ID,
+			SpaceID:       source.SpaceID,
+			Namespace:     source.Namespace,
+			Type:          source.Type,
+			CanonicalName: source.CanonicalName,
+			Aliases:       source.Aliases,
+			Metadata: mergeMaps(source.Metadata, map[string]any{
+				"duplicate_of": targetID,
+				"merge_reason": reason,
+				"merge_marked": markedAt,
+				"merge_target": targetID,
+			}),
+		})
+	}
+	targetMeta := mergeMaps(target.Metadata, map[string]any{
+		"merged_from":  mergeStringSlices(anyStrings(target.Metadata["merged_from"]), mergedFrom),
+		"merge_reason": reason,
+		"merge_marked": markedAt,
+	})
+	batch.Entities = append(batch.Entities, yeoul.EntityInput{
+		ID:            target.ID,
+		SpaceID:       target.SpaceID,
+		Namespace:     target.Namespace,
+		Type:          target.Type,
+		CanonicalName: target.CanonicalName,
+		Aliases:       aliases,
+		Metadata:      targetMeta,
+	})
+	if _, err := eng.IngestBatch(ctx, batch); err != nil {
+		return nil, nil, err
+	}
+	updated, err := eng.GetEntity(ctx, target.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return updated, mergedFrom, nil
 }
