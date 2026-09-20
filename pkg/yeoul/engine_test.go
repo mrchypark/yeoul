@@ -2564,3 +2564,112 @@ func TestTimelineLifecycleDerivationStaysLinearInRevisions(t *testing.T) {
 			factCount, revisionCount, allocated, budget, allocated/int64(unsafe.Sizeof(FactRevision{})))
 	}
 }
+
+func TestSearchPaginationBoundsIncludedRecords(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	epA, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-a", Kind: "note", Content: "unrelated note a", Source: SourceInput{Kind: "note", ExternalRef: "a"}})
+	if err != nil {
+		t.Fatalf("ingest ep-a: %v", err)
+	}
+	epB, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-b", Kind: "note", Content: "unrelated note b", Source: SourceInput{Kind: "note", ExternalRef: "b"}})
+	if err != nil {
+		t.Fatalf("ingest ep-b: %v", err)
+	}
+	projectA, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:alpha", Type: "Project", CanonicalName: "Alpha"})
+	if err != nil {
+		t.Fatalf("upsert alpha: %v", err)
+	}
+	projectB, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:beta", Type: "Project", CanonicalName: "Beta"})
+	if err != nil {
+		t.Fatalf("upsert beta: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact-a", Predicate: "HAS_NEEDLE", SubjectID: projectA.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epA.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact-a: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact-b", Predicate: "HAS_NEEDLE", SubjectID: projectB.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epB.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact-b: %v", err)
+	}
+
+	include := Include{Provenance: true, SupportingEpisodes: true, RelatedEntities: true}
+	page1, err := eng.Search(ctx, SearchRequest{
+		QueryText: "shared needle value",
+		Types:     []string{"fact"},
+		Include:   include,
+		Page:      Page{Limit: 1},
+	})
+	if err != nil {
+		t.Fatalf("search page1: %v", err)
+	}
+	if len(page1.Hits) != 1 || page1.Hits[0].RecordID != "fact-a" {
+		t.Fatalf("expected page1 to return fact-a, got %#v", page1.Hits)
+	}
+	if len(page1.Included.Facts) != 1 || page1.Included.Facts[0].ID != "fact-a" {
+		t.Fatalf("expected page1 includes to be bounded to fact-a, got %#v", page1.Included.Facts)
+	}
+	if len(page1.Included.Episodes) != 1 || page1.Included.Episodes[0].ID != "ep-a" {
+		t.Fatalf("expected page1 includes to carry only ep-a, got %#v", page1.Included.Episodes)
+	}
+	if len(page1.Included.Entities) != 1 || page1.Included.Entities[0].ID != "project:alpha" {
+		t.Fatalf("expected page1 includes to carry only project:alpha, got %#v", page1.Included.Entities)
+	}
+	if page1.Meta.NextCursor == "" {
+		t.Fatal("expected a next cursor for page1")
+	}
+
+	page2, err := eng.Search(ctx, SearchRequest{
+		QueryText: "shared needle value",
+		Types:     []string{"fact"},
+		Include:   include,
+		Page:      Page{Limit: 1, Cursor: page1.Meta.NextCursor},
+	})
+	if err != nil {
+		t.Fatalf("search page2: %v", err)
+	}
+	if len(page2.Hits) != 1 || page2.Hits[0].RecordID != "fact-b" {
+		t.Fatalf("expected page2 to return fact-b, got %#v", page2.Hits)
+	}
+	if len(page2.Included.Facts) != 1 || page2.Included.Facts[0].ID != "fact-b" {
+		t.Fatalf("expected page2 includes to be bounded to fact-b, got %#v", page2.Included.Facts)
+	}
+	if len(page2.Included.Episodes) != 1 || page2.Included.Episodes[0].ID != "ep-b" {
+		t.Fatalf("expected page2 includes to carry only ep-b, got %#v", page2.Included.Episodes)
+	}
+
+	emptyPage, err := eng.Search(ctx, SearchRequest{
+		QueryText: "shared needle value",
+		Types:     []string{"fact"},
+		Include:   include,
+		Page:      Page{Limit: 1, Cursor: "offset:50"},
+	})
+	if err != nil {
+		t.Fatalf("search empty page: %v", err)
+	}
+	if len(emptyPage.Hits) != 0 {
+		t.Fatalf("expected empty page hits, got %#v", emptyPage.Hits)
+	}
+	if len(emptyPage.Included.Facts) != 0 || len(emptyPage.Included.Episodes) != 0 || len(emptyPage.Included.Entities) != 0 || len(emptyPage.Included.Sources) != 0 {
+		t.Fatalf("expected empty page includes, got %#v", emptyPage.Included)
+	}
+
+	lookupPage1, err := eng.LookupFacts(ctx, FactLookupRequest{
+		SubjectIDs: []string{projectA.ID, projectB.ID},
+		Include:    Include{Provenance: true, SupportingEpisodes: true, RelatedEntities: true},
+		Page:       Page{Limit: 1},
+	})
+	if err != nil {
+		t.Fatalf("lookup facts page1: %v", err)
+	}
+	if len(lookupPage1.Facts) != 1 || lookupPage1.Facts[0].ID != "fact-a" {
+		t.Fatalf("expected lookup page1 to return fact-a, got %#v", lookupPage1.Facts)
+	}
+	if len(lookupPage1.Included.Episodes) != 1 || lookupPage1.Included.Episodes[0].ID != "ep-a" {
+		t.Fatalf("expected lookup page1 includes bounded to ep-a, got %#v", lookupPage1.Included.Episodes)
+	}
+	if len(lookupPage1.Included.Facts) != 1 || lookupPage1.Included.Facts[0].ID != "fact-a" {
+		t.Fatalf("expected lookup page1 to include only fact-a, got %#v", lookupPage1.Included.Facts)
+	}
+}

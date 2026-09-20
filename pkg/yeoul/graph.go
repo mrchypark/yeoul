@@ -21,7 +21,6 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 
 	facts := make([]Fact, 0)
-	included := IncludedRecords{}
 	for _, fact := range e.facts {
 		factRecord := e.factVersionAt(fact, req.Temporal)
 		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal) {
@@ -40,8 +39,6 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 			continue
 		}
 		facts = append(facts, *factRecord)
-		included.Facts = append(included.Facts, *factRecord)
-		e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal)
 	}
 
 	sort.SliceStable(facts, func(i, j int) bool {
@@ -60,9 +57,7 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 		Facts: factPage,
 	}
 	resp.Meta.NextCursor = nextCursor
-	if req.Include.Provenance || req.Include.RelatedEntities || req.Include.SupportingEpisodes {
-		resp.Included = dedupeIncluded(included)
-	}
+	resp.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, factLookupHits(factPage), spaceID)
 	return resp, nil
 }
 
@@ -556,26 +551,87 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 	}, nil
 }
 
-func (e *engine) addFactSupport(included *IncludedRecords, fact Fact, scope ScopeFilter, temporal TemporalFilter) {
+// factLookupHits projects looked-up facts onto the hit shape used to assemble
+// page-scoped includes.
+func factLookupHits(facts []Fact) []SearchHit {
+	hits := make([]SearchHit, 0, len(facts))
+	for _, fact := range facts {
+		hits = append(hits, SearchHit{HitType: "fact", RecordID: fact.ID})
+	}
+	return hits
+}
+
+// assembleIncludes builds the IncludedRecords for the returned page only. It
+// selects the page first and assembles just the support reachable from that
+// page, so a small page cannot leak the support of unreturned hits or repeat it
+// on every page. Callers must not assemble includes for unreturned matches.
+func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal TemporalFilter, page []SearchHit, spaceID string) IncludedRecords {
+	if !include.Provenance && !include.SupportingEpisodes && !include.RelatedEntities && !include.Snippets {
+		return IncludedRecords{}
+	}
+	included := IncludedRecords{}
+	for _, hit := range page {
+		switch hit.HitType {
+		case "fact":
+			fact, ok := e.facts[hit.RecordID]
+			if !ok {
+				continue
+			}
+			version := e.factVersionAt(fact, temporal)
+			if version == nil || version.SpaceID != spaceID || !e.matchesScopeForFact(*version, scope, temporal) {
+				continue
+			}
+			included.Facts = append(included.Facts, *version)
+			e.addFactSupport(&included, *version, scope, temporal, spaceID)
+		case "episode":
+			episode, ok := e.episodes[hit.RecordID]
+			if !ok || episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, temporal) || !matchesScopeForEpisode(episode, scope, e.sources) {
+				continue
+			}
+			included.Episodes = append(included.Episodes, episode)
+			e.addEpisodeSource(&included, episode, temporal, spaceID)
+		case "entity":
+			entity, ok := e.entities[hit.RecordID]
+			if !ok {
+				continue
+			}
+			version := e.entityVersionAt(entity, temporal)
+			if version == nil || version.SpaceID != spaceID || entityMarkedDuplicate(*version) || !matchesEntityType(*version, scope.EntityTypes) {
+				continue
+			}
+			included.Entities = append(included.Entities, *version)
+		}
+	}
+	return dedupeIncluded(included)
+}
+
+// addFactSupport adds the subject/object entities and provenance episodes
+// reachable from a fact, honouring the request's scope and space.
+func (e *engine) addFactSupport(included *IncludedRecords, fact Fact, scope ScopeFilter, temporal TemporalFilter, spaceID string) {
 	if entity, ok := e.entities[fact.SubjectID]; ok {
-		if version := e.entityVersionAt(entity, temporal); version != nil && matchesEntityType(*version, scope.EntityTypes) {
+		if version := e.entityVersionAt(entity, temporal); version != nil && version.SpaceID == spaceID && !entityMarkedDuplicate(*version) && matchesEntityType(*version, scope.EntityTypes) {
 			included.Entities = append(included.Entities, *version)
 		}
 	}
 	if fact.ObjectID != "" {
 		if entity, ok := e.entities[fact.ObjectID]; ok {
-			if version := e.entityVersionAt(entity, temporal); version != nil && matchesEntityType(*version, scope.EntityTypes) {
+			if version := e.entityVersionAt(entity, temporal); version != nil && version.SpaceID == spaceID && !entityMarkedDuplicate(*version) && matchesEntityType(*version, scope.EntityTypes) {
 				included.Entities = append(included.Entities, *version)
 			}
 		}
 	}
 	for _, episodeID := range fact.SupportingEpisodeIDs {
-		if episode, ok := e.episodes[episodeID]; ok && episode.SpaceID == fact.SpaceID && e.episodeVisibleAt(episode, temporal) && matchesScopeForEpisode(episode, scope, e.sources) {
+		if episode, ok := e.episodes[episodeID]; ok && episode.SpaceID == fact.SpaceID && episode.SpaceID == spaceID && e.episodeVisibleAt(episode, temporal) && matchesScopeForEpisode(episode, scope, e.sources) {
 			included.Episodes = append(included.Episodes, episode)
-			if source, ok := e.sources[episode.SourceID]; ok && source.SpaceID == fact.SpaceID && source.SpaceID == episode.SpaceID && e.sourceVisibleAt(source, temporal) {
-				included.Sources = append(included.Sources, source)
-			}
+			e.addEpisodeSource(included, episode, temporal, spaceID)
 		}
+	}
+}
+
+// addEpisodeSource attaches an episode's source when it is visible in the space.
+func (e *engine) addEpisodeSource(included *IncludedRecords, episode Episode, temporal TemporalFilter, spaceID string) {
+	if source, ok := e.sources[episode.SourceID]; ok && source.SpaceID == spaceID && source.SpaceID == episode.SpaceID && e.sourceVisibleAt(source, temporal) {
+		included.Sources = append(included.Sources, source)
 	}
 }
 
