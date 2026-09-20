@@ -31,6 +31,24 @@ need_cmd curl
 
 export GH_TOKEN="${tap_token}"
 
+# version_gt <a> <b>
+# True when the dotted version <a> is strictly newer than <b>.
+version_gt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, ".")
+    nb = split(b, y, ".")
+    count = (na > nb) ? na : nb
+    for (i = 1; i <= count; i++) {
+      av = (i <= na) ? x[i] + 0 : 0
+      bv = (i <= nb) ? y[i] + 0 : 0
+      if (av != bv) {
+        if (av > bv) { exit 0 } else { exit 1 }
+      }
+    }
+    exit 1
+  }'
+}
+
 source_release_json="$(gh api "repos/${source_repo}/releases/tags/${tag}")"
 tap_repo_json="$(gh api "repos/${tap_repo}")"
 
@@ -104,6 +122,25 @@ tap_clone="${temp_dir}/tap"
 git clone "https://x-access-token:${tap_token}@github.com/${tap_repo}.git" "${tap_clone}" >/dev/null 2>&1
 
 mkdir -p "${tap_clone}/Formula"
+
+# A release job that started earlier can still finish after a newer tag was
+# published, and serialization alone does not stop that late job from writing
+# an older version. The formula only moves forward unless an operator asks for
+# an intentional rollback.
+formula_path="${tap_clone}/Formula/yeoul.rb"
+existing_version=""
+if [[ -f "${formula_path}" ]]; then
+  existing_version="$(sed -n 's/^[[:space:]]*version "\([^"]*\)".*/\1/p' "${formula_path}" | head -n1)"
+fi
+
+if [[ -n "${existing_version}" && "${existing_version}" != "${asset_version}" ]] && version_gt "${existing_version}" "${asset_version}"; then
+  if [[ "${HOMEBREW_ALLOW_VERSION_ROLLBACK:-0}" != "1" ]]; then
+    echo "${tap_repo} already publishes yeoul ${existing_version}; refusing to replace it with ${asset_version}" >&2
+    echo "set HOMEBREW_ALLOW_VERSION_ROLLBACK=1 to publish an intentional rollback" >&2
+    exit 1
+  fi
+  echo "publishing intentional rollback from yeoul ${existing_version} to ${asset_version}" >&2
+fi
 
 cat > "${tap_clone}/Formula/yeoul.rb" <<EOF
 class Yeoul < Formula
