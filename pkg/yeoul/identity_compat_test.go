@@ -156,3 +156,140 @@ func TestEpisodeReplayReusesBaseVersionSourceID(t *testing.T) {
 		t.Fatal("expected identical replay to return Created=false")
 	}
 }
+
+func TestStableKeyComparisonPreservesWhitespace(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	legacyID := legacyEntityID("", "Thing", "key")
+	e.mu.Lock()
+	e.entities[legacyID] = Entity{
+		ID:            legacyID,
+		SpaceID:       "default",
+		Type:          "Thing",
+		CanonicalName: "Display A",
+		Metadata:      map[string]any{"stable_key": "key"},
+		CreatedAt:     e.now(),
+		UpdatedAt:     e.now(),
+	}
+	e.mu.Unlock()
+
+	created, err := e.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "Padded", StableKey: " key "})
+	if err != nil {
+		t.Fatalf("create padded-key entity: %v", err)
+	}
+	if created.ID == legacyID {
+		t.Fatalf("expected a distinct ID for the padded key, got the legacy ID %q", legacyID)
+	}
+	stored, err := e.GetEntity(ctx, legacyID)
+	if err != nil {
+		t.Fatalf("get legacy entity: %v", err)
+	}
+	if stored.CanonicalName != "Display A" || metadataStableKey(stored.Metadata) != "key" {
+		t.Fatalf("expected the legacy identity to stay unchanged, got %#v", stored)
+	}
+
+	retry, err := e.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "Padded", StableKey: " key "})
+	if err != nil {
+		t.Fatalf("retry padded-key upsert: %v", err)
+	}
+	if retry.ID != created.ID {
+		t.Fatalf("expected the retry to reuse %q, got %q", created.ID, retry.ID)
+	}
+}
+
+func TestLegacyPaddedKeyRenameReusesStoredID(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	legacyID := legacyEntityID("", "Thing", " key ")
+	e.mu.Lock()
+	e.entities[legacyID] = Entity{
+		ID:            legacyID,
+		SpaceID:       "default",
+		Type:          "Thing",
+		CanonicalName: "Old",
+		Metadata:      map[string]any{"stable_key": " key "},
+		CreatedAt:     e.now(),
+		UpdatedAt:     e.now(),
+	}
+	e.mu.Unlock()
+
+	updated, err := e.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "New", StableKey: " key "})
+	if err != nil {
+		t.Fatalf("rename padded legacy entity: %v", err)
+	}
+	if updated.ID != legacyID {
+		t.Fatalf("expected the legacy padded ID %q, got %q", legacyID, updated.ID)
+	}
+}
+
+func TestBatchRejectsAmbiguousEntityReference(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	legacyID := legacyEntityID("", "Thing", "key")
+	e.mu.Lock()
+	e.entities[legacyID] = Entity{
+		ID:            legacyID,
+		SpaceID:       "default",
+		Type:          "Thing",
+		CanonicalName: "Display A",
+		Metadata:      map[string]any{"stable_key": "key"},
+		CreatedAt:     e.now(),
+		UpdatedAt:     e.now(),
+	}
+	e.mu.Unlock()
+	if _, err := e.IngestEpisode(ctx, EpisodeInput{
+		ID:      "ep-ambiguous",
+		Kind:    "note",
+		Content: "ambiguous",
+		Source:  SourceInput{Kind: "note", ExternalRef: "ambiguous"},
+	}); err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+
+	derived := EntityID("", "Thing", "key")
+	_, err := e.IngestBatch(ctx, BatchInput{
+		Entities: []EntityInput{
+			{Type: "Thing", CanonicalName: "Display A", StableKey: "key"},
+			{Type: "Thing", CanonicalName: "key"},
+		},
+		Facts: []FactInput{{
+			ID:                   "fact-ambiguous",
+			Predicate:            "HAS_SCOPE",
+			SubjectID:            derived,
+			ObjectID:             derived,
+			SupportingEpisodeIDs: []string{"ep-ambiguous"},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected the ambiguous batch reference to be rejected")
+	}
+	if _, lookupErr := e.GetFact(ctx, "fact-ambiguous"); lookupErr == nil {
+		t.Fatal("expected the rejected batch to write no fact")
+	}
+	stored, err := e.GetEntity(ctx, legacyID)
+	if err != nil {
+		t.Fatalf("get legacy entity: %v", err)
+	}
+	if stored.CanonicalName != "Display A" {
+		t.Fatalf("expected the legacy entity to stay unchanged, got %q", stored.CanonicalName)
+	}
+}
+
+func TestEpisodeReplayReusesSpaceQualifiedLegacySourceID(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	baseID := "src::team:note:same"
+	e.mu.Lock()
+	e.sources[baseID] = Source{ID: baseID, SpaceID: ":team", Kind: "note", ExternalRef: "same", CreatedAt: e.now()}
+	e.mu.Unlock()
+
+	result, err := e.IngestEpisode(ctx, EpisodeInput{
+		ID:      "ep-colon",
+		SpaceID: ":team",
+		Kind:    "note",
+		Content: "colon",
+		Source:  SourceInput{Kind: "note", ExternalRef: "same"},
+	})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	if result.SourceID != baseID {
+		t.Fatalf("expected the base-version source ID %q, got %q", baseID, result.SourceID)
+	}
+}

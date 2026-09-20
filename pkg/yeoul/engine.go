@@ -189,10 +189,18 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 				return err
 			}
 			result.EntityIDs = append(result.EntityIDs, item.ID)
-			if strings.TrimSpace(entity.ID) == "" {
-				derived := EntityID(entity.Namespace, entity.Type, firstNonEmpty(entity.StableKey, entity.CanonicalName))
-				referenceRewrites[derived] = item.ID
+			reference := strings.TrimSpace(entity.ID)
+			if reference == "" {
+				reference = EntityID(entity.Namespace, entity.Type, firstNonEmpty(entity.StableKey, entity.CanonicalName))
 			}
+			if existing, ok := referenceRewrites[reference]; ok && existing != item.ID {
+				return errorf(ErrLifecycleInvalid, "ambiguous entity reference in batch", map[string]any{
+					"reference":   reference,
+					"entity_id":   existing,
+					"conflict_id": item.ID,
+				}, nil)
+			}
+			referenceRewrites[reference] = item.ID
 		}
 		for _, fact := range input.Facts {
 			if strings.TrimSpace(fact.Predicate) == "" || strings.TrimSpace(fact.SubjectID) == "" || len(fact.SupportingEpisodeIDs) == 0 {
