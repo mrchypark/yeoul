@@ -483,9 +483,11 @@ Usage:
 	}
 
 	batch, err := eng.IngestBatch(ctx, yeoul.BatchInput{
-		Episodes: payload.Episodes,
-		Entities: payload.Entities,
-		Facts:    payload.Facts,
+		Episodes:        payload.Episodes,
+		Entities:        payload.Entities,
+		Facts:           payload.Facts,
+		EntityRevisions: payload.EntityRevisions,
+		FactRevisions:   payload.FactRevisions,
 	})
 	if err != nil {
 		_ = closeEngine(ctx, eng)
