@@ -85,9 +85,16 @@ func openStateStore(cfg Config) (stateStore, error) {
 	}
 
 	// Normalize the path before any ownership or marker lookup, so equivalent
-	// spellings (a trailing separator or a relative path) locate the same
-	// ownership file and the same migration marker instead of bypassing them.
+	// spellings (a trailing separator, a relative path, or a path reached
+	// through a symlinked directory) locate the same ownership file and the
+	// same migration marker instead of bypassing them.
 	databasePath, err := filepath.Abs(cfg.DatabasePath)
+	if err != nil {
+		return nil, errorf(ErrConfigInvalid, "resolve database path", map[string]any{
+			"database_path": cfg.DatabasePath,
+		}, err)
+	}
+	databasePath, err = resolveDatabasePathAliases(databasePath)
 	if err != nil {
 		return nil, errorf(ErrConfigInvalid, "resolve database path", map[string]any{
 			"database_path": cfg.DatabasePath,

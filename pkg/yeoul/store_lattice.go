@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 
@@ -60,7 +61,7 @@ func newLatticeStore(cfg Config) (stateStore, error) {
 	// read-only inspection first, so a database this build cannot read is
 	// rejected before any writable handle exists.
 	if !cfg.ReadOnly {
-		if err := inspectStateVersionBeforeWritableOpen(cfg.DatabasePath); err != nil {
+		if err := inspectStateVersionBeforeWritableOpen(cfg.DatabasePath, cfg.CreateIfMissing); err != nil {
 			return nil, err
 		}
 	}
@@ -247,11 +248,14 @@ func (s *latticeStore) Load() (*persistedState, error) {
 // writable open, and the caller decides whether the failure still leaves room
 // for the legacy conversion. Only a database that does not exist yet, or that
 // holds no application records and no version, is allowed through, because the
-// writable open is what creates or initializes it. That creation case is
-// inspected a second time, so a database that appeared in the window is
-// inspected instead of being handed to the writable open.
-func inspectStateVersionBeforeWritableOpen(databasePath string) error {
-	if err := inspectStateVersionOnce(databasePath); err != nil {
+// writable open is what creates or initializes it. createIfMissing carries the
+// caller's creation policy into the inspection, so an uninitialized path that
+// the writable open is about to initialize is not mistaken for a database whose
+// version could not be established. That creation case is inspected a second
+// time, so a database that appeared in the window is inspected instead of being
+// handed to the writable open.
+func inspectStateVersionBeforeWritableOpen(databasePath string, createIfMissing bool) error {
+	if err := inspectStateVersionOnce(databasePath, createIfMissing); err != nil {
 		return err
 	}
 	// The first inspection can only speak for the database as it was. The
@@ -262,24 +266,16 @@ func inspectStateVersionBeforeWritableOpen(databasePath string) error {
 	if writableOpenBarrier != nil {
 		writableOpenBarrier()
 	}
-	return inspectStateVersionOnce(databasePath)
+	return inspectStateVersionOnce(databasePath, createIfMissing)
 }
 
 // inspectStateVersionOnce returns the error that has to stop a writable open
 // when the database holds a persisted application-state version this build
 // cannot read, or when that version could not be established at all. A database
-// that does not exist yet, or that holds no records and no version, passes.
-func inspectStateVersionOnce(databasePath string) error {
-	if _, err := os.Stat(databasePath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// A database that does not exist yet has no persisted version to
-			// reject, and the writable open is the one that creates it.
-			return nil
-		}
-		return errorf(ErrStorageFailed, "inspect lattice database for state version", map[string]any{
-			"database_path": databasePath,
-		}, err)
-	}
+// that does not exist yet, or that holds no records and no version, passes when
+// the caller may create it, because the writable open is then the one that
+// creates or initializes it.
+func inspectStateVersionOnce(databasePath string, createIfMissing bool) error {
 	err := readStateVersionReadOnly(databasePath)
 	switch {
 	case err == nil:
@@ -295,11 +291,63 @@ func inspectStateVersionOnce(databasePath string) error {
 			"database_path": databasePath,
 			"reason":        "the application-state version could not be established before a writable open",
 		}, errors.Join(errLatticeStateVersionUnestablished, err))
+	case createIfMissing && latticeDatabaseUninitialized(databasePath):
+		// The path holds nothing the writable open could damage: it is missing,
+		// or it is a directory the native engine will initialize as an empty
+		// database. Deployment provisioning can create that directory ahead of
+		// the first open, and an interrupted creation can leave it behind, so
+		// both are the creation case rather than an unreadable database.
+		return nil
+	case latticeDatabaseUninitializedDirectory(databasePath):
+		// The directory holds no native database, but this open may not create
+		// one. A directory is not a legacy database either, because the legacy
+		// engine stores a single file, so the refusal is reported instead of
+		// deferring to a conversion that would replace a directory with a file.
+		return errorf(ErrStorageFailed, "lattice database is not initialized", map[string]any{
+			"database_path": databasePath,
+			"reason":        "the directory holds no database and this open may not create one",
+		}, errors.Join(errLatticeStateVersionUnestablished, err))
 	}
 	// The native engine could not open the file as a lattice database. The
 	// failure is reported as it stands so it cannot be discarded, while the
 	// caller may still convert a legacy database through the same failure.
 	return err
+}
+
+// latticeDatabaseUninitialized reports whether the path is a database the
+// native engine will initialize on a writable open with Create:true: a path
+// that does not exist, or a directory that holds no native database files.
+//
+// The native engine derives its state path from the directory, so a directory
+// without a state file is an empty database it will create. Anything else is
+// left to the caller: a directory that holds a state file is an existing
+// database whose version this build could not read, and a regular file is a
+// serialized database the native engine has to open itself.
+func latticeDatabaseUninitialized(databasePath string) bool {
+	info, err := os.Stat(databasePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(databasePath, "state.json"))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// latticeDatabaseUninitializedDirectory reports whether the path is an existing
+// directory that holds no native database. Such a directory is the creation
+// case for an open that may create, and a refusal for an open that may not:
+// the native engine reports it as a missing file, which is also how a database
+// this build cannot read is reported, so only the on-disk state tells the two
+// apart.
+func latticeDatabaseUninitializedDirectory(databasePath string) bool {
+	info, err := os.Stat(databasePath)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(databasePath, "state.json"))
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // readStateVersionReadOnly resolves the application-state version of an

@@ -69,6 +69,15 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 	if err != nil {
 		return nil, fmt.Errorf("resolve migration database path: %w", err)
 	}
+	// The ownership lock, the migration marker, and the native engine's own
+	// lock all have to name the same database. A path reached through a
+	// symlinked directory is one database to the engine but a second ownership
+	// namespace to Yeoul, so the aliases are resolved before any of them is
+	// used.
+	databasePath, err = resolveDatabasePathAliases(databasePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve migration database path: %w", err)
+	}
 	// Ownership spans loading the source, building and verifying the staging
 	// database, the marker phases, and the cutover, so no writer can commit
 	// records the snapshot misses and no competing migrator can move the file
@@ -493,7 +502,7 @@ func recoverDatabaseMigration(databasePath string) error {
 	if err := json.Unmarshal(data, &marker); err != nil {
 		return fmt.Errorf("decode migration marker: %w", err)
 	}
-	if marker.DatabasePath != databasePath || marker.BackupPath == "" || marker.StagingPath == "" {
+	if !sameDatabasePath(marker.DatabasePath, databasePath) || marker.BackupPath == "" || marker.StagingPath == "" {
 		return fmt.Errorf("migration marker does not match database path %q", databasePath)
 	}
 	if err := validateDatabaseMigrationPaths(marker); err != nil {
