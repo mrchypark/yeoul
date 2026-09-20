@@ -2171,3 +2171,311 @@ func TestEngineCloseJoinsStoreCloseError(t *testing.T) {
 		t.Fatal("expected the store close to be attempted")
 	}
 }
+
+// neighborhoodFixture builds a small two-space graph: an entity, a fact, and
+// one episode per space.
+func neighborhoodFixture(t *testing.T, eng Engine) (factID, episodeID string) {
+	t.Helper()
+	ctx := context.Background()
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-graph", Kind: "note", Content: "graph fixture", Source: SourceInput{Kind: "note", ExternalRef: "graph"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:graph", Type: "Thing", CanonicalName: "Graph"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	fact, err := eng.AssertFact(ctx, FactInput{ID: "fact:graph", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "graph", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+	return fact.ID, episode.EpisodeID
+}
+
+func assertNoDanglingEdges(t *testing.T, resp *NeighborhoodResponse) {
+	t.Helper()
+	present := make(map[string]struct{}, len(resp.Nodes))
+	for _, node := range resp.Nodes {
+		present[node.ID] = struct{}{}
+	}
+	for _, edge := range resp.Edges {
+		if _, ok := present[edge.FromID]; !ok {
+			t.Fatalf("edge %s from %s has no node in response: %#v", edge.ID, edge.FromID, resp.Nodes)
+		}
+		if _, ok := present[edge.ToID]; !ok {
+			t.Fatalf("edge %s to %s has no node in response: %#v", edge.ID, edge.ToID, resp.Nodes)
+		}
+	}
+}
+
+func TestNeighborhoodMaxNodesKeepsEdgesWithinReturnedNodes(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	factID, _ := neighborhoodFixture(t, eng)
+
+	for _, maxNodes := range []int{1, 2, 3} {
+		resp, err := eng.Neighborhood(ctx, NeighborhoodRequest{AnchorIDs: []string{factID}, MaxHops: 2, MaxNodes: maxNodes})
+		if err != nil {
+			t.Fatalf("neighborhood max_nodes=%d: %v", maxNodes, err)
+		}
+		if len(resp.Nodes) > maxNodes {
+			t.Fatalf("max_nodes=%d returned %d nodes: %#v", maxNodes, len(resp.Nodes), resp.Nodes)
+		}
+		assertNoDanglingEdges(t, resp)
+		if !resp.Truncated {
+			t.Fatalf("max_nodes=%d should report truncation: %#v", maxNodes, resp)
+		}
+	}
+}
+
+func TestNeighborhoodMaxNodesKeepsAnchor(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	factID, _ := neighborhoodFixture(t, eng)
+
+	resp, err := eng.Neighborhood(ctx, NeighborhoodRequest{AnchorIDs: []string{factID}, MaxHops: 2, MaxNodes: 1})
+	if err != nil {
+		t.Fatalf("neighborhood: %v", err)
+	}
+	if len(resp.Nodes) != 1 || resp.Nodes[0].ID != factID {
+		t.Fatalf("max_nodes=1 should keep the anchor only, got %#v", resp.Nodes)
+	}
+	if len(resp.Edges) != 0 {
+		t.Fatalf("max_nodes=1 should drop edges whose endpoints are gone, got %#v", resp.Edges)
+	}
+}
+
+func TestNeighborhoodExcludesFilteredSupportWithoutPhantomNodes(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	permitted, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-permitted", Kind: "note", Content: "permitted support", Source: SourceInput{Kind: "note", ExternalRef: "permitted"}})
+	if err != nil {
+		t.Fatalf("ingest permitted: %v", err)
+	}
+	excluded, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-excluded", Kind: "chat", Content: "excluded support", Source: SourceInput{Kind: "chat", ExternalRef: "excluded"}})
+	if err != nil {
+		t.Fatalf("ingest excluded: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:multi", Type: "Thing", CanonicalName: "Multi"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	fact, err := eng.AssertFact(ctx, FactInput{ID: "fact:multi", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "multi", SupportingEpisodeIDs: []string{permitted.EpisodeID, excluded.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+
+	resp, err := eng.Neighborhood(ctx, NeighborhoodRequest{
+		AnchorIDs: []string{fact.ID},
+		MaxHops:   2,
+		Scope:     ScopeFilter{SourceKinds: []string{"note"}},
+	})
+	if err != nil {
+		t.Fatalf("neighborhood: %v", err)
+	}
+	for _, node := range resp.Nodes {
+		if node.ID == excluded.EpisodeID {
+			t.Fatalf("excluded support node leaked into neighborhood: %#v", resp.Nodes)
+		}
+		if node.ID == "" {
+			t.Fatalf("neighborhood materialized an empty phantom node: %#v", resp.Nodes)
+		}
+	}
+	assertNoDanglingEdges(t, resp)
+}
+
+func TestAssertFactRejectsWhitespacePaddedSupportingEpisodeID(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	// The padded episode id is stored verbatim, so a fact that references the
+	// padded spelling used to validate against it and then store the trimmed id,
+	// silently retargeting support to a different episode.
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: " ep-padded ", Kind: "note", Content: "padded", Source: SourceInput{Kind: "note", ExternalRef: "padded"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:padded", Type: "Thing", CanonicalName: "Padded"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+
+	_, err = eng.AssertFact(ctx, FactInput{ID: "fact:padded", Predicate: "HAS_STATE", SubjectID: entity.ID, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err == nil {
+		t.Fatal("expected padded supporting episode id to be rejected")
+	}
+	var yeoulErr *Error
+	if !errors.As(err, &yeoulErr) || yeoulErr.Code != ErrInputInvalid {
+		t.Fatalf("expected YEOUL_INPUT_INVALID, got %v", err)
+	}
+}
+
+func TestAssertFactRejectsWhitespaceOnlySupportingEpisodeID(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	// A whitespace-only episode id can be ingested verbatim; referencing it used
+	// to validate and then store an empty support list.
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "   ", Kind: "note", Content: "blank", Source: SourceInput{Kind: "note", ExternalRef: "blank"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:blank", Type: "Thing", CanonicalName: "Blank"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+
+	_, err = eng.AssertFact(ctx, FactInput{ID: "fact:blank", Predicate: "HAS_STATE", SubjectID: entity.ID, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err == nil {
+		t.Fatal("expected whitespace-only supporting episode id to be rejected")
+	}
+	var yeoulErr *Error
+	if !errors.As(err, &yeoulErr) || yeoulErr.Code != ErrInputInvalid {
+		t.Fatalf("expected YEOUL_INPUT_INVALID, got %v", err)
+	}
+}
+
+func TestAssertFactRejectsSupportingEpisodeIDThatRedirectsAcrossSpaces(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	// Space A owns the trimmed id; space B owns a padded variant. A fact in B
+	// referencing the padded id must not validate and then store the trimmed id,
+	// which would point support at space A's episode.
+	if _, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep", SpaceID: "space-a", Kind: "note", Content: "trimmed", Source: SourceInput{Kind: "note", ExternalRef: "a"}}); err != nil {
+		t.Fatalf("ingest space-a episode: %v", err)
+	}
+	padded, err := eng.IngestEpisode(ctx, EpisodeInput{ID: " ep ", SpaceID: "space-b", Kind: "note", Content: "padded", Source: SourceInput{Kind: "note", ExternalRef: "b"}})
+	if err != nil {
+		t.Fatalf("ingest space-b episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:space-b", SpaceID: "space-b", Type: "Thing", CanonicalName: "Space B"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+
+	_, err = eng.AssertFact(ctx, FactInput{ID: "fact:space-b", SpaceID: "space-b", Predicate: "HAS_STATE", SubjectID: entity.ID, SupportingEpisodeIDs: []string{padded.EpisodeID}})
+	if err == nil {
+		t.Fatal("expected cross-space redirecting support id to be rejected")
+	}
+	var yeoulErr *Error
+	if !errors.As(err, &yeoulErr) || yeoulErr.Code != ErrInputInvalid {
+		t.Fatalf("expected YEOUL_INPUT_INVALID, got %v", err)
+	}
+}
+
+func TestProvenanceSkipsSupportingEpisodeFromAnotherSpace(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep:prov", Kind: "note", Content: "prov", Source: SourceInput{Kind: "note", ExternalRef: "prov"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:prov", Type: "Thing", CanonicalName: "Prov"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	fact, err := eng.AssertFact(ctx, FactInput{ID: "fact:prov", Predicate: "HAS_STATE", SubjectID: entity.ID, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+
+	// Simulate a legacy cross-space reference that bypassed ingress validation.
+	rawEng := eng.(*engine)
+	rawEng.mu.Lock()
+	stored := rawEng.facts[fact.ID]
+	stored.SupportingEpisodeIDs = []string{episode.EpisodeID}
+	rawEng.facts[fact.ID] = stored
+	foreign := rawEng.episodes[episode.EpisodeID]
+	foreign.SpaceID = "other"
+	rawEng.episodes[episode.EpisodeID] = foreign
+	rawEng.mu.Unlock()
+
+	prov, err := eng.Provenance(ctx, ProvenanceRequest{Kind: "fact", ID: fact.ID, MaxDepth: 2})
+	if err != nil {
+		t.Fatalf("provenance: %v", err)
+	}
+	if provenanceHasNode(prov.Nodes, episode.EpisodeID) {
+		t.Fatalf("expected cross-space supporting episode to be excluded, got %#v", prov.Nodes)
+	}
+}
+
+func TestTimelineRetractionKeepsEarlierSupersession(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-lifecycle", Kind: "note", Content: "lifecycle", Source: SourceInput{Kind: "note", ExternalRef: "lifecycle"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:lifecycle", Type: "Thing", CanonicalName: "Lifecycle"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	factA, err := eng.AssertFact(ctx, FactInput{ID: "fact:a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert a: %v", err)
+	}
+	if _, err := eng.SupersedeFact(ctx, factA.ID, FactInput{ID: "fact:b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "b", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "replaced"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if _, err := eng.RetractFact(ctx, factA.ID, "reverted"); err != nil {
+		t.Fatalf("retract: %v", err)
+	}
+
+	timeline, err := eng.Timeline(ctx, TimelineRequest{AnchorIDs: []string{entity.ID}})
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	if !timelineHasEvent(timeline.Events, "evt:"+factA.ID+":created") {
+		t.Fatalf("expected fact creation event, got %#v", timeline.Events)
+	}
+	if !timelineHasEvent(timeline.Events, "evt:"+factA.ID+":superseded") {
+		t.Fatalf("expected supersession to survive later retraction, got %#v", timeline.Events)
+	}
+	if !timelineHasEvent(timeline.Events, "evt:"+factA.ID+":retracted") {
+		t.Fatalf("expected retraction event, got %#v", timeline.Events)
+	}
+
+	// The as_of prefix must still expose the supersession before the retraction.
+	var supersededAt, retractedAt time.Time
+	for _, event := range timeline.Events {
+		switch event.EventID {
+		case "evt:" + factA.ID + ":superseded":
+			supersededAt = event.Timestamp
+		case "evt:" + factA.ID + ":retracted":
+			retractedAt = event.Timestamp
+		}
+	}
+	if supersededAt.IsZero() || retractedAt.IsZero() || supersededAt.After(retractedAt) {
+		t.Fatalf("expected supersession before retraction, got superseded=%s retracted=%s", supersededAt, retractedAt)
+	}
+	asOf := supersededAt
+	prefix, err := eng.Timeline(ctx, TimelineRequest{AnchorIDs: []string{entity.ID}, Temporal: TemporalFilter{AsOf: &asOf}})
+	if err != nil {
+		t.Fatalf("timeline as_of: %v", err)
+	}
+	if !timelineHasEvent(prefix.Events, "evt:"+factA.ID+":superseded") || timelineHasEvent(prefix.Events, "evt:"+factA.ID+":retracted") {
+		t.Fatalf("expected as_of prefix to keep supersession and drop retraction, got %#v", prefix.Events)
+	}
+}

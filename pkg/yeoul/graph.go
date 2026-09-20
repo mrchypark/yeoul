@@ -83,7 +83,16 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 	addNode := func(node GraphNode) {
 		nodeMap[node.ID] = node
 	}
+	// Edges are only materialized between nodes that survived filtering. Support
+	// and reference edges can point at excluded, invisible, or other-space
+	// records, and keeping those edges would let traversal reach phantom nodes.
 	addEdge := func(edge GraphEdge) {
+		if _, ok := nodeMap[edge.FromID]; !ok {
+			return
+		}
+		if _, ok := nodeMap[edge.ToID]; !ok {
+			return
+		}
 		edgeMap[edge.ID] = edge
 		adjacency[edge.FromID] = append(adjacency[edge.FromID], edge)
 		adjacency[edge.ToID] = append(adjacency[edge.ToID], edge)
@@ -122,9 +131,7 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 			addEdge(GraphEdge{ID: "edge:" + factRecord.ID + ":object", Type: "OBJECT", FromID: factRecord.ID, ToID: factRecord.ObjectID})
 		}
 		for _, episodeID := range factRecord.SupportingEpisodeIDs {
-			if _, ok := e.episodes[episodeID]; ok {
-				addEdge(GraphEdge{ID: "edge:" + factRecord.ID + ":" + episodeID, Type: "ASSERTS", FromID: episodeID, ToID: factRecord.ID})
-			}
+			addEdge(GraphEdge{ID: "edge:" + factRecord.ID + ":" + episodeID, Type: "ASSERTS", FromID: episodeID, ToID: factRecord.ID})
 		}
 	}
 
@@ -160,6 +167,9 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 			if nextID == current {
 				nextID = edge.ToID
 			}
+			if _, ok := nodeMap[nextID]; !ok {
+				continue
+			}
 			if _, seen := dist[nextID]; seen {
 				continue
 			}
@@ -168,23 +178,49 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 		}
 	}
 
-	nodes := make([]GraphNode, 0, len(reachableNodes))
+	type reachableCandidate struct {
+		node GraphNode
+		dist int
+	}
+	candidates := make([]reachableCandidate, 0, len(reachableNodes))
 	for id := range reachableNodes {
-		node := nodeMap[id]
+		node, ok := nodeMap[id]
+		if !ok {
+			continue
+		}
 		if len(req.NodeTypes) > 0 && !slices.Contains(req.NodeTypes, node.Type) {
 			continue
 		}
-		nodes = append(nodes, node)
+		candidates = append(candidates, reachableCandidate{node: node, dist: dist[id]})
+	}
+	// Anchors and near nodes are selected first so that max_nodes cannot drop the
+	// anchor a caller started from.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].dist == candidates[j].dist {
+			return candidates[i].node.ID < candidates[j].node.ID
+		}
+		return candidates[i].dist < candidates[j].dist
+	})
+	truncated := false
+	if req.MaxNodes > 0 && len(candidates) > req.MaxNodes {
+		candidates = candidates[:req.MaxNodes]
+		truncated = true
+	}
+
+	nodes := make([]GraphNode, 0, len(candidates))
+	keptNodes := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		nodes = append(nodes, candidate.node)
+		keptNodes[candidate.node.ID] = struct{}{}
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 
-	keptNodes := make(map[string]struct{}, len(nodes))
-	for _, node := range nodes {
-		keptNodes[node.ID] = struct{}{}
-	}
 	edges := make([]GraphEdge, 0, len(reachableEdges))
 	for id := range reachableEdges {
-		edge := edgeMap[id]
+		edge, ok := edgeMap[id]
+		if !ok {
+			continue
+		}
 		if _, ok := keptNodes[edge.FromID]; !ok {
 			continue
 		}
@@ -196,9 +232,10 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
 
 	return &NeighborhoodResponse{
-		Meta:  newQueryMeta(req.Meta.SpaceID, e.now()),
-		Nodes: limitNodes(nodes, req.MaxNodes),
-		Edges: edges,
+		Meta:      newQueryMeta(req.Meta.SpaceID, e.now()),
+		Nodes:     nodes,
+		Edges:     edges,
+		Truncated: truncated,
 	}, nil
 }
 
@@ -257,31 +294,11 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 		if timelineEventVisible(createdEvent, temporal) {
 			addIfAllowed(createdEvent)
 		}
-		if factRecord.Status == factStatusSuperseded {
-			event := TimelineEvent{
-				EventID:    "evt:" + factRecord.ID + ":superseded",
-				EventType:  "fact_superseded",
-				RecordType: "fact",
-				RecordID:   factRecord.ID,
-				Timestamp:  factRecord.UpdatedAt,
-				Summary:    factRecord.Predicate,
+		for _, event := range e.factLifecycleEvents(*factRecord, temporal) {
+			if !timelineEventVisible(event, temporal) {
+				continue
 			}
-			if timelineEventVisible(event, temporal) {
-				addIfAllowed(event)
-			}
-		}
-		if factRecord.Status == factStatusRetracted {
-			event := TimelineEvent{
-				EventID:    "evt:" + factRecord.ID + ":retracted",
-				EventType:  "fact_retracted",
-				RecordType: "fact",
-				RecordID:   factRecord.ID,
-				Timestamp:  chooseTime(factRecord.RetractedAt, factRecord.UpdatedAt),
-				Summary:    factRecord.RetractionReason,
-			}
-			if timelineEventVisible(event, temporal) {
-				addIfAllowed(event)
-			}
+			addIfAllowed(event)
 		}
 	}
 
@@ -307,6 +324,63 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 		},
 		Events: eventPage,
 	}, nil
+}
+
+// factLifecycleEvents derives a fact's supersede and retract events from its
+// append-only revisions. Deriving them from revisions instead of the fact's
+// current status keeps earlier transitions visible: retracting a superseded
+// fact must not erase the supersession from the timeline.
+func (e *engine) factLifecycleEvents(fact Fact, filter TemporalFilter) []TimelineEvent {
+	revisions := make([]FactRevision, 0, len(e.factRevisions))
+	for _, revision := range e.factRevisions {
+		if revision.FactID == fact.ID {
+			revisions = append(revisions, revision)
+		}
+	}
+	if len(revisions) == 0 {
+		// Facts loaded from state without revisions fall back to their current
+		// status so legacy stores keep reporting lifecycle events.
+		revisions = append(revisions, newFactRevision("", fact, "", fact.UpdatedAt))
+	}
+	sort.Slice(revisions, func(i, j int) bool {
+		if revisions[i].TxTime.Equal(revisions[j].TxTime) {
+			return revisions[i].ID < revisions[j].ID
+		}
+		return revisions[i].TxTime.Before(revisions[j].TxTime)
+	})
+
+	events := make([]TimelineEvent, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	emit := func(suffix, eventType, summary string, at time.Time) {
+		if at.IsZero() {
+			return
+		}
+		if _, ok := seen[suffix]; ok {
+			return
+		}
+		seen[suffix] = struct{}{}
+		events = append(events, TimelineEvent{
+			EventID:    "evt:" + fact.ID + ":" + suffix,
+			EventType:  eventType,
+			RecordType: "fact",
+			RecordID:   fact.ID,
+			Timestamp:  at,
+			Summary:    summary,
+		})
+	}
+
+	for _, revision := range revisions {
+		if !e.factVisibleAt(revision.toFact(), filter) {
+			continue
+		}
+		switch revision.Status {
+		case factStatusSuperseded:
+			emit("superseded", "fact_superseded", revision.Predicate, revision.UpdatedAt)
+		case factStatusRetracted:
+			emit("retracted", "fact_retracted", revision.RetractionReason, chooseTime(revision.RetractedAt, revision.UpdatedAt))
+		}
+	}
+	return events
 }
 
 func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*ProvenanceResponse, error) {
@@ -349,7 +423,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		nodes = append(nodes, root)
 		for _, episodeID := range factRecord.SupportingEpisodeIDs {
 			episode, ok := e.episodes[episodeID]
-			if !ok || !e.episodeVisibleAt(episode, req.Temporal) {
+			if !ok || episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, req.Temporal) {
 				continue
 			}
 			if !addNode(ProvenanceNode{ID: episode.ID, Type: "Episode", Label: episode.Kind}, 1) {
@@ -421,7 +495,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 			}
 			for _, episodeID := range factRecord.SupportingEpisodeIDs {
 				episode, ok := e.episodes[episodeID]
-				if !ok || !e.episodeVisibleAt(episode, req.Temporal) {
+				if !ok || episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, req.Temporal) {
 					continue
 				}
 				if addNode(ProvenanceNode{ID: episode.ID, Type: "Episode", Label: episode.Kind}, 2) {
@@ -444,7 +518,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		root.Label = episode.Kind
 		nodes = append(nodes, root)
 		if source, ok := e.sources[episode.SourceID]; ok {
-			if addNode(ProvenanceNode{ID: source.ID, Type: "Source", Label: source.Kind}, 1) {
+			if source.SpaceID == spaceID && addNode(ProvenanceNode{ID: source.ID, Type: "Source", Label: source.Kind}, 1) {
 				addEdge(ProvenanceEdge{ID: "prov:" + episode.ID + ":" + source.ID, Type: "FROM_SOURCE", FromID: episode.ID, ToID: source.ID}, 1)
 			}
 		}
@@ -579,13 +653,6 @@ func dedupeProvEdges(items []ProvenanceEdge) []ProvenanceEdge {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
-}
-
-func limitNodes(nodes []GraphNode, max int) []GraphNode {
-	if max <= 0 || max >= len(nodes) {
-		return nodes
-	}
-	return nodes[:max]
 }
 
 func newQueryMeta(spaceID string, now time.Time) QueryResponseMeta {
