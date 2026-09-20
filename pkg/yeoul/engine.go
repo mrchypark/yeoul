@@ -411,7 +411,19 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 			return nil, errorf(ErrEntityNotFound, "object entity not found in space", map[string]any{"object_id": input.ObjectID, "space_id": spaceID}, nil)
 		}
 	}
+	// Supporting episode IDs are stored verbatim, so validation must run against
+	// that exact representation. Rejecting non-canonical IDs keeps a reference
+	// from silently retargeting another episode or collapsing to an empty list.
+	supportingEpisodeIDs := make([]string, 0, len(input.SupportingEpisodeIDs))
+	seenEpisodeIDs := make(map[string]struct{}, len(input.SupportingEpisodeIDs))
 	for _, episodeID := range input.SupportingEpisodeIDs {
+		if episodeID == "" || strings.TrimSpace(episodeID) != episodeID {
+			return nil, errorf(ErrInputInvalid, "supporting episode id must not be empty or padded with whitespace", map[string]any{"episode_id": episodeID}, nil)
+		}
+		if _, ok := seenEpisodeIDs[episodeID]; ok {
+			continue
+		}
+		seenEpisodeIDs[episodeID] = struct{}{}
 		episode, ok := e.episodes[episodeID]
 		if !ok {
 			return nil, errorf(ErrInputInvalid, "supporting episode not found", map[string]any{"episode_id": episodeID}, nil)
@@ -419,6 +431,10 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 		if episode.SpaceID != spaceID {
 			return nil, errorf(ErrInputInvalid, "supporting episode not found in space", map[string]any{"episode_id": episodeID, "space_id": spaceID}, nil)
 		}
+		supportingEpisodeIDs = append(supportingEpisodeIDs, episodeID)
+	}
+	if len(supportingEpisodeIDs) == 0 {
+		return nil, errorf(ErrInputInvalid, "supporting_episode_ids must contain at least one episode", map[string]any{"field": "supporting_episode_ids"}, nil)
 	}
 
 	now := e.now()
@@ -471,7 +487,7 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 		ObservedAt:           input.ObservedAt,
 		CreatedAt:            now,
 		UpdatedAt:            now,
-		SupportingEpisodeIDs: dedupeStrings(input.SupportingEpisodeIDs),
+		SupportingEpisodeIDs: supportingEpisodeIDs,
 		Metadata:             cloneAnyMap(input.Metadata),
 	}
 	if !allowLifecycleFields && cardinality == factCardinalityOne {

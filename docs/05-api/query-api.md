@@ -319,9 +319,10 @@ type GraphEdge struct {
 }
 
 type NeighborhoodResponse struct {
-    Meta  QueryResponseMeta `json:"meta"`
-    Nodes []GraphNode       `json:"nodes"`
-    Edges []GraphEdge       `json:"edges"`
+    Meta      QueryResponseMeta `json:"meta"`
+    Nodes     []GraphNode       `json:"nodes"`
+    Edges     []GraphEdge       `json:"edges"`
+    Truncated bool              `json:"truncated,omitempty"`
 }
 ```
 
@@ -330,6 +331,7 @@ type NeighborhoodResponse struct {
 - `max_hops` defaults to `1`.
 - `max_hops` must be capped by the implementation to prevent explosive expansions.
 - `edge_types` and `node_types` are allow-lists.
+- `max_nodes` selects the final node set first (anchors and nearest hops win), then filters edges, so every returned edge has both endpoints in `nodes`. `truncated` reports whether `max_nodes` dropped nodes.
 - Neighborhood is a graph context API, not a graph analytics API.
 
 ## Family 5: Timeline Query

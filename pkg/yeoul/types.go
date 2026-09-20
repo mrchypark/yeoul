@@ -388,9 +388,10 @@ type GraphEdge struct {
 }
 
 type NeighborhoodResponse struct {
-	Meta  QueryResponseMeta `json:"meta"`
-	Nodes []GraphNode       `json:"nodes"`
-	Edges []GraphEdge       `json:"edges"`
+	Meta      QueryResponseMeta `json:"meta"`
+	Nodes     []GraphNode       `json:"nodes"`
+	Edges     []GraphEdge       `json:"edges"`
+	Truncated bool              `json:"truncated,omitempty"`
 }
 
 type TimelineRequest struct {
