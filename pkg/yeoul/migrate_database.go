@@ -426,9 +426,10 @@ func discardUnpublishedMigrationStaging(markerPath, stagingPath string) {
 
 // cleanupAbandonedMigrationStaging removes the staging database only when the
 // protocol has no further use for it: the on-disk marker must still record the
-// prepared phase (so no installation was published) and the legacy set must be
-// back in place. The marker is removed before the staging cleanup, so a crash
-// never leaves a marker that points at deleted staging data.
+// prepared phase (so no installation was published), the legacy set must be
+// back in place, and the restored database must be readable. The marker is
+// removed before the staging cleanup, so a crash never leaves a marker that
+// points at deleted staging data.
 func cleanupAbandonedMigrationStaging(marker databaseMigrationMarker, markerPath string) {
 	if marker.StagingPath == "" || marker.Phase != migrationPhasePrepared {
 		return
@@ -437,9 +438,10 @@ func cleanupAbandonedMigrationStaging(marker databaseMigrationMarker, markerPath
 		return
 	}
 	// The staging copy and the marker are recovery inputs whenever any member
-	// of the legacy set is still stranded in the backup namespace, so cleanup
-	// only runs once the complete set is verifiably back at the live path.
-	restored, err := legacyDatabaseSetFullyRestored(marker)
+	// of the legacy set is still stranded in the backup namespace, or the live
+	// path does not hold a database that can be read back, so cleanup only runs
+	// once the complete set is verifiably restored.
+	restored, err := legacyDatabaseSetVerifiablyRestored(marker)
 	if err != nil || !restored {
 		return
 	}
@@ -486,6 +488,53 @@ func legacyDatabaseSetFullyRestored(marker databaseMigrationMarker) (bool, error
 		}
 	}
 	return true, nil
+}
+
+// legacyDatabaseSetVerifiablyRestored reports whether the legacy set is fully
+// back at its original paths and the restored main database can be read back.
+// Every member being visible is not evidence that the rollback restored a
+// database: a failed or partial restoration can leave a file at the live path
+// that no reader can open, and discarding the verified staging copy on that
+// evidence would destroy the only readable copy of the converted data.
+func legacyDatabaseSetVerifiablyRestored(marker databaseMigrationMarker) (bool, error) {
+	restored, err := legacyDatabaseSetFullyRestored(marker)
+	if err != nil || !restored {
+		return false, err
+	}
+	return legacyDatabaseReadable(marker.DatabasePath), nil
+}
+
+// legacyDatabaseReadable reports whether the path holds a legacy database that
+// the migration reader can open and load. A present file cannot be told apart
+// from the leftover of an interrupted write by its name alone, so the protocol
+// treats a successful read as the evidence that a restoration completed.
+func legacyDatabaseReadable(databasePath string) bool {
+	store, err := newLadybugStore(Config{Driver: StorageDriverLadybug, DatabasePath: databasePath, ReadOnly: true})
+	if err != nil {
+		return false
+	}
+	_, loadErr := store.Load()
+	closeErr := store.Close()
+	return loadErr == nil && closeErr == nil
+}
+
+// migrationLiveDatabaseReadable reports whether the live path holds a database
+// that can be read back: either the restored legacy database or the converted
+// database an installation already published. Recovery only clears the
+// migration state once one of them is readable, so a live path that an
+// interrupted rollback left unreadable keeps the marker and the verified
+// staging copy instead of discarding the remaining recovery input.
+func migrationLiveDatabaseReadable(databasePath string) bool {
+	if legacyDatabaseReadable(databasePath) {
+		return true
+	}
+	store, err := newLatticeStore(Config{Driver: StorageDriverLattice, DatabasePath: databasePath, ReadOnly: true})
+	if err != nil {
+		return false
+	}
+	_, loadErr := store.Load()
+	closeErr := store.Close()
+	return loadErr == nil && closeErr == nil
 }
 
 // migrationMarkerRecordsPhase reports whether the on-disk marker records the
@@ -716,12 +765,25 @@ func recoverDatabaseMigration(databasePath string) error {
 			if partial {
 				return restoreLegacyDatabaseSet(marker, markerPath)
 			}
-			// Nothing is left in the backup namespace, so the live database is
-			// the original legacy database and the abandoned staging copy can be
-			// discarded. The visible set may still be the product of an
-			// unsynced rollback from the previous process, so flush it before
-			// unlinking the marker: otherwise a power loss could preserve the
-			// marker removal while reverting the restoration it depends on.
+			// Nothing is left in the backup namespace, so the live path holds
+			// either the original legacy database or the converted database an
+			// installation already published, and the abandoned staging copy can
+			// be discarded. A name that survived the previous process is not
+			// proof that the rollback restored a database: when the live path
+			// cannot be read back, the verified staging copy is the only
+			// remaining readable artifact, so keep the marker and the staging
+			// copy instead of discarding them on the strength of a file that
+			// only exists.
+			if !migrationLiveDatabaseReadable(marker.DatabasePath) {
+				return errorf(ErrStorageFailed, "migration is prepared but the live database is not readable", map[string]any{
+					"database_path": marker.DatabasePath,
+					"staging_path":  marker.StagingPath,
+				}, nil)
+			}
+			// The visible set may still be the product of an unsynced rollback
+			// from the previous process, so flush it before unlinking the
+			// marker: otherwise a power loss could preserve the marker removal
+			// while reverting the restoration it depends on.
 			if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
 				return fmt.Errorf("sync recovered migration namespace: %w", err)
 			}
