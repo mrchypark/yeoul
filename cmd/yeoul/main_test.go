@@ -2536,3 +2536,92 @@ func TestCLIAdminExportRefusesUnsupportedPlatform(t *testing.T) {
 		t.Fatal("expected the refused export to create no file")
 	}
 }
+
+// TestRaxPrimarySearchAcceptsAnchorExpansionMatches mirrors core anchor
+// semantics: an anchor constrains the seeds, and core may then rank facts that
+// reach the anchor through a bounded expansion. A Rax candidate that core
+// ranked through expansion must therefore stay visible instead of being dropped
+// for not matching the anchor directly, while an anchor matching no seed still
+// filters every candidate.
+func TestRaxPrimarySearchAcceptsAnchorExpansionMatches(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	ep, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-anchor", Kind: "note", Content: "anchor expansion episode", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "anchor"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entityA, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "node:a", Type: "Node", CanonicalName: "AnchorNeedleA"})
+	if err != nil {
+		t.Fatalf("upsert A: %v", err)
+	}
+	entityB, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "node:b", Type: "Node", CanonicalName: "NodeB"})
+	if err != nil {
+		t.Fatalf("upsert B: %v", err)
+	}
+	entityC, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "node:c", Type: "Node", CanonicalName: "NodeC"})
+	if err != nil {
+		t.Fatalf("upsert C: %v", err)
+	}
+	// A-B fact seeds from the anchor match; B-C does not match the query text
+	// directly and is only reachable by bounded graph expansion.
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-ab", Predicate: "LINKS", SubjectID: entityA.ID, ObjectID: entityB.ID, ValueText: "anchor needle bridge", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert A-B: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-bc", Predicate: "LINKS", SubjectID: entityB.ID, ObjectID: entityC.ID, ValueText: "distant link", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert B-C: %v", err)
+	}
+
+	req := yeoul.SearchRequest{
+		QueryText: "anchor needle",
+		Types:     []string{"fact"},
+		AnchorIDs: []string{entityA.ID},
+	}
+	hasReason := func(hits []yeoul.SearchHit, recordID, reason string) bool {
+		for _, hit := range hits {
+			if hit.RecordID == recordID {
+				return slices.Contains(hit.Reasons, reason)
+			}
+		}
+		return false
+	}
+	hasHit := func(hits []yeoul.SearchHit, recordID string) bool {
+		for _, hit := range hits {
+			if hit.RecordID == recordID {
+				return true
+			}
+		}
+		return false
+	}
+	coreResp, err := eng.Search(ctx, req)
+	if err != nil {
+		t.Fatalf("core search: %v", err)
+	}
+	if !hasReason(coreResp.Hits, "fact-bc", "graph_expansion") {
+		t.Fatalf("expected core to rank the two-hop fact through expansion, got %#v", coreResp.Hits)
+	}
+
+	// Rax sees both facts as native candidates; the two-hop fact must survive.
+	raxResp, err := buildRaxPrimarySearchResponse(ctx, eng, req, []string{"fact:fact-ab", "fact:fact-bc"})
+	if err != nil {
+		t.Fatalf("build rax response: %v", err)
+	}
+	if !hasHit(raxResp.Hits, "fact-bc") {
+		t.Fatalf("expected rax to keep the anchor-reachable two-hop fact, got %#v", raxResp.Hits)
+	}
+
+	// An anchor matching no seed still filters every candidate.
+	unmatched, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "anchor needle",
+		Types:     []string{"fact"},
+		AnchorIDs: []string{"node:missing"},
+	}, []string{"fact:fact-ab", "fact:fact-bc"})
+	if err != nil {
+		t.Fatalf("build rax unmatched response: %v", err)
+	}
+	if len(unmatched.Hits) != 0 {
+		t.Fatalf("expected an unmatched anchor to filter every rax candidate, got %#v", unmatched.Hits)
+	}
+}

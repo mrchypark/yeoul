@@ -555,13 +555,13 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		if err != nil {
 			continue
 		}
-		if !yeoul.RecordPassesSearchFilters(ctx, eng, record.Record, req) {
+		coreScore, coreMatched := coreScores[recordKey]
+		if !raxCandidatePassesFilters(ctx, eng, record.Record, req, coreMatched) {
 			continue
 		}
 		if fact, ok := record.Record.(*yeoul.Fact); ok && fact.Status != "active" && !req.Temporal.IncludeInactive {
 			continue
 		}
-		coreScore, coreMatched := coreScores[recordKey]
 		if !coreMatched && !yeoul.RecordMatchesQuery(req.Mode, req.QueryText, record.Record) {
 			continue
 		}
@@ -633,6 +633,23 @@ type raxCursor struct {
 type raxCandidate struct {
 	hit    yeoul.SearchHit
 	record any
+}
+
+// raxCandidatePassesFilters applies the canonical search post-filter to a
+// hydrated candidate. Anchor IDs constrain seeds, matching core search: an
+// anchor must match a seed record, and core may then rank graph-adjacent facts
+// that only touch the anchor through that seed. A candidate core already
+// ranked is therefore accepted without requiring a direct anchor match, so a
+// two-hop fact that core reached through expansion is not dropped here. Every
+// other filter stays strict, and an anchor that matches no core seed still
+// filters every candidate.
+func raxCandidatePassesFilters(ctx context.Context, eng yeoul.Engine, record any, req yeoul.SearchRequest, coreMatched bool) bool {
+	if coreMatched && len(req.AnchorIDs) > 0 {
+		relaxed := req
+		relaxed.AnchorIDs = nil
+		return yeoul.RecordPassesSearchFilters(ctx, eng, record, relaxed)
+	}
+	return yeoul.RecordPassesSearchFilters(ctx, eng, record, req)
 }
 
 func decodeRaxCursor(cursor string) (raxCursor, error) {
