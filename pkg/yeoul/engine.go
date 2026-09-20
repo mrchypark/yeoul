@@ -651,7 +651,7 @@ func (e *engine) GetRecord(ctx context.Context, req GetRecordRequest) (*GetRecor
 			e.mu.RUnlock()
 			return nil, errorf(ErrEntityNotFound, "entity not found", map[string]any{"entity_id": req.ID}, nil)
 		}
-		record := e.entityVersionAt(entity, req.Temporal)
+		record := e.entityVersionAt(entity, req.Temporal, newTemporalIndex(e))
 		e.mu.RUnlock()
 		if record == nil {
 			return nil, errorf(ErrQueryFailed, "record not visible at requested time", map[string]any{"id": req.ID}, nil)
@@ -668,7 +668,7 @@ func (e *engine) GetRecord(ctx context.Context, req GetRecordRequest) (*GetRecor
 		version := record
 		if temporalFilterSet(req.Temporal) {
 			e.mu.RLock()
-			version = e.factVersionAt(*record, req.Temporal)
+			version = e.factVersionAt(*record, req.Temporal, newTemporalIndex(e))
 			e.mu.RUnlock()
 		}
 		if version == nil {

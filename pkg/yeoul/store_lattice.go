@@ -464,15 +464,21 @@ func (s *latticeStore) Save(state persistedState) error {
 	if s.cfg.ReadOnly {
 		return nil
 	}
-	prev := s.lastState
-	if !s.loaded {
-		prev = emptyPersistedState()
+	prev := emptyPersistedState()
+	if s.loaded {
+		prev = s.lastState
 	}
 	if reflect.DeepEqual(prev, state) {
 		return nil
 	}
+	delta, err := latticeRecordDelta(prev, state)
+	if err != nil {
+		return errorf(ErrStorageFailed, "write lattice graph state", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+		}, err)
+	}
 
-	err := s.store.Update(context.Background(), func(tx *latticedb.Tx) error {
+	err = s.store.Update(context.Background(), func(tx *latticedb.Tx) error {
 		if err := tx.PutAppMetadata([]byte(latticeMetaVersion), []byte(strconv.Itoa(state.Version))); err != nil {
 			return err
 		}
@@ -480,7 +486,7 @@ func (s *latticeStore) Save(state persistedState) error {
 			return err
 		}
 
-		nodes, err := s.reconcileNodes(tx, prev, state)
+		nodes, err := s.reconcileNodes(tx, delta)
 		if err != nil {
 			return err
 		}
@@ -499,35 +505,17 @@ func (s *latticeStore) Save(state persistedState) error {
 	return nil
 }
 
-func (s *latticeStore) reconcileNodes(tx *latticedb.Tx, prev, state persistedState) (map[string]uint64, error) {
-	previous, err := latticeRecords(prev)
-	if err != nil {
-		return nil, err
-	}
-	wanted, err := latticeRecords(state)
-	if err != nil {
-		return nil, err
-	}
-	keys := make(map[string]struct{}, len(previous)+len(wanted))
-	for key := range previous {
-		keys[key] = struct{}{}
-	}
-	for key := range wanted {
-		keys[key] = struct{}{}
-	}
-	changed := make(map[string]uint64)
-	for key := range keys {
-		oldPayload, existed := previous[key]
-		payload, exists := wanted[key]
-		if existed && exists && oldPayload == payload {
-			continue
-		}
+// reconcileNodes applies the changed records to the transaction and returns the
+// node id of every record it touched, which the edge pass then rewrites.
+func (s *latticeStore) reconcileNodes(tx *latticedb.Tx, delta map[string]latticeRecordUpdate) (map[string]uint64, error) {
+	changed := make(map[string]uint64, len(delta))
+	for key, update := range delta {
 		label, id := splitLatticeKey(key)
 		nodeID, found, err := lookupLatticeNode(tx, label, id)
 		if err != nil {
 			return nil, err
 		}
-		if !exists {
+		if !update.present {
 			if found {
 				if err := tx.DeleteNode(nodeID); err != nil {
 					return nil, err
@@ -536,7 +524,7 @@ func (s *latticeStore) reconcileNodes(tx *latticedb.Tx, prev, state persistedSta
 			continue
 		}
 		if found {
-			if err := tx.SetProperty(nodeID, "payload", payload); err != nil {
+			if err := tx.SetProperty(nodeID, "payload", update.payload); err != nil {
 				return nil, err
 			}
 		} else {
@@ -544,7 +532,7 @@ func (s *latticeStore) reconcileNodes(tx *latticedb.Tx, prev, state persistedSta
 				Labels: []string{label},
 				Properties: map[string]any{
 					"id":      id,
-					"payload": payload,
+					"payload": update.payload,
 				},
 			})
 			if err != nil {
@@ -571,52 +559,69 @@ func lookupLatticeNode(tx *latticedb.Tx, label, id string) (uint64, bool, error)
 	return ids[0], true, nil
 }
 
-func latticeRecords(state persistedState) (map[string]string, error) {
-	records := make(map[string]string)
-	add := func(label, id string, value any) error {
+// latticeRecordUpdate is one record the save has to write: its marshalled
+// payload, or a removal when present is false.
+type latticeRecordUpdate struct {
+	payload string
+	present bool
+}
+
+// latticeRecordDelta returns only the records that differ between the previously
+// saved state and the state being saved.
+//
+// The store writes one node per record, so it only needs the payload of the
+// records a mutation touched. Serializing both the previous and the current
+// state to discover that delta made the cost of a one-record mutation follow
+// total retained history and the write lock with it. Comparing the record values
+// directly instead marshals only what changed, so an unchanged record costs a
+// comparison and no allocation.
+func latticeRecordDelta(prev, state persistedState) (map[string]latticeRecordUpdate, error) {
+	delta := make(map[string]latticeRecordUpdate)
+	if err := deltaRecords(delta, "Source", prev.Sources, state.Sources); err != nil {
+		return nil, err
+	}
+	if err := deltaRecords(delta, "Episode", prev.Episodes, state.Episodes); err != nil {
+		return nil, err
+	}
+	if err := deltaRecords(delta, "Entity", prev.Entities, state.Entities); err != nil {
+		return nil, err
+	}
+	if err := deltaRecords(delta, "Fact", prev.Facts, state.Facts); err != nil {
+		return nil, err
+	}
+	if err := deltaRecords(delta, "FactRevision", prev.FactRevisions, state.FactRevisions); err != nil {
+		return nil, err
+	}
+	if err := deltaRecords(delta, "EntityRevision", prev.EntityRevisions, state.EntityRevisions); err != nil {
+		return nil, err
+	}
+	if err := deltaRecords(delta, "YeoulMigration", prev.MigrationWatermarks, state.MigrationWatermarks); err != nil {
+		return nil, err
+	}
+	return delta, nil
+}
+
+// deltaRecords appends the records of one label that were added, changed, or
+// removed. A record present in both maps with a deeply equal value is left
+// alone, and equal values always serialize to the same payload, so skipping it
+// cannot hide a write the saved state needed.
+func deltaRecords[T any](delta map[string]latticeRecordUpdate, label string, prev, state map[string]T) error {
+	for id, value := range state {
+		if previous, ok := prev[id]; ok && reflect.DeepEqual(previous, value) {
+			continue
+		}
 		payload, err := json.Marshal(value)
 		if err != nil {
 			return fmt.Errorf("marshal %s %q: %w", label, id, err)
 		}
-		records[label+"\x00"+id] = string(payload)
-		return nil
+		delta[label+"\x00"+id] = latticeRecordUpdate{payload: string(payload), present: true}
 	}
-	for id, item := range state.Sources {
-		if err := add("Source", id, item); err != nil {
-			return nil, err
+	for id := range prev {
+		if _, ok := state[id]; !ok {
+			delta[label+"\x00"+id] = latticeRecordUpdate{present: false}
 		}
 	}
-	for id, item := range state.Episodes {
-		if err := add("Episode", id, item); err != nil {
-			return nil, err
-		}
-	}
-	for id, item := range state.Entities {
-		if err := add("Entity", id, item); err != nil {
-			return nil, err
-		}
-	}
-	for id, item := range state.Facts {
-		if err := add("Fact", id, item); err != nil {
-			return nil, err
-		}
-	}
-	for id, item := range state.FactRevisions {
-		if err := add("FactRevision", id, item); err != nil {
-			return nil, err
-		}
-	}
-	for id, item := range state.EntityRevisions {
-		if err := add("EntityRevision", id, item); err != nil {
-			return nil, err
-		}
-	}
-	for id, item := range state.MigrationWatermarks {
-		if err := add("YeoulMigration", id, item); err != nil {
-			return nil, err
-		}
-	}
-	return records, nil
+	return nil
 }
 
 func splitLatticeKey(key string) (string, string) {

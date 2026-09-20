@@ -33,7 +33,7 @@ func (e *engine) factVisibleAt(fact Fact, filter TemporalFilter) bool {
 	return true
 }
 
-func (e *engine) factVersionAt(fact Fact, filter TemporalFilter) *Fact {
+func (e *engine) factVersionAt(fact Fact, filter TemporalFilter, index *temporalIndex) *Fact {
 	at := asOfTime(filter)
 	if at == nil {
 		if !e.factVisibleAt(fact, filter) {
@@ -41,7 +41,7 @@ func (e *engine) factVersionAt(fact Fact, filter TemporalFilter) *Fact {
 		}
 		return cloneFact(fact)
 	}
-	revision, ok := e.latestFactRevisionAt(fact.ID, *at)
+	revision, ok := index.latestFactRevisionAt(fact.ID, *at)
 	if !ok {
 		if fact.UpdatedAt.After(*at) {
 			return nil
@@ -56,21 +56,6 @@ func (e *engine) factVersionAt(fact Fact, filter TemporalFilter) *Fact {
 		return nil
 	}
 	return &record
-}
-
-func (e *engine) latestFactRevisionAt(factID string, at time.Time) (FactRevision, bool) {
-	var latest FactRevision
-	ok := false
-	for _, revision := range e.factRevisions {
-		if revision.FactID != factID || revision.TxTime.After(at) {
-			continue
-		}
-		if !ok || revision.TxTime.After(latest.TxTime) || (revision.TxTime.Equal(latest.TxTime) && revision.ID > latest.ID) {
-			latest = revision
-			ok = true
-		}
-	}
-	return latest, ok
 }
 
 func (e *engine) episodeVisibleAt(episode Episode, filter TemporalFilter) bool {
@@ -95,12 +80,12 @@ func (e *engine) entityVisibleAt(entity Entity, filter TemporalFilter) bool {
 	return true
 }
 
-func (e *engine) entityVersionAt(entity Entity, filter TemporalFilter) *Entity {
+func (e *engine) entityVersionAt(entity Entity, filter TemporalFilter, index *temporalIndex) *Entity {
 	at := asOfTime(filter)
 	if at == nil {
 		return cloneEntity(entity)
 	}
-	if revision, ok := e.latestEntityRevisionAt(entity.ID, *at); ok {
+	if revision, ok := index.latestEntityRevisionAt(entity.ID, *at); ok {
 		record := revision.toEntity()
 		return &record
 	}
@@ -123,21 +108,6 @@ func (e *engine) entityVersionAt(entity Entity, filter TemporalFilter) *Entity {
 		}
 	}
 	return cloneEntity(entity)
-}
-
-func (e *engine) latestEntityRevisionAt(entityID string, at time.Time) (EntityRevision, bool) {
-	var latest EntityRevision
-	ok := false
-	for _, revision := range e.entityRevisions {
-		if revision.EntityID != entityID || revision.TxTime.After(at) {
-			continue
-		}
-		if !ok || revision.TxTime.After(latest.TxTime) || (revision.TxTime.Equal(latest.TxTime) && revision.ID > latest.ID) {
-			latest = revision
-			ok = true
-		}
-	}
-	return latest, ok
 }
 
 func (e *engine) appendFactRevisionLocked(fact Fact, kind string) {
@@ -294,7 +264,7 @@ func (e *engine) sourceVisibleAt(source Source, filter TemporalFilter) bool {
 	return true
 }
 
-func (e *engine) matchesScopeForFact(fact Fact, scope ScopeFilter, filter TemporalFilter) bool {
+func (e *engine) matchesScopeForFact(fact Fact, scope ScopeFilter, filter TemporalFilter, index *temporalIndex) bool {
 	if len(scope.FactStatus) > 0 && !slices.Contains(scope.FactStatus, fact.Status) {
 		return false
 	}
@@ -303,14 +273,14 @@ func (e *engine) matchesScopeForFact(fact Fact, scope ScopeFilter, filter Tempor
 		object, objectOK := e.entities[fact.ObjectID]
 		if subjectOK {
 			subjectOK = false
-			if version := e.entityVersionAt(subject, filter); version != nil {
+			if version := e.entityVersionAt(subject, filter, index); version != nil {
 				subject = *version
 				subjectOK = true
 			}
 		}
 		if objectOK {
 			objectOK = false
-			if version := e.entityVersionAt(object, filter); version != nil {
+			if version := e.entityVersionAt(object, filter, index); version != nil {
 				object = *version
 				objectOK = true
 			}
