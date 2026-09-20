@@ -15,7 +15,9 @@ Existing AI memory systems often couple storage, retrieval, agents, prompts, and
 
 ## Product
 
-Yeoul is a Go library and optional local service that stores temporal graph memory using LatticeDB.
+Yeoul is a Go library that stores temporal graph memory using LatticeDB. A local service mode is
+planned and not available in current releases; the `yeould` executable reports that no daemon was
+started and exits with a failure status.
 
 ## Core Capabilities
 

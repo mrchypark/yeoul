@@ -74,7 +74,7 @@ These should be treated as optional future adapters, not active scope drivers.
 These directly drive the current build:
 
 - overview and principles docs
-- Ladybug evaluation and storage constraints
+- LatticeDB storage constraints, and the Ladybug legacy migration path
 - architecture boundaries
 - memory model docs
 - Go API

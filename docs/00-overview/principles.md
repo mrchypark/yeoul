@@ -30,4 +30,6 @@ The database should be durable on disk, but the graph model and policy files sho
 
 ## 8. Concurrency by explicit ownership
 
-Embedded mode assumes one process owns one READ_WRITE LatticeDB database object and fans out work through multiple connections.
+Embedded mode assumes one process owns one READ_WRITE database object. The LatticeDB adapter holds a
+single shared database handle and runs work through its View and UpdateContext transactions; readers
+share a database path through the engine's own shared path lock.

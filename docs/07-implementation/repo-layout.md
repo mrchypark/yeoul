@@ -17,6 +17,7 @@ yeoul/
     yeould/
   internal/
     storage/
+      lattice/
       ladybug/
     core/
     query/
@@ -44,8 +45,11 @@ CLI entrypoint.
 ### `cmd/yeould`
 Planned local daemon entrypoint; not implemented in current releases.
 
+### `internal/storage/lattice`
+Canonical storage adapter: owns database initialization, queries, and transaction helpers for the default LatticeDB engine.
+
 ### `internal/storage/ladybug`
-Owns database initialization, migrations, queries, and transaction helpers.
+Legacy migration reader: reads Ladybug databases only so they can be converted to LatticeDB. It never receives default canonical writes.
 
 ### `internal/core`
 Owns domain models and core memory operations.

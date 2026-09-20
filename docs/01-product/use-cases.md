@@ -98,7 +98,7 @@ A user runs Yeoul on a local machine with no server process and no network requi
 
 ### Acceptance notes
 - core must not require external services
-- daemon mode is optional, not mandatory
+- daemon mode is planned, not available in current releases; embedded mode is the only supported mode
 
 ## UC-7: Rebuild derived graph state from episodes
 
