@@ -2222,6 +2222,75 @@ func TestRaxPrimarySearchKeepsProvenanceUnderHitFilters(t *testing.T) {
 	}
 }
 
+// TestRaxPrimarySearchUsesCoreKeywordSemantics checks that native candidates are
+// validated with the core matcher: keyword mode rejects a record that only
+// partially matches, and matches against aliases and fact predicate/endpoint
+// text are admitted even when the record is outside the core rerank subset.
+func TestRaxPrimarySearchUsesCoreKeywordSemantics(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	subject, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:keyword", Type: "Project", CanonicalName: "Keyword"})
+	if err != nil {
+		t.Fatalf("upsert subject: %v", err)
+	}
+	ep, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-keyword", Kind: "note", Content: "keyword semantics episode", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "keyword"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-alpha", Predicate: "HAS_ALPHA", SubjectID: subject.ID, ValueText: "alpha only value", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert alpha fact: %v", err)
+	}
+	aliased, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:aliased", Type: "Project", CanonicalName: "Canonical", Aliases: []string{"betaname"}})
+	if err != nil {
+		t.Fatalf("upsert aliased: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-predicate", Predicate: "ALPHA_BETA", SubjectID: aliased.ID, ValueText: "unrelated value", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert predicate fact: %v", err)
+	}
+
+	// Keyword "alpha beta" must not admit a record containing only "alpha".
+	partial, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "alpha beta",
+		Mode:      yeoul.SearchModeKeyword,
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-alpha"})
+	if err != nil {
+		t.Fatalf("build partial response: %v", err)
+	}
+	if len(partial.Hits) != 0 {
+		t.Fatalf("expected keyword mode to reject partial-token candidate, got %#v", partial.Hits)
+	}
+
+	// Predicate-only match must be admitted: core matches fact predicate text.
+	predicate, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "alpha_beta",
+		Mode:      yeoul.SearchModeKeyword,
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-predicate"})
+	if err != nil {
+		t.Fatalf("build predicate response: %v", err)
+	}
+	if len(predicate.Hits) != 1 || predicate.Hits[0].RecordID != "fact-predicate" {
+		t.Fatalf("expected predicate-only match to be admitted, got %#v", predicate.Hits)
+	}
+
+	// Alias-only entity match must be admitted even outside the core rerank subset.
+	alias, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "betaname",
+		Mode:      yeoul.SearchModeKeyword,
+		Types:     []string{"entity"},
+	}, []string{"entity:project:aliased"})
+	if err != nil {
+		t.Fatalf("build alias response: %v", err)
+	}
+	if len(alias.Hits) != 1 || alias.Hits[0].RecordID != "project:aliased" {
+		t.Fatalf("expected alias-only match to be admitted, got %#v", alias.Hits)
+	}
+}
+
 func TestCLISearchRejectsAmbiguousTemporalFlags(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

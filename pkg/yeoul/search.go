@@ -401,6 +401,34 @@ func matchesEntityType(entity Entity, types []string) bool {
 	return len(types) == 0 || slices.Contains(types, entity.Type)
 }
 
+// RecordSearchText returns the canonical, lowercased text a search matches a
+// record against. Core search and derived indexes must share this text so
+// keyword and semantic decisions agree across backends.
+func RecordSearchText(record any) string {
+	switch value := record.(type) {
+	case *Fact:
+		return strings.ToLower(value.ValueText + " " + value.Predicate + " " + value.SubjectID + " " + value.ObjectID)
+	case *Episode:
+		return strings.ToLower(value.Content)
+	case *Entity:
+		return strings.ToLower(value.CanonicalName + " " + strings.Join(value.Aliases, " "))
+	default:
+		return ""
+	}
+}
+
+// RecordMatchesQuery reports whether a record matches a query under mode using
+// the same canonical text and matcher as core search. Derived indexes use it so
+// a native candidate is validated with core's semantics rather than a laxer
+// substring rule.
+func RecordMatchesQuery(mode SearchMode, query string, record any) bool {
+	if mode == "" {
+		mode = SearchModeHybrid
+	}
+	matched, _, _ := matchSearchWithStats(mode, query, RecordSearchText(record), nil)
+	return matched
+}
+
 func validFactStatus(status string) bool {
 	switch status {
 	case factStatusActive, factStatusSuperseded, factStatusRetracted:

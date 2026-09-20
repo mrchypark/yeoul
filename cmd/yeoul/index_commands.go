@@ -561,7 +561,7 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 			continue
 		}
 		coreScore, coreMatched := coreScores[recordKey]
-		if !coreMatched && !raxRecordMatchesCurrentQuery(record.Record, req.QueryText) {
+		if !coreMatched && !yeoul.RecordMatchesQuery(req.Mode, req.QueryText, record.Record) {
 			continue
 		}
 		score := 0.1 / float64(rank+1)
@@ -1007,25 +1007,6 @@ func raxMatchedText(record any) string {
 	default:
 		return ""
 	}
-}
-
-func raxRecordMatchesCurrentQuery(record any, query string) bool {
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
-		return true
-	}
-	text := strings.ToLower(raxMatchedText(record))
-	if strings.Contains(text, query) {
-		return true
-	}
-	for _, token := range strings.FieldsFunc(query, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
-	}) {
-		if token != "" && strings.Contains(text, token) {
-			return true
-		}
-	}
-	return false
 }
 
 // raxAssembleIncludedRecords shapes the page-scoped IncludedRecords for a Rax
