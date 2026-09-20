@@ -17,6 +17,11 @@ const (
 	factCardinalityMany  = "many"
 	entityHistoryKey     = "_history"
 	bitemporalWatermark  = "bitemporal_revision_seed_v1"
+	// historyInferredKey marks a record whose historical value was
+	// reconstructed by the legacy revision seed rather than recorded by an
+	// ordinary write. It is engine-managed: callers read it to learn that the
+	// historical answer is inferred and may be incomplete.
+	historyInferredKey = "history_inferred"
 )
 
 var reservedFactMetadataKeys = map[string]bool{
@@ -24,6 +29,7 @@ var reservedFactMetadataKeys = map[string]bool{
 	"supersedes":       true,
 	"supersede_reason": true,
 	"duplicate_of":     true,
+	historyInferredKey: true,
 	entityHistoryKey:   true,
 }
 

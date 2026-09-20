@@ -163,6 +163,7 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 			initial.RetractedAt = time.Time{}
 			initial.RetractionReason = ""
 			initial.Metadata = stripFactLifecycleMetadata(initial.Metadata)
+			initial.Metadata = markHistoryInferred(initial.Metadata)
 			revision := newFactRevision("seed:"+fact.ID+":initial", initial, "migration_seed_initial", fact.CreatedAt)
 			if _, ok := e.factRevisions[revision.ID]; !ok {
 				e.factRevisions[revision.ID] = revision
@@ -185,8 +186,20 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 		Metadata: map[string]any{
 			"fact_count":   len(e.facts),
 			"entity_count": len(e.entities),
+			// Every seeded revision reconstructs history the legacy database
+			// never recorded, so callers can treat answers before applied_at
+			// as inferred rather than exact.
+			"inferred_history": true,
 		},
 	}
+}
+
+// markHistoryInferred flags a reconstructed record whose exact history the
+// legacy database did not preserve. The marker travels with the record into
+// query results so a caller can tell an inferred historical answer from one a
+// recorded revision produced.
+func markHistoryInferred(metadata map[string]any) map[string]any {
+	return mergeAnyMap(metadata, map[string]any{historyInferredKey: true})
 }
 
 func stripFactLifecycleMetadata(src map[string]any) map[string]any {
