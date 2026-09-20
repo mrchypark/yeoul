@@ -65,6 +65,17 @@ func openStateStore(cfg Config) (stateStore, error) {
 		return memoryStore{}, nil
 	}
 
+	// Complete an interrupted migration before any open or create attempt can
+	// observe a half-renamed database. A crash after the source backup rename
+	// leaves the marker, the backup, and the staging database behind without
+	// the original path, and an open that creates a fresh database there would
+	// strand the only complete snapshot in staging.
+	if err := recoverDatabaseMigration(cfg.DatabasePath); err != nil {
+		return nil, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
+			"database_path": cfg.DatabasePath,
+		}, err)
+	}
+
 	switch resolveStorageDriver(cfg) {
 	case StorageDriverLattice:
 		store, err := newLatticeStore(cfg)
