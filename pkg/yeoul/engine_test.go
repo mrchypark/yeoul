@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -1314,6 +1315,128 @@ func TestImportedRevisionIDsDoNotCollideWithGeneratedIDs(t *testing.T) {
 	if _, ok := rawEng.factRevisions["factrev_000001"]; !ok {
 		t.Fatal("expected imported revision to remain present")
 	}
+}
+
+// TestRevisionOrderSurvivesSixDigitIDBoundary seeds the ID sequence next to the
+// six-digit boundary so the cardinality-one auto-supersede revision lands on
+// factrev_999999 while the explicit supersede revision crosses to
+// factrev_1000001. Those two revisions share a transaction time, and text
+// ordering puts the later one first, so only numeric revision order can keep
+// the later operation winning.
+func TestRevisionOrderSurvivesSixDigitIDBoundary(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "revision-order.db")
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+
+	// A fixed clock makes supersession produce equal-time revisions, which is the
+	// tie the ordering rule has to break.
+	fixed := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	rawEng := eng.(*engine)
+	rawEng.mu.Lock()
+	rawEng.now = func() time.Time { return fixed }
+	rawEng.mu.Unlock()
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{
+		Kind:    "note",
+		Content: "revision order subject",
+		Source:  SourceInput{Kind: "note"},
+	})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	subject, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "boundary"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	original, err := eng.AssertFact(ctx, FactInput{
+		Predicate:            "HAS_STATE",
+		SubjectID:            subject.ID,
+		ValueText:            "old",
+		Cardinality:          "one",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	if err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+
+	// Parking the sequence here puts the auto-supersede revision on 999999 and
+	// the explicit supersede revision on 1000001: numerically later, but
+	// lexicographically earlier.
+	rawEng.mu.Lock()
+	rawEng.sequence = 999997
+	rawEng.mu.Unlock()
+
+	if _, err := eng.SupersedeFact(ctx, original.ID, FactInput{
+		Predicate:            "HAS_STATE",
+		SubjectID:            subject.ID,
+		ValueText:            "new",
+		Cardinality:          "one",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}, "explicit-boundary-supersede"); err != nil {
+		t.Fatalf("supersede fact: %v", err)
+	}
+
+	// Pin down that the tie really straddles the digit boundary instead of
+	// trusting the sequence arithmetic above.
+	autoRevision, explicitRevision := "", ""
+	rawEng.mu.RLock()
+	for _, revision := range rawEng.factRevisions {
+		if revision.FactID != original.ID {
+			continue
+		}
+		switch revision.RevisionKind {
+		case "auto_supersede":
+			autoRevision = revision.ID
+		case "supersede":
+			explicitRevision = revision.ID
+		}
+	}
+	rawEng.mu.RUnlock()
+	if autoRevision == "" || explicitRevision == "" {
+		t.Fatalf("expected both tied revisions, got auto=%q explicit=%q", autoRevision, explicitRevision)
+	}
+	if revisionOrder(explicitRevision) <= revisionOrder(autoRevision) {
+		t.Fatalf("expected the explicit revision to be numerically later: auto=%s explicit=%s", autoRevision, explicitRevision)
+	}
+	if explicitRevision >= autoRevision {
+		t.Fatalf("expected the explicit revision ID to sort earlier as text: auto=%s explicit=%s", autoRevision, explicitRevision)
+	}
+
+	assertLaterSupersedeWins := func(t *testing.T, eng Engine) {
+		t.Helper()
+		at := fixed
+		resp, err := eng.GetRecord(ctx, GetRecordRequest{
+			Kind:     "fact",
+			ID:       original.ID,
+			Temporal: TemporalFilter{AsOf: &at, IncludeInactive: true},
+		})
+		if err != nil {
+			t.Fatalf("get fact version: %v", err)
+		}
+		fact, ok := resp.Record.(*Fact)
+		if !ok {
+			t.Fatalf("unexpected record type %T", resp.Record)
+		}
+		if reason, _ := fact.Metadata["supersede_reason"].(string); reason != "explicit-boundary-supersede" {
+			t.Fatalf("expected the later operation to win, got supersede_reason=%q metadata=%#v (auto=%s explicit=%s)", reason, fact.Metadata, autoRevision, explicitRevision)
+		}
+	}
+
+	assertLaterSupersedeWins(t, eng)
+
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
+
+	reopened, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("reopen engine: %v", err)
+	}
+	defer func() { _ = reopened.Close(ctx) }()
+	assertLaterSupersedeWins(t, reopened)
 }
 
 func TestAssertFactRequiresSupportingEpisode(t *testing.T) {

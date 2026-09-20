@@ -354,10 +354,8 @@ func (e *engine) factLifecycleEvents(fact Fact, revisions []FactRevision, filter
 		revisions = []FactRevision{newFactRevision("", fact, "", fact.UpdatedAt)}
 	}
 	sort.Slice(revisions, func(i, j int) bool {
-		if revisions[i].TxTime.Equal(revisions[j].TxTime) {
-			return revisions[i].ID < revisions[j].ID
-		}
-		return revisions[i].TxTime.Before(revisions[j].TxTime)
+		// Ascending order: i sorts before j exactly when j does not come after i.
+		return revisionComesAfter(revisions[j].ID, revisions[j].TxTime, revisions[i].ID, revisions[i].TxTime)
 	})
 
 	events := make([]TimelineEvent, 0, 2)
