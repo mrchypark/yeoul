@@ -1,9 +1,42 @@
 package yeoul
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 )
+
+// cloneVisitKey identifies a pointer-backed container that is already being
+// cloned, so metadata which references itself (directly or through a chain of
+// maps, slices, pointers, and interfaces) terminates instead of recursing
+// forever. The length and capacity are part of the key so two different slice
+// views that happen to share a backing array are not collapsed into one clone.
+type cloneVisitKey struct {
+	kind reflect.Kind
+	typ  reflect.Type
+	ptr  uintptr
+	len  int
+	cap  int
+}
+
+// cloneVisitKeyOf reports the visit key for a pointer-backed kind. Scalars and
+// nil containers cannot form a cycle and are not tracked.
+func cloneVisitKeyOf(rv reflect.Value) (cloneVisitKey, bool) {
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map:
+		if rv.IsNil() {
+			return cloneVisitKey{}, false
+		}
+		return cloneVisitKey{kind: rv.Kind(), typ: rv.Type(), ptr: rv.Pointer()}, true
+	case reflect.Slice:
+		if rv.IsNil() {
+			return cloneVisitKey{}, false
+		}
+		return cloneVisitKey{kind: rv.Kind(), typ: rv.Type(), ptr: rv.Pointer(), len: rv.Len(), cap: rv.Cap()}, true
+	default:
+		return cloneVisitKey{}, false
+	}
+}
 
 func dedupeStrings(values []string) []string {
 	seen := make(map[string]struct{})
@@ -23,30 +56,178 @@ func dedupeStrings(values []string) []string {
 }
 
 func cloneAnyMap(src map[string]any) map[string]any {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for k, v := range src {
-		dst[k] = cloneAny(v)
-	}
-	return dst
+	return cloneAnyMapValue(src, make(map[cloneVisitKey]reflect.Value))
 }
 
 func cloneAny(value any) any {
-	switch v := value.(type) {
+	return cloneAnyValue(value, make(map[cloneVisitKey]reflect.Value))
+}
+
+func cloneAnyValue(value any, visited map[cloneVisitKey]reflect.Value) any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
 	case map[string]any:
-		return cloneAnyMap(v)
+		return cloneAnyMapValue(typed, visited)
 	case []any:
-		out := make([]any, len(v))
-		for i := range v {
-			out[i] = cloneAny(v[i])
+		return cloneAnySliceValue(typed, visited)
+	case []string:
+		return slices.Clone(typed)
+	default:
+		return cloneReflect(value, visited)
+	}
+}
+
+func cloneAnyMapValue(src map[string]any, visited map[cloneVisitKey]reflect.Value) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	key, cacheable := cloneVisitKeyOf(reflect.ValueOf(src))
+	if cacheable {
+		if cached, ok := visited[key]; ok {
+			if out, ok := cached.Interface().(map[string]any); ok {
+				return out
+			}
+		}
+	}
+	out := make(map[string]any, len(src))
+	if cacheable {
+		visited[key] = reflect.ValueOf(out)
+	}
+	for k, v := range src {
+		out[k] = cloneAnyValue(v, visited)
+	}
+	return out
+}
+
+func cloneAnySliceValue(src []any, visited map[cloneVisitKey]reflect.Value) []any {
+	out := make([]any, len(src))
+	key, cacheable := cloneVisitKeyOf(reflect.ValueOf(src))
+	if cacheable {
+		if cached, ok := visited[key]; ok {
+			if prior, ok := cached.Interface().([]any); ok {
+				return prior
+			}
+		}
+		visited[key] = reflect.ValueOf(out)
+	}
+	for i := range src {
+		out[i] = cloneAnyValue(src[i], visited)
+	}
+	return out
+}
+
+// cloneReflect deep-copies a JSON-compatible value that is not one of the
+// concrete container shapes handled above.
+func cloneReflect(value any, visited map[cloneVisitKey]reflect.Value) any {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return value
+	}
+	cloned := cloneReflectValue(rv, visited)
+	if !cloned.IsValid() {
+		return value
+	}
+	return cloned.Interface()
+}
+
+// cloneReflectValue deep-copies a JSON-compatible container value that is typed
+// more specifically than map[string]any/[]any/[]string. The public API accepts
+// map[string]any metadata, so callers can place any JSON-compatible Go value
+// inside it: map[string]string, []int, []map[string]any, map[string]int,
+// arrays, structs holding those containers, pointers to them, and nested
+// combinations of all of those. Without this, such values stayed shared between
+// caller input and engine state, so mutating caller memory after an ingest
+// silently mutated engine state without a lock, revision, or persistence write.
+//
+// Interfaces and pointers are followed, maps, slices, and arrays are rebuilt
+// recursively, and structs are copied in two steps: the whole struct is copied
+// first so unexported fields survive, then every field reflection can set is
+// deep-cloned. Unexported fields keep their copied value, which matches the
+// JSON-compatible metadata contract because they are never serialized anyway.
+// Values are copied directly rather than via a JSON round-trip so numeric types
+// and precision are preserved exactly. Map keys are reused as-is: keys are
+// comparable values whose identity must be preserved for lookups.
+func cloneReflectValue(rv reflect.Value, visited map[cloneVisitKey]reflect.Value) reflect.Value {
+	switch rv.Kind() {
+	case reflect.Interface:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.New(rv.Type()).Elem()
+		out.Set(cloneReflectValue(rv.Elem(), visited))
+		return out
+	case reflect.Pointer:
+		if rv.IsNil() {
+			return rv
+		}
+		key, cacheable := cloneVisitKeyOf(rv)
+		if cacheable {
+			if cached, ok := visited[key]; ok {
+				return cached
+			}
+		}
+		out := reflect.New(rv.Type().Elem())
+		if cacheable {
+			visited[key] = out
+		}
+		out.Elem().Set(cloneReflectValue(rv.Elem(), visited))
+		return out
+	case reflect.Map:
+		if rv.IsNil() {
+			return rv
+		}
+		key, cacheable := cloneVisitKeyOf(rv)
+		if cacheable {
+			if cached, ok := visited[key]; ok {
+				return cached
+			}
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		if cacheable {
+			visited[key] = out
+		}
+		iter := rv.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), cloneReflectValue(iter.Value(), visited))
 		}
 		return out
-	case []string:
-		return slices.Clone(v)
+	case reflect.Slice:
+		if rv.IsNil() {
+			return rv
+		}
+		key, cacheable := cloneVisitKeyOf(rv)
+		if cacheable {
+			if cached, ok := visited[key]; ok {
+				return cached
+			}
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		if cacheable {
+			visited[key] = out
+		}
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i), visited))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(rv.Type()).Elem()
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i), visited))
+		}
+		return out
+	case reflect.Struct:
+		out := reflect.New(rv.Type()).Elem()
+		out.Set(rv)
+		for i := 0; i < rv.NumField(); i++ {
+			if !out.Field(i).CanSet() {
+				continue
+			}
+			out.Field(i).Set(cloneReflectValue(rv.Field(i), visited))
+		}
+		return out
 	default:
-		return v
+		return rv
 	}
 }
 

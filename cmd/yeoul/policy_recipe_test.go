@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -68,6 +69,64 @@ func TestApplySearchRecipeAppliesSupportedControls(t *testing.T) {
 	}
 	if !slices.Contains(lookup.Predicates, "SUPERSEDES") || !slices.Contains(lookup.Predicates, "CHANGED_TO") {
 		t.Fatalf("expected predicate filter to reach the request, got %#v", lookup.Predicates)
+	}
+}
+
+// A recognized control whose value cannot be applied must fail execution
+// instead of being silently skipped. Validation and execution must agree, so
+// every one of these shapes is rejected by ValidateSearchRecipe as well.
+func TestApplySearchRecipeRejectsMalformedControlValues(t *testing.T) {
+	pack := recipePack(map[string]policy.SearchRecipe{
+		"window_bogus":      {Strategy: "hybrid", Filters: map[string]any{"window_days": "bogus"}},
+		"window_object":     {Strategy: "hybrid", Filters: map[string]any{"window_days": map[string]any{}}},
+		"window_list":       {Strategy: "hybrid", Filters: map[string]any{"window_days": []any{}}},
+		"window_negative":   {Strategy: "hybrid", Filters: map[string]any{"window_days": -5}},
+		"window_fractional": {Strategy: "hybrid", Filters: map[string]any{"window_days": 1.5}},
+		"status_unknown":    {Strategy: "hybrid", Filters: map[string]any{"fact_status": "archived"}},
+		"status_object":     {Strategy: "hybrid", Filters: map[string]any{"fact_status": map[string]any{}}},
+		"predicate_empty":   {Strategy: "hybrid", Filters: map[string]any{"predicate": ""}},
+		"entity_object":     {Strategy: "neighborhood", Expand: map[string]any{"entity_types": map[string]any{}}},
+		"entity_scalar":     {Strategy: "neighborhood", Expand: map[string]any{"entity_types": "Project"}},
+		"entity_empty":      {Strategy: "neighborhood", Expand: map[string]any{"entity_types": []any{}}},
+	})
+
+	for name := range pack.SearchRecipes.Recipes {
+		t.Run(name, func(t *testing.T) {
+			req, err := applySearchRecipe(pack, name, yeoul.SearchRequest{})
+			if err == nil {
+				t.Fatalf("expected recipe %q to be rejected, got %#v", name, req)
+			}
+		})
+	}
+}
+
+// Well-formed values must still validate and still change the executed
+// request, so the stricter validation does not break supported recipes.
+func TestApplySearchRecipeAppliesWellFormedControlValues(t *testing.T) {
+	pack := recipePack(map[string]policy.SearchRecipe{
+		"window": {Strategy: "hybrid", Filters: map[string]any{"window_days": 7}},
+		"scoped": {Strategy: "neighborhood", Expand: map[string]any{"entity_types": []any{"Project", "Task"}}},
+	})
+
+	window, err := applySearchRecipe(pack, "window", yeoul.SearchRequest{})
+	if err != nil {
+		t.Fatalf("apply window recipe: %v", err)
+	}
+	if window.Temporal.ObservedFrom == nil {
+		t.Fatal("expected window_days to set a temporal lower bound")
+	}
+	if got := time.Since(*window.Temporal.ObservedFrom); got < 6*24*time.Hour || got > 8*24*time.Hour {
+		t.Fatalf("expected a 7 day window, got %s", got)
+	}
+
+	scoped, err := applySearchRecipe(pack, "scoped", yeoul.SearchRequest{})
+	if err != nil {
+		t.Fatalf("apply scoped recipe: %v", err)
+	}
+	for _, want := range []string{"Project", "Task"} {
+		if !slices.Contains(scoped.Scope.EntityTypes, want) {
+			t.Fatalf("expected entity type %q in %#v", want, scoped.Scope.EntityTypes)
+		}
 	}
 }
 

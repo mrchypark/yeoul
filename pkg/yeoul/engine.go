@@ -66,6 +66,14 @@ func Open(ctx context.Context, cfg Config) (Engine, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	// Persisted state written before global id uniqueness was enforced can
+	// already contain the same id under two kinds. Reject it here, before any
+	// of it becomes graph or lookup state, rather than loading a database whose
+	// nodes silently overwrite each other.
+	if err := validateGlobalRecordIDs(*state); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 
 	eng := newEngine(cfg, store)
 	eng.applyState(*state)
@@ -214,9 +222,6 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if strings.TrimSpace(fact.Predicate) == "" || strings.TrimSpace(fact.SubjectID) == "" || len(fact.SupportingEpisodeIDs) == 0 {
-				return errorf(ErrInputInvalid, "fact predicate, subject_id, and supporting_episode_ids are required", map[string]any{"id": fact.ID}, nil)
-			}
 			if rewritten, ok := referenceRewrites[fact.SubjectID]; ok {
 				fact.SubjectID = rewritten
 			}
@@ -261,6 +266,9 @@ func (e *engine) UpsertEntity(ctx context.Context, input EntityInput) (*Entity, 
 }
 
 func (e *engine) ingestEpisodeLocked(spaceID string, input EpisodeInput, source Source, now time.Time) (*EpisodeResult, error) {
+	if err := e.ensureGlobalIDAvailableLocked(source.ID, kindSource); err != nil {
+		return nil, err
+	}
 	if existing, ok := e.sources[source.ID]; ok {
 		if existing.SpaceID != spaceID {
 			return nil, errorf(ErrLifecycleInvalid, "source id already exists in another space", map[string]any{"source_id": source.ID, "space_id": spaceID}, nil)
@@ -276,6 +284,8 @@ func (e *engine) ingestEpisodeLocked(spaceID string, input EpisodeInput, source 
 	created := false
 	if episodeID == "" {
 		episodeID = e.newIDLocked("ep")
+	} else if err := e.ensureGlobalIDAvailableLocked(episodeID, kindEpisode); err != nil {
+		return nil, err
 	}
 	if existing, ok := e.episodes[episodeID]; ok {
 		if existing.SpaceID != spaceID || existing.Kind != input.Kind || existing.Content != input.Content || existing.SourceID != source.ID || existing.GroupID != input.GroupID {
@@ -319,6 +329,13 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 				}
 			}
 		}
+	}
+	// Both explicit and derived IDs are cross-checked. Derived IDs are
+	// content-addressed, but an explicit episode, fact, or source ID can still
+	// claim the same raw string first, so the global uniqueness invariant must
+	// not depend on write order. Same-kind replays stay with the caller.
+	if err := e.ensureGlobalIDAvailableLocked(id, kindEntity); err != nil {
+		return nil, err
 	}
 	metadata := cloneAnyMap(input.Metadata)
 	if metadata != nil {
@@ -379,15 +396,8 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 }
 
 func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error) {
-	if strings.TrimSpace(input.Predicate) == "" {
-		return nil, errorf(ErrInputInvalid, "fact predicate is required", map[string]any{"field": "predicate"}, nil)
-	}
-	if strings.TrimSpace(input.SubjectID) == "" {
-		return nil, errorf(ErrInputInvalid, "fact subject_id is required", map[string]any{"field": "subject_id"}, nil)
-	}
-
-	if len(input.SupportingEpisodeIDs) == 0 {
-		return nil, errorf(ErrInputInvalid, "supporting_episode_ids must contain at least one episode", map[string]any{"field": "supporting_episode_ids"}, nil)
+	if err := validateFactInput(input); err != nil {
+		return nil, err
 	}
 
 	spaceID := normalizeSpaceID(input.SpaceID)
@@ -403,7 +413,28 @@ func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error)
 	return fact, nil
 }
 
+// validateFactInput enforces the normalized required inputs shared by every
+// assertion path. It lives here, not in the public wrappers, so callers that
+// reach assertFactLocked directly (IngestBatch and SupersedeFact) cannot skip
+// provenance validation. Support is checked in its normalized form, so a list
+// of only blank IDs is treated as empty.
+func validateFactInput(input FactInput) error {
+	if strings.TrimSpace(input.Predicate) == "" {
+		return errorf(ErrInputInvalid, "fact predicate is required", map[string]any{"field": "predicate"}, nil)
+	}
+	if strings.TrimSpace(input.SubjectID) == "" {
+		return errorf(ErrInputInvalid, "fact subject_id is required", map[string]any{"field": "subject_id"}, nil)
+	}
+	if len(dedupeStrings(input.SupportingEpisodeIDs)) == 0 {
+		return errorf(ErrInputInvalid, "supporting_episode_ids must contain at least one episode", map[string]any{"field": "supporting_episode_ids"}, nil)
+	}
+	return nil
+}
+
 func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycleFields bool) (*Fact, error) {
+	if err := validateFactInput(input); err != nil {
+		return nil, err
+	}
 	if _, ok := e.entities[input.SubjectID]; !ok {
 		return nil, errorf(ErrEntityNotFound, "subject entity not found", map[string]any{"subject_id": input.SubjectID}, nil)
 	}
@@ -448,6 +479,8 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 	id := input.ID
 	if id == "" {
 		id = e.newIDLocked("fact")
+	} else if err := e.ensureGlobalIDAvailableLocked(id, kindFact); err != nil {
+		return nil, err
 	}
 	if _, ok := e.facts[id]; ok {
 		return nil, errorf(ErrLifecycleInvalid, "fact id already exists", map[string]any{"fact_id": id}, nil)
