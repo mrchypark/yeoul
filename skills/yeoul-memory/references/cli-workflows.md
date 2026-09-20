@@ -76,7 +76,7 @@ yeoul inspect counts --db "$YEOUL_DB" --json
 yeoul fact lookup --db "$YEOUL_DB" --include-inactive --limit 10 --json
 ```
 
-The command is idempotent for an existing LatticeDB database. When conversion occurs it reports a timestamped `.ladybug-backup-*` path; keep that backup until counts, search, revisions, and lifecycle state are verified.
+The command is idempotent for an existing LatticeDB database. When conversion occurs it reports a timestamped `.ladybug-backup-*` path; keep that backup until counts, search, revisions, and lifecycle state are verified. A read-only open never converts a legacy database and reports `YEOUL_NOT_SUPPORTED` with a migration requirement instead, so run the explicit command above before read-only inspection.
 
 Use `--policy-path` with `--recipe` when a pack should shape retrieval:
 

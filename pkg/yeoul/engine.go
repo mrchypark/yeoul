@@ -18,13 +18,34 @@ const (
 	factCardinalityMany  = "many"
 	entityHistoryKey     = "_history"
 	bitemporalWatermark  = "bitemporal_revision_seed_v1"
+	// historyInferredKey marks a record whose historical value was
+	// reconstructed by the legacy revision seed rather than recorded by an
+	// ordinary write. It is engine-managed: callers read it to learn that the
+	// historical answer is inferred and may be incomplete.
+	historyInferredKey = "history_inferred"
 )
 
+// reservedFactMetadataKeys are engine-managed fact keys: an ordinary fact write
+// must not be able to set them, because they carry lifecycle state rather than
+// caller context.
 var reservedFactMetadataKeys = map[string]bool{
 	"superseded_by":    true,
 	"supersedes":       true,
 	"supersede_reason": true,
 	"duplicate_of":     true,
+	historyInferredKey: true,
+	entityHistoryKey:   true,
+}
+
+// reservedEntityMetadataKeys are the engine-managed entity keys an ordinary
+// entity write must not set. The list is deliberately shorter than the fact
+// list: "duplicate_of" is caller-supplied entity context here, written by the
+// entity merge and compaction commands, so it stays writable. The two keys
+// below are provenance: _history is the engine's own revision log, and
+// history_inferred claims a historical answer was reconstructed, so accepting
+// either from a caller would let a write forge the engine's provenance.
+var reservedEntityMetadataKeys = map[string]bool{
+	historyInferredKey: true,
 	entityHistoryKey:   true,
 }
 
@@ -143,6 +164,9 @@ func (e *engine) ensureWritableLocked() error {
 }
 
 func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*EpisodeResult, error) {
+	if err := rejectSecretFields(episodeSecretFields(input)); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(input.Kind) == "" {
 		return nil, errorf(ErrInputInvalid, "episode kind is required", map[string]any{"field": "kind"}, nil)
 	}
@@ -169,6 +193,22 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 }
 
 func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResult, error) {
+	for _, episode := range input.Episodes {
+		if err := rejectSecretFields(episodeSecretFields(episode)); err != nil {
+			return nil, err
+		}
+	}
+	for _, entity := range input.Entities {
+		if err := rejectSecretFields(entitySecretFields(entity)); err != nil {
+			return nil, err
+		}
+	}
+	for _, fact := range input.Facts {
+		fields := append(factSecretFields(fact), textSecretFields("fact.supporting_episode_ids", fact.SupportingEpisodeIDs)...)
+		if err := rejectSecretFields(fields); err != nil {
+			return nil, err
+		}
+	}
 	result := &BatchResult{}
 	err := e.mutateLocked(ctx, func() error {
 		for _, episode := range input.Episodes {
@@ -246,6 +286,9 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 }
 
 func (e *engine) UpsertEntity(ctx context.Context, input EntityInput) (*Entity, error) {
+	if err := rejectSecretFields(entitySecretFields(input)); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(input.Type) == "" {
 		return nil, errorf(ErrInputInvalid, "entity type is required", map[string]any{"field": "type"}, nil)
 	}
@@ -315,6 +358,15 @@ func (e *engine) ingestEpisodeLocked(spaceID string, input EpisodeInput, source 
 }
 
 func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
+	// An entity revision carries no status field, so its metadata is the only
+	// place a lifecycle marker can live. Ordinary entity writes therefore fail
+	// closed on engine-managed keys exactly like assertFactLocked does, before
+	// any state changes.
+	for key := range input.Metadata {
+		if reservedEntityMetadataKeys[key] {
+			return nil, errorf(ErrLifecycleInvalid, "entity metadata key is lifecycle-managed", map[string]any{"metadata_key": key}, nil)
+		}
+	}
 	now := e.txNow()
 	spaceID := normalizeSpaceID(input.SpaceID)
 	id := input.ID
@@ -342,6 +394,13 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 		// stable_key is engine-managed: ordinary metadata must not be able to
 		// change a stored strong identity.
 		delete(metadata, "stable_key")
+		// Engine-managed lifecycle keys must not be able to change stored
+		// history semantics either. The ordinary write path already rejects
+		// them above; stripping here keeps a future lifecycle-permitting path
+		// from letting them ride into a seeded or recorded revision.
+		for key := range reservedEntityMetadataKeys {
+			delete(metadata, key)
+		}
 	}
 	if strings.TrimSpace(input.StableKey) != "" {
 		metadata = mergeAnyMap(metadata, map[string]any{"stable_key": input.StableKey})
@@ -396,6 +455,9 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 }
 
 func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error) {
+	if err := rejectSecretFields(append(factSecretFields(input), textSecretFields("fact.supporting_episode_ids", input.SupportingEpisodeIDs)...)); err != nil {
+		return nil, err
+	}
 	if err := validateFactInput(input); err != nil {
 		return nil, err
 	}
@@ -574,6 +636,11 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 }
 
 func (e *engine) SupersedeFact(ctx context.Context, factID string, input FactInput, reason string) (*SupersedeFactResult, error) {
+	fields := append(factSecretFields(input), textSecretFields("fact.supporting_episode_ids", input.SupportingEpisodeIDs)...)
+	fields = append(fields, reasonSecretField("supersede.reason", reason)...)
+	if err := rejectSecretFields(fields); err != nil {
+		return nil, err
+	}
 	var result *SupersedeFactResult
 	err := e.mutateLocked(ctx, func() error {
 		var err error
@@ -643,6 +710,9 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 }
 
 func (e *engine) RetractFact(ctx context.Context, factID string, reason string) (*RetractFactResult, error) {
+	if err := rejectSecretFields(reasonSecretField("retract.reason", reason)); err != nil {
+		return nil, err
+	}
 	var result *RetractFactResult
 	err := e.mutateLocked(ctx, func() error {
 		fact, ok := e.facts[factID]

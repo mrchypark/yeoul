@@ -146,6 +146,7 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 		return
 	}
 	appliedAt := e.now()
+	inferredFactCount := 0
 	for _, fact := range e.facts {
 		if fact.Status != factStatusActive && !fact.CreatedAt.IsZero() && fact.UpdatedAt.After(fact.CreatedAt) {
 			initial := fact
@@ -154,9 +155,11 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 			initial.RetractedAt = time.Time{}
 			initial.RetractionReason = ""
 			initial.Metadata = stripFactLifecycleMetadata(initial.Metadata)
+			initial.Metadata = markHistoryInferred(initial.Metadata)
 			revision := newFactRevision("seed:"+fact.ID+":initial", initial, "migration_seed_initial", fact.CreatedAt)
 			if _, ok := e.factRevisions[revision.ID]; !ok {
 				e.factRevisions[revision.ID] = revision
+				inferredFactCount++
 			}
 		}
 		revision := newFactRevision("seed:"+fact.ID+":current", fact, "migration_seed", chooseTime(fact.UpdatedAt, chooseTime(fact.CreatedAt, appliedAt)))
@@ -164,10 +167,16 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 			e.factRevisions[revision.ID] = revision
 		}
 	}
+	inferredEntityCount := 0
 	for _, entity := range e.entities {
 		revision := newEntityRevision("seed:"+entity.ID, entity, "migration_seed", chooseTime(entity.UpdatedAt, chooseTime(entity.CreatedAt, appliedAt)))
 		if _, ok := e.entityRevisions[revision.ID]; !ok {
+			// An entity revision has no status field, so metadata is the only
+			// place the inferred marker can live. Only the copy carried by the
+			// revision is marked; the live entity in e.entities stays clean.
+			revision.Metadata = markHistoryInferred(revision.Metadata)
 			e.entityRevisions[revision.ID] = revision
+			inferredEntityCount++
 		}
 	}
 	e.migrationWatermarks[bitemporalWatermark] = MigrationWatermark{
@@ -176,8 +185,23 @@ func (e *engine) seedBitemporalRevisionsLocked() {
 		Metadata: map[string]any{
 			"fact_count":   len(e.facts),
 			"entity_count": len(e.entities),
+			// Only the revisions this seed reconstructed carry the inferred
+			// marker, so the flag and the per-kind counts disclose how much
+			// history was reconstructed rather than recorded. A database with
+			// nothing to reconstruct seeds revisions but infers none.
+			"inferred_history":      inferredFactCount > 0 || inferredEntityCount > 0,
+			"inferred_fact_count":   inferredFactCount,
+			"inferred_entity_count": inferredEntityCount,
 		},
 	}
+}
+
+// markHistoryInferred flags a reconstructed record whose exact history the
+// legacy database did not preserve. The marker travels with the record into
+// query results so a caller can tell an inferred historical answer from one a
+// recorded revision produced.
+func markHistoryInferred(metadata map[string]any) map[string]any {
+	return mergeAnyMap(metadata, map[string]any{historyInferredKey: true})
 }
 
 func stripFactLifecycleMetadata(src map[string]any) map[string]any {

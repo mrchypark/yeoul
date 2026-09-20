@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// errMigrationRequired marks a read-only open that found a database the default
+// driver cannot read. The wrapped sentinel lets callers distinguish a
+// conversion the caller declined from an unrelated open failure.
+var errMigrationRequired = errors.New("database migration is required")
+
 const (
 	// openStoreAttempts bounds the retries an open may spend on recovery or on
 	// converting a legacy database before it gives up.
@@ -153,6 +158,15 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 		// after one crashed. The lock this open holds rules out a live migration,
 		// so a marker here means recovery is due. Recovery changes the database
 		// namespace, so it runs under the exclusive lock.
+		//
+		// Recovery runs for a read-only open too, and deliberately so: the
+		// read-only contract below forbids starting a conversion, not finishing
+		// one. A marker is proof that a migration already began on this
+		// database, and the only complete snapshot may still be sitting in the
+		// staging path. Refusing to recover would leave the database unusable
+		// for a reader that never asked for a conversion, so completing the
+		// interrupted protocol is treated as part of opening, not as a mutation
+		// the caller must opt into with AllowMigration.
 		pending, pendingErr := migrationRecoveryPending(databasePath)
 		if pendingErr != nil {
 			_ = lock.Release()
@@ -205,6 +219,13 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 			return nil, openErr
 		}
 		if !openMayRequireMigration(cfg) {
+			if cfg.Driver == "" && cfg.ReadOnly && !cfg.AllowMigration && databasePathExists(cfg.DatabasePath) {
+				// The default driver could not read a database that exists, and this
+				// read-only open may not convert it. Report the migration
+				// requirement instead of mutating the source the caller only asked
+				// to inspect.
+				return nil, migrationRequiredError(cfg, openErr)
+			}
 			return nil, openErr
 		}
 		// The driver was left to the default, the path exists, and the canonical
@@ -386,14 +407,40 @@ func openDriverStore(cfg Config) (stateStore, error) {
 // openMayRequireMigration reports whether a failed driver open can mean the
 // database is still a legacy database that the default driver has to convert.
 // An explicit driver never triggers an implicit migration.
+//
+// A read-only open is a no-mutation open: converting a legacy database replaces
+// its format in place, which an inspection or backup caller never asked for, so
+// the conversion only runs when the caller opted in with AllowMigration. A
+// writable open keeps converting automatically because the caller already
+// accepted a mutation of the database.
 func openMayRequireMigration(cfg Config) bool {
 	if cfg.Driver != "" {
 		return false
 	}
-	if _, err := os.Stat(cfg.DatabasePath); err != nil {
+	if cfg.ReadOnly && !cfg.AllowMigration {
 		return false
 	}
-	return true
+	return databasePathExists(cfg.DatabasePath)
+}
+
+// databasePathExists reports whether a database file or directory exists at the
+// path. It is the evidence that a failed driver open might be a legacy database
+// rather than a database this open is about to create.
+func databasePathExists(databasePath string) bool {
+	_, err := os.Stat(databasePath)
+	return err == nil
+}
+
+// migrationRequiredError reports that a read-only open found a database the
+// default driver cannot read and that a conversion would be required. The open
+// does not convert on its own, so the caller decides between an explicit
+// migration and opening with the legacy driver.
+func migrationRequiredError(cfg Config, cause error) error {
+	return errorf(ErrNotSupported, "database requires migration before it can be opened read-only", map[string]any{
+		"database_path": cfg.DatabasePath,
+		"reason":        "read-only open does not convert a legacy database",
+		"remediation":   "run 'yeoul admin migrate-db --db <path>' or open with allow_migration set",
+	}, errors.Join(errMigrationRequired, cause))
 }
 
 func resolveStorageDriver(cfg Config) StorageDriver {

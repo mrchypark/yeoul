@@ -40,6 +40,9 @@ Examples:
 - missing required field
 - invalid ontology file
 - unsupported recipe parameter
+- input that matches a recognized credential shape (`YEOUL_INPUT_INVALID`); the
+  rejection reports only the input path and the credential class, never the
+  rejected value
 
 ### Consistency
 Examples:
@@ -58,6 +61,7 @@ Examples:
 - planned service-only feature in embedded mode
 - unsupported policy version
 - unsupported query operator
+- read-only open of a database that requires migration (`YEOUL_NOT_SUPPORTED`)
 
 ## Suggested error codes
 - `YEOUL_CONFIG_INVALID`

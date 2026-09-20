@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+script_dir="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
+
 if [[ $# -lt 2 || $# -gt 3 ]]; then
   echo "usage: $0 <target-os> <target-arch> [modfile]" >&2
   exit 1
@@ -85,6 +87,7 @@ for candidate in "${assets[@]}"; do
     download_url="https://github.com/LadybugDB/ladybug/releases/download/${release_ref}/${candidate}"
   fi
   if curl -fsSL "${download_url}" -o "${archive_path}" 2>/dev/null; then
+    "${script_dir}/verify-runtime-digest.sh" "${release_ref}" "${candidate}" "${archive_path}"
     asset="${candidate}"
     break
   fi

@@ -198,6 +198,12 @@ yeoul fact retract --db ./yeoul.ltdb --id fact_123 --reason "incorrect source"
 - `--cardinality one|many`
 - `--supporting-episodes IDS` required
 
+`--cardinality one` replaces the whole overlapping active fact in the same
+subject/predicate slot; it does not split validity intervals. A bounded
+assertion such as `--valid-from 2026-02-01 --valid-to 2026-03-01` that replaces an
+open-ended earlier fact leaves no active fact after the new `--valid-to`. Prefer
+`fact supersede` when the earlier fact should stay active outside the new window.
+
 #### `lookup` flags
 - `--subject-id IDS`, `--predicate PREDS`, `--object-id IDS`, `--object-text TEXT`
 - `--group-id IDS`
@@ -266,6 +272,14 @@ yeoul index publish-rax --root ~/.local/share/yeoul/index --store ~/.local/share
 - rebuilds or validates projection state against the LatticeDB-backed Yeoul database
 - can publish Yeoul-owned projections into a rax FFI-backed `.rax` retrieval index
 
+`publish-rax` publishes the current projection documents into the target store by
+appending or updating documents by ID. It does not replace the store: documents
+already present that the projection does not contain are left untouched, so
+publishing a different corpus into a reused `--store` accumulates documents
+instead of swapping them. Use a fresh `--store` path when the store must contain
+only the current projection. The JSON `published_document_count` reports the
+documents submitted by this publication, not the target store's total size.
+
 ### `yeoul bench`
 Run benchmark suites.
 
@@ -287,6 +301,18 @@ Operational commands.
 - `compact` — `--apply` performs compaction; dry-run by default
 - `export` — `--out FILE`
 - `import` — `--in FILE`
+
+#### `export`/`import` scope
+`admin export` and `admin import` move logical records, not temporal state. Export
+deliberately refuses to emit an importable snapshot when the database contains
+revision history, inactive facts, or fact lifecycle metadata, because full
+fidelity restore is not implemented and a lossy snapshot would silently drop
+history. Import re-ingests episodes, entities, and facts as new records, so the
+original ingestion times and revisions are not restored. For a full-fidelity
+backup that preserves records, revisions, and historical query results, stop all
+Yeoul processes and copy the native database directory as described in
+[local-storage.md](../08-operations/local-storage.md); `admin export` is not a
+temporal backup/restore mechanism.
 
 ## Global flags
 - `--confirm` — required for destructive operations (stripped before dispatch)

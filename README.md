@@ -98,6 +98,13 @@ into the Go module cache once per machine:
 bash scripts/ci/setup-ladybug.sh darwin arm64   # darwin arm64|amd64, linux amd64|arm64, windows amd64
 ```
 
+`setup-ladybug.sh` and the release `stage-runtime.sh` verify each downloaded
+native archive against the committed SHA-256 pins in
+`scripts/ci/runtime-digests.txt` before extracting or staging it. An asset with
+no pin, or bytes that do not match its pin, is refused, so rebuilding the same
+Yeoul source cannot silently accept a replaced upstream binary. Add or update a
+pin only when intentionally moving to a new upstream release.
+
 Then build, vet, and test normally:
 
 ```bash
@@ -111,12 +118,20 @@ when the bundled `librax_ffi` library is not present.
 
 ## Database Migration
 
-Opening an existing Ladybug database with the default driver automatically
-converts it to LatticeDB. Yeoul writes and verifies a staging database first,
-keeps the original as a timestamped `.ladybug-backup-*` sibling, and then
-installs the verified Lattice database at the original path. New databases use
-the standard `.ltdb` extension. An existing `.lbug` path remains valid after
-in-place migration for backward compatibility.
+A writable open of an existing Ladybug database with the default driver
+automatically converts it to LatticeDB. Yeoul writes and verifies a staging
+database first, keeps the original as a timestamped `.ladybug-backup-*`
+sibling, and then installs the verified Lattice database at the original path.
+New databases use the standard `.ltdb` extension. An existing `.lbug` path
+remains valid after in-place migration for backward compatibility.
+
+A read-only open is a no-mutation open. It never converts a legacy database:
+when the default driver cannot read the database it reports
+`YEOUL_NOT_SUPPORTED: database requires migration before it can be opened
+read-only` and leaves every source file and format unchanged. Inspection and
+backup callers therefore cannot trigger a conversion by accident. To convert a
+database from a read-only caller, run `yeoul admin migrate-db` explicitly, or
+open through the embedded API with `Config.AllowMigration` set.
 Yeoul v0.5.2 and later use the bundled Ladybug v0.13.1 helper for databases
 created by Yeoul v0.2.2. Migration fails without modifying the source database
 when that helper or its matching runtime is unavailable. Do not use Yeoul

@@ -560,7 +560,7 @@ func TestMigrateDatabaseKeepsStagingWhenRollbackFails(t *testing.T) {
 	if err := recoverDatabaseMigration(dbPath); err != nil {
 		t.Fatalf("recover after the failed rollback: %v", err)
 	}
-	engine, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	engine, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true, AllowMigration: true})
 	if err != nil {
 		t.Fatalf("open the recovered database: %v", err)
 	}

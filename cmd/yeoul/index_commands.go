@@ -79,12 +79,15 @@ type indexVerifyResult struct {
 }
 
 type indexPublishRaxResult struct {
-	Root             string `json:"root"`
-	ProjectionPath   string `json:"projection_path"`
-	StorePath        string `json:"store_path"`
-	RaxRuntime       string `json:"rax_runtime"`
-	Published        bool   `json:"published"`
-	RaxDocumentCount int    `json:"rax_document_count"`
+	Root           string `json:"root"`
+	ProjectionPath string `json:"projection_path"`
+	StorePath      string `json:"store_path"`
+	RaxRuntime     string `json:"rax_runtime"`
+	Published      bool   `json:"published"`
+	// PublishedDocumentCount counts the projection documents submitted in this
+	// publication. Publication appends or updates by document ID in the target
+	// store; it is not a replacement, so this is not the target's total size.
+	PublishedDocumentCount int `json:"published_document_count"`
 }
 
 type raxRuntime struct {
@@ -288,6 +291,12 @@ func (c cli) runIndexPublishRax(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul index publish-rax --root DIR --store FILE [--rax-lib PATH] [--rax-bin PATH] [--json]
+
+Publishes the current projection documents into an existing rax store by
+appending or updating documents by ID. Documents already in the store that the
+projection does not contain are left untouched, so publishing a different
+corpus into a reused store accumulates documents instead of replacing them.
+Use a fresh --store path when the store must contain only this projection.
 `)
 	fs := newFlagSet("index publish-rax")
 	var root string
@@ -339,12 +348,12 @@ Usage:
 		return fmt.Errorf("rax publish failed: %w", err)
 	}
 	result := indexPublishRaxResult{
-		Root:             root,
-		ProjectionPath:   projectionPath,
-		StorePath:        storePath,
-		RaxRuntime:       runtime.String(),
-		Published:        true,
-		RaxDocumentCount: len(projections),
+		Root:                   root,
+		ProjectionPath:         projectionPath,
+		StorePath:              storePath,
+		RaxRuntime:             runtime.String(),
+		Published:              true,
+		PublishedDocumentCount: len(projections),
 	}
 	if jsonOut {
 		return writeJSON(c.stdout, result)
@@ -361,12 +370,12 @@ func (c cli) finishEmptyRaxPublish(root, projectionPath, storePath string, runti
 		return fmt.Errorf("rax publish failed: %w", err)
 	}
 	result := indexPublishRaxResult{
-		Root:             root,
-		ProjectionPath:   projectionPath,
-		StorePath:        storePath,
-		RaxRuntime:       runtime.String(),
-		Published:        true,
-		RaxDocumentCount: 0,
+		Root:                   root,
+		ProjectionPath:         projectionPath,
+		StorePath:              storePath,
+		RaxRuntime:             runtime.String(),
+		Published:              true,
+		PublishedDocumentCount: 0,
 	}
 	if jsonOut {
 		return writeJSON(c.stdout, result)

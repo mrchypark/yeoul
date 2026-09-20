@@ -605,7 +605,7 @@ func validateImportableExportPayload(payload *exportFile) error {
 }
 
 func hasFactLifecycleMetadata(metadata map[string]any) bool {
-	for _, key := range []string{"superseded_by", "supersedes", "supersede_reason", "duplicate_of", "_history"} {
+	for _, key := range []string{"superseded_by", "supersedes", "supersede_reason", "duplicate_of", "_history", "history_inferred"} {
 		if _, ok := metadata[key]; ok {
 			return true
 		}

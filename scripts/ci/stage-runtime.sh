@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+script_dir="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
+
 if [[ $# -ne 3 ]]; then
   echo "usage: $0 <target-os> <target-arch> <binary-path>" >&2
   exit 1
@@ -123,6 +125,7 @@ stage_rax_runtime() {
     tmp_dir="$(mktemp -d)"
     archive="${tmp_dir}/${asset}"
     curl -fsSL "https://github.com/mrchypark/rax/releases/download/${rax_version}/${asset}" -o "${archive}"
+    "${script_dir}/verify-runtime-digest.sh" "${rax_version}" "${asset}" "${archive}"
     if [[ "${asset}" == *.zip ]]; then
       unzip -q "${archive}" -d "${tmp_dir}"
     else

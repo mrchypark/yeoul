@@ -64,6 +64,9 @@ func runFakeRax() int {
 		_, _ = os.Stderr.WriteString("fake ingest failure\n")
 		return 2
 	}
+	if os.Getenv("YEOUL_FAKE_RAX_MERGE_DOCIDS") == "1" {
+		return runFakeRaxMergeDocIDs(args)
+	}
 	for i, arg := range args {
 		if arg == "--store" && i+1 < len(args) {
 			if err := os.WriteFile(args[i+1], []byte("fake rax store"), 0o644); err != nil {
@@ -90,6 +93,67 @@ func runFakeRax() int {
 
 	_, _ = os.Stderr.WriteString("missing --input\n")
 	return 2
+}
+
+// runFakeRaxMergeDocIDs models rax ingest semantics faithfully enough to
+// observe publication: documents are appended or updated by doc_id, and
+// document IDs already present in the store are retained. The store file holds
+// one doc_id per line so a test can read the effective membership back.
+func runFakeRaxMergeDocIDs(args []string) int {
+	var storePath, inputPath string
+	for i, arg := range args {
+		switch arg {
+		case "--store":
+			if i+1 < len(args) {
+				storePath = args[i+1]
+			}
+		case "--input":
+			if i+1 < len(args) {
+				inputPath = args[i+1]
+			}
+		}
+	}
+	if storePath == "" || inputPath == "" {
+		_, _ = os.Stderr.WriteString("merge fake rax needs --store and --input\n")
+		return 2
+	}
+	seen := map[string]bool{}
+	order := []string{}
+	if existing, err := os.ReadFile(storePath); err == nil {
+		for _, line := range strings.Split(strings.TrimRight(string(existing), "\n"), "\n") {
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			order = append(order, line)
+		}
+	}
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		return 2
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var doc struct {
+			DocID string `json:"doc_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &doc); err != nil || doc.DocID == "" {
+			_, _ = os.Stderr.WriteString("merge fake rax cannot read doc_id\n")
+			return 2
+		}
+		if !seen[doc.DocID] {
+			seen[doc.DocID] = true
+			order = append(order, doc.DocID)
+		}
+	}
+	if err := os.WriteFile(storePath, []byte(strings.Join(order, "\n")+"\n"), 0o644); err != nil {
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		return 2
+	}
+	return 0
 }
 
 func TestLookupRaxRuntimeFindsBundledFFI(t *testing.T) {
@@ -470,7 +534,7 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	}
 
 	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
-	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_runtime": "cli:`) || !strings.Contains(publish, `"rax_document_count": 4`) {
+	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_runtime": "cli:`) || !strings.Contains(publish, `"published_document_count": 4`) {
 		t.Fatalf("expected publish JSON output, got %q", publish)
 	}
 	raxArgs, err := os.ReadFile(raxArgsPath)
@@ -2795,6 +2859,308 @@ func TestCLIAdminExportRefusesUnsupportedPlatform(t *testing.T) {
 	}
 }
 
+// TestCLIIndexPublishRaxAppendsToExistingStore pins the documented
+// publication semantics: publish-rax appends or updates documents by ID in an
+// existing store instead of replacing it, and the reported count describes the
+// incoming projection only. Publishing two disjoint corpora into one target
+// must therefore leave both corpora present.
+func TestCLIIndexPublishRaxAppendsToExistingStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	fakeRaxPath := os.Args[0]
+	argsPath := filepath.Join(tmpDir, "rax-args.txt")
+	projectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	storePath := filepath.Join(tmpDir, "shared.rax")
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", argsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", projectionPath)
+	t.Setenv("YEOUL_FAKE_RAX_MERGE_DOCIDS", "1")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	// Each corpus lives in its own database and index root so the two
+	// projections are disjoint, exactly like publishing two different sources
+	// into one reused store.
+	buildCorpus := func(name, episodeID, factID string) string {
+		t.Helper()
+		dbPath := filepath.Join(tmpDir, name+".ltdb")
+		ingestPath := filepath.Join(tmpDir, name+"-ingest.json")
+		root := filepath.Join(tmpDir, name+"-index")
+		payload := `{
+  "episodes": [{"id":"` + episodeID + `","kind":"note","content":"` + name + ` corpus note","source":{"kind":"note","external_ref":"` + name + `"}}],
+  "entities": [{"id":"project:` + name + `","type":"Project","canonical_name":"` + name + `"}],
+  "facts": [{"id":"` + factID + `","predicate":"DESCRIBES","subject_id":"project:` + name + `","value_text":"` + name + ` corpus fact","supporting_episode_ids":["` + episodeID + `"]}]
+}`
+		if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+			t.Fatalf("write ingest payload: %v", err)
+		}
+		runCLI("init", "--db", dbPath)
+		runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+		runCLI("index", "build", "--db", dbPath, "--root", root, "--json")
+		return root
+	}
+
+	firstRoot := buildCorpus("alpha", "ep-alpha", "fact-alpha")
+	secondRoot := buildCorpus("beta", "ep-beta", "fact-beta")
+
+	first := runCLI("index", "publish-rax", "--root", firstRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(first, `"published_document_count": 3`) {
+		t.Fatalf("expected first publish to report its own 3 documents, got %q", first)
+	}
+	if strings.Contains(first, "rax_document_count") {
+		t.Fatalf("expected the ambiguous rax_document_count field to be gone, got %q", first)
+	}
+	second := runCLI("index", "publish-rax", "--root", secondRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(second, `"published_document_count": 3`) {
+		t.Fatalf("expected second publish to report its own 3 documents, got %q", second)
+	}
+
+	storeData, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	for _, docID := range []string{"fact:fact-alpha", "fact:fact-beta"} {
+		if !strings.Contains(string(storeData), docID) {
+			t.Fatalf("expected publication to append %s into the reused store, got %q", docID, string(storeData))
+		}
+	}
+}
+
+// installedRaxLibraryPaths lists the rax libraries of every Yeoul install under
+// <home>/.local/share/yeoul/<tag>/lib, newest install first. The installed CLI
+// resolves its runtime relative to its own executable, which a test binary in a
+// temporary directory cannot reproduce, so tests fall back to this layout. The
+// ordering uses each install's modification time rather than its tag, because
+// tag names do not sort as versions (v0.5.10 precedes v0.5.4 lexicographically).
+func installedRaxLibraryPaths(home string) []string {
+	matches, err := filepath.Glob(filepath.Join(home, ".local", "share", "yeoul", "*", "lib", raxLibraryName()))
+	if err != nil {
+		return nil
+	}
+	type installed struct {
+		path    string
+		modTime time.Time
+	}
+	found := make([]installed, 0, len(matches))
+	for _, match := range matches {
+		info, err := os.Stat(match)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		found = append(found, installed{path: match, modTime: info.ModTime()})
+	}
+	slices.SortFunc(found, func(a, b installed) int {
+		return b.modTime.Compare(a.modTime)
+	})
+	paths := make([]string, 0, len(found))
+	for _, item := range found {
+		paths = append(paths, item.path)
+	}
+	return paths
+}
+
+// raxRealFFILibraryPath resolves a real bundled rax FFI library for this
+// machine, following the same precedence as lookupRaxLibrary: an explicit
+// YEOUL_RAX_LIB, then the candidates derived from the test binary location,
+// then the newest installed CLI runtime. It returns "" when no library is
+// discoverable, so callers can skip instead of fabricating a runtime.
+func raxRealFFILibraryPath() string {
+	if explicit := strings.TrimSpace(os.Getenv("YEOUL_RAX_LIB")); explicit != "" && isRegularFile(explicit) {
+		return explicit
+	}
+	for _, candidate := range bundledRaxLibraryCandidates() {
+		if isRegularFile(candidate) {
+			return candidate
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if paths := installedRaxLibraryPaths(home); len(paths) > 0 {
+		return paths[0]
+	}
+	return ""
+}
+
+// raxFFICompiledOut reports whether this test binary was built without cgo, in
+// which case rax_ffi_stub.go supplies a stub that always fails and the real FFI
+// path cannot run.
+func raxFFICompiledOut() bool {
+	_, err := raxFFISearchText("", "", "probe", 1)
+	return err != nil && strings.Contains(err.Error(), "requires cgo")
+}
+
+// TestCLIIndexPublishRaxRealFFIAppendsToExistingStore closes the gap left by
+// TestCLIIndexPublishRaxAppendsToExistingStore, which exercises only a fake rax
+// executable: it runs the same two-corpus scenario through the real bundled rax
+// FFI runtime and reads the store back with the real native search. Every rax
+// call travels the production seam (lookupRaxRuntime -> raxIngestDocs /
+// raxSearchText) rather than a test-owned implementation.
+//
+// The test skips when no real library is discoverable or the binary lacks cgo,
+// so machines and CI without a bundled runtime are unaffected.
+func TestCLIIndexPublishRaxRealFFIAppendsToExistingStore(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("rax FFI is built only for darwin and linux, running on %s", runtime.GOOS)
+	}
+	libPath := raxRealFFILibraryPath()
+	if libPath == "" {
+		t.Skip("no bundled rax FFI library found; install the rax runtime or set YEOUL_RAX_LIB to a real librax_ffi library")
+	}
+	if raxFFICompiledOut() {
+		t.Skip("test binary was built without cgo; rax FFI is compiled out")
+	}
+	t.Logf("using real rax FFI library %s", libPath)
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "shared.rax")
+	// Route both the CLI publish and the read-back search through the real
+	// library. Everything else stays under t.TempDir(), so no managed store or
+	// user data is touched.
+	t.Setenv("YEOUL_RAX_LIB", libPath)
+	t.Setenv("YEOUL_RAX_BIN", "")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	// Each corpus lives in its own database and index root so the two
+	// projections are disjoint, exactly like publishing two different sources
+	// into one reused store.
+	buildCorpus := func(name, episodeID, factID string) string {
+		t.Helper()
+		dbPath := filepath.Join(tmpDir, name+".ltdb")
+		ingestPath := filepath.Join(tmpDir, name+"-ingest.json")
+		root := filepath.Join(tmpDir, name+"-index")
+		payload := `{
+  "episodes": [{"id":"` + episodeID + `","kind":"note","content":"` + name + ` corpus note","source":{"kind":"note","external_ref":"` + name + `"}}],
+  "entities": [{"id":"project:` + name + `","type":"Project","canonical_name":"` + name + `"}],
+  "facts": [{"id":"` + factID + `","predicate":"DESCRIBES","subject_id":"project:` + name + `","value_text":"` + name + ` corpus fact","supporting_episode_ids":["` + episodeID + `"]}]
+}`
+		if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+			t.Fatalf("write ingest payload: %v", err)
+		}
+		runCLI("init", "--db", dbPath)
+		runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+		runCLI("index", "build", "--db", dbPath, "--root", root, "--json")
+		return root
+	}
+
+	firstRoot := buildCorpus("alpha", "ep-alpha", "fact-alpha")
+	secondRoot := buildCorpus("beta", "ep-beta", "fact-beta")
+
+	first := runCLI("index", "publish-rax", "--root", firstRoot, "--store", storePath, "--json")
+	if !strings.Contains(first, `"published_document_count": 3`) {
+		t.Fatalf("expected first publish to report its own 3 documents, got %q", first)
+	}
+	second := runCLI("index", "publish-rax", "--root", secondRoot, "--store", storePath, "--json")
+	if !strings.Contains(second, `"published_document_count": 3`) {
+		t.Fatalf("expected second publish to report its own 3 documents, got %q", second)
+	}
+
+	// Read the store back through the real native search. A query drawn from
+	// each corpus must surface that corpus's fact, which only holds if the second
+	// publish merged into the first store instead of replacing it.
+	realRuntime, ok := lookupRaxRuntime("", "")
+	if !ok {
+		t.Fatalf("expected the real rax FFI runtime to resolve from YEOUL_RAX_LIB=%q", libPath)
+	}
+	if realRuntime.Kind != "ffi" || realRuntime.Path != libPath {
+		t.Fatalf("expected the resolved runtime to be the real FFI library %q, got %#v", libPath, realRuntime)
+	}
+
+	found := map[string]bool{}
+	for _, query := range []string{"alpha", "beta"} {
+		output, err := raxSearchText(ctx, realRuntime, storePath, query, 10)
+		if err != nil {
+			t.Fatalf("real rax search %q: %v", query, err)
+		}
+		docIDs, err := parseRaxDocIDs(output)
+		if err != nil {
+			t.Fatalf("parse real rax search %q output %q: %v", query, string(output), err)
+		}
+		for _, docID := range docIDs {
+			found[docID] = true
+		}
+	}
+	for _, docID := range []string{"fact:fact-alpha", "fact:fact-beta"} {
+		if !found[docID] {
+			t.Fatalf("expected the reused store to still answer %s after both real publishes, got %v", docID, found)
+		}
+	}
+}
+
+// TestCLIIngestRejectsSecretCanaries exercises the pre-ingest boundary through
+// the CLI entry points that persist caller text: a single episode, a bulk JSON
+// payload (including metadata), and a lifecycle reason. Synthetic canaries are
+// used so no real credential is involved.
+func TestCLIIngestRejectsSecretCanaries(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "secrets.ltdb")
+	const canary = "AKIAIOSFODNN7EXAMPLE"
+
+	runCLI := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
+	}
+
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Single-episode ingest with the canary in --content.
+	_, err := runCLI("ingest", "episode", "--db", dbPath, "--kind", "note", "--content", "token is "+canary, "--source-kind", "note")
+	if err == nil {
+		t.Fatal("expected ingest episode to reject the secret canary")
+	}
+	if !strings.Contains(err.Error(), string(yeoul.ErrInputInvalid)) {
+		t.Fatalf("expected %s, got %v", yeoul.ErrInputInvalid, err)
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("CLI error echoed the rejected canary: %v", err)
+	}
+	if code := exitCode(err); code != 2 {
+		t.Fatalf("expected exit code 2 for a rejected secret, got %d", code)
+	}
+
+	// Bulk JSON ingest with the canary hidden in entity metadata.
+	payloadPath := filepath.Join(tmpDir, "secret-ingest.json")
+	payload := `{"entities":[{"id":"thing:x","type":"Thing","canonical_name":"x","metadata":{"token":"` + canary + `"}}]}`
+	if writeErr := os.WriteFile(payloadPath, []byte(payload), 0o644); writeErr != nil {
+		t.Fatalf("write payload: %v", writeErr)
+	}
+	_, err = runCLI("ingest", "json", "--db", dbPath, "--file", payloadPath)
+	if err == nil {
+		t.Fatal("expected ingest json to reject the secret canary")
+	}
+	if !strings.Contains(err.Error(), string(yeoul.ErrInputInvalid)) {
+		t.Fatalf("expected %s, got %v", yeoul.ErrInputInvalid, err)
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("CLI error echoed the rejected canary: %v", err)
+	}
+}
+
 // TestRaxPrimarySearchAcceptsAnchorExpansionMatches mirrors core anchor
 // semantics: an anchor constrains the seeds, and core may then rank facts that
 // reach the anchor through a bounded expansion. A Rax candidate that core
@@ -2925,7 +3291,7 @@ func TestCLIEmptyDatabaseRaxSearchAndPublish(t *testing.T) {
 		t.Fatalf("expected empty index build, got %q", build)
 	}
 	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
-	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_document_count": 0`) {
+	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"published_document_count": 0`) {
 		t.Fatalf("expected empty rax publish, got %q", publish)
 	}
 	if _, err := os.Stat(storePath); err != nil {
