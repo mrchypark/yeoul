@@ -9,9 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	json "github.com/goccy/go-json"
@@ -25,7 +23,10 @@ const (
 
 	legacyMigrationHelperEnv = "YEOUL_LEGACY_MIGRATION_HELPER"
 
-	legacyMigrationLockSuffix = ".yeoul-migration.lock"
+	// legacyMigrationOwnershipEnv marks the pinned helper child of a migration
+	// that already owns the database. The parent holds the exclusive ownership
+	// lock for the child's whole lifetime, so the child must not contend for it.
+	legacyMigrationOwnershipEnv = "YEOUL_INTERNAL_MIGRATION_OWNERSHIP_HELD"
 )
 
 // legacyMigrationSidecarSuffixes lists the native Ladybug sidecars that belong
@@ -65,16 +66,18 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 	if err != nil {
 		return nil, fmt.Errorf("resolve migration database path: %w", err)
 	}
-	if err := reclaimStaleMigrationLock(databasePath); err != nil {
+	// Ownership spans loading the source, building and verifying the staging
+	// database, the marker phases, and the cutover, so no writer can commit
+	// records the snapshot misses and no competing migrator can move the file
+	// set or overwrite the shared marker.
+	ownership, err := acquireMigrationOwnership(databasePath)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(legacyMigrationLockPath(databasePath)); err == nil {
-		return nil, errorf(ErrStorageFailed, "another database migration is in progress", map[string]any{
-			"database_path": databasePath,
-		}, nil)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
+	defer func() {
+		_ = ownership.Release()
+	}()
+
 	if err := recoverDatabaseMigration(databasePath); err != nil {
 		return nil, err
 	}
@@ -154,11 +157,15 @@ func legacyMigrationHelperEnvironment(environment []string) []string {
 		switch key {
 		case "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES":
 			continue
+		case legacyMigrationOwnershipEnv:
+			// The parent owns the database for this child's whole lifetime, so
+			// drop any inherited value and set the marker explicitly below.
+			continue
 		default:
 			filtered = append(filtered, entry)
 		}
 	}
-	return filtered
+	return append(filtered, legacyMigrationOwnershipEnv+"=1")
 }
 
 func legacyMigrationHelperPath() (string, error) {
@@ -177,17 +184,9 @@ func legacyMigrationHelperPath() (string, error) {
 }
 
 func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResult, error) {
-	// The migration holds the per-database migration lock for its whole
-	// duration, so a concurrent writer or migrator cannot change the source
+	// The caller already holds the exclusive ownership lock for the whole
+	// migration, so a concurrent writer or migrator cannot change the source
 	// after this snapshot or replace the shared marker.
-	releaseLock, err := acquireLegacyMigrationLock(databasePath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = releaseLock()
-	}()
-
 	legacy, err := newLadybugStore(Config{Driver: StorageDriverLadybug, DatabasePath: databasePath, ReadOnly: true})
 	if err != nil {
 		return nil, errorf(ErrStorageFailed, "open legacy ladybug database for migration", map[string]any{
@@ -276,9 +275,6 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 	}
 	if err := os.Remove(databaseMigrationMarkerPath(databasePath)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("remove migration marker: %w", err)
-	}
-	if err := releaseLock(); err != nil {
-		return nil, err
 	}
 	return &DatabaseMigrationResult{
 		DatabasePath: databasePath,
@@ -581,92 +577,26 @@ func databaseMigrationMarkerPath(databasePath string) string {
 	return databasePath + ".yeoul-migration.json"
 }
 
-func legacyMigrationLockPath(databasePath string) string {
-	return databasePath + legacyMigrationLockSuffix
-}
-
-// acquireLegacyMigrationLock takes the migration mutex for a database path. The
-// lock is a sibling file created with O_EXCL, so a second migrator cannot
-// replace the shared marker or move the file set underneath the first one. A
-// pending migration marker is recovered first, and a lock whose owner process
-// is gone is reclaimed, so a crash does not block future migrations forever.
-func acquireLegacyMigrationLock(databasePath string) (func() error, error) {
-	lockPath := legacyMigrationLockPath(databasePath)
-	for attempt := 0; attempt < 3; attempt++ {
-		file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, writeErr := fmt.Fprintf(file, "%d\n", os.Getpid())
-			closeErr := file.Close()
-			if writeErr != nil || closeErr != nil {
-				_ = os.Remove(lockPath)
-				return nil, errors.Join(writeErr, closeErr)
-			}
-			released := false
-			return func() error {
-				if released {
-					return nil
-				}
-				released = true
-				return os.Remove(lockPath)
-			}, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("create migration lock: %w", err)
-		}
-		if legacyMigrationLockOwnerAlive(lockPath) {
-			return nil, errorf(ErrStorageFailed, "another database migration is in progress", map[string]any{
-				"database_path": databasePath,
-			}, nil)
-		}
-		if _, statErr := os.Stat(databaseMigrationMarkerPath(databasePath)); statErr == nil {
-			if recoverErr := recoverDatabaseMigration(databasePath); recoverErr != nil {
-				return nil, recoverErr
-			}
-		}
-		if removeErr := os.Remove(lockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return nil, fmt.Errorf("reclaim stale migration lock: %w", removeErr)
-		}
+// acquireMigrationOwnership takes the exclusive ownership lock for one
+// migration. The lock is an operating-system lock on the database's ownership
+// file, so the kernel releases it when this process exits: a crash can never
+// leave a lock that later opens have to reclaim, and no caller ever removes an
+// ownership file on behalf of another owner.
+//
+// The pinned legacy helper is a child of this process and inherits ownership
+// through legacyMigrationOwnershipEnv, so it does not contend with its parent.
+func acquireMigrationOwnership(databasePath string) (*databaseOwnershipLock, error) {
+	if os.Getenv(legacyMigrationOwnershipEnv) == "1" {
+		return nil, nil
 	}
-	return nil, errorf(ErrStorageFailed, "database migration lock is held", map[string]any{
-		"database_path": databasePath,
-	}, nil)
-}
-
-// reclaimStaleMigrationLock removes a migration lock whose owner process is
-// gone, so a crashed migration does not block every later open.
-func reclaimStaleMigrationLock(databasePath string) error {
-	lockPath := legacyMigrationLockPath(databasePath)
-	if _, err := os.Stat(lockPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+	ownership, err := acquireDatabaseOwnership(databasePath, true)
+	if err == nil {
+		return ownership, nil
 	}
-	if legacyMigrationLockOwnerAlive(lockPath) {
-		return nil
+	if errors.Is(err, errDatabaseOwnershipBusy) {
+		return nil, errorf(ErrStorageFailed, "another database migration is in progress", map[string]any{
+			"database_path": databasePath,
+		}, nil)
 	}
-	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("reclaim stale migration lock: %w", err)
-	}
-	return nil
-}
-
-func legacyMigrationLockOwnerAlive(lockPath string) bool {
-	data, err := os.ReadFile(lockPath)
-	if err != nil {
-		return true
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return true
-	}
-	if runtime.GOOS == "windows" {
-		// Windows has no signal-0 liveness probe; treat the lock as live.
-		return true
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return process.Signal(syscall.Signal(0)) == nil
+	return nil, err
 }

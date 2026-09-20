@@ -216,7 +216,9 @@ func TestLegacyMigrationHelperEnvironmentRemovesInjectedRuntimes(t *testing.T) {
 		"DYLD_INSERT_LIBRARIES=/tmp/injected.dylib",
 		"YEOUL_DB=/memory.ltdb",
 	})
-	want := []string{"PATH=/usr/bin", "YEOUL_DB=/memory.ltdb"}
+	// The ownership marker is always set for the child: the parent holds the
+	// exclusive ownership lock for the helper's whole lifetime.
+	want := []string{"PATH=/usr/bin", "YEOUL_DB=/memory.ltdb", legacyMigrationOwnershipEnv + "=1"}
 	if len(got) != len(want) {
 		t.Fatalf("unexpected helper environment: %v", got)
 	}
