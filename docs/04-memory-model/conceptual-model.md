@@ -59,5 +59,5 @@ Every record should support:
 - ingested_at
 - valid_from
 - valid_to
-- expired_at
+- retracted_at
 - superseded_by

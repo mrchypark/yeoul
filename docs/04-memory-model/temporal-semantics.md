@@ -18,22 +18,32 @@ When a fact becomes valid.
 
 When a fact stops being valid.
 
-### expired_at
+### updated_at
 
-When Yeoul marks a fact as no longer active.
+When Yeoul last wrote the fact record.
+
+### retracted_at
+
+When Yeoul retracted a fact. Set only for retracted facts.
 
 ## Fact Status
 
-- active
-- superseded
-- contradicted
-- retracted
-- uncertain
+Yeoul implements exactly three fact statuses:
+
+- `active`
+- `superseded`
+- `retracted`
+
+Other lifecycle states discussed elsewhere (`contradicted`, `uncertain`,
+`archived`, and an `expired_at` field) are not implemented. They are future
+semantics: retrieval only ever returns these three statuses, and rejecting
+unknown statuses is deliberate.
 
 ## Rules
 
 1. New information should not overwrite old facts by default.
 2. If a fact changes, create a new fact and link it with `Supersedes`.
-3. If a fact is wrong, mark it as `retracted` or `contradicted`.
+3. If a fact is wrong, retract it. Contradiction is expressed by superseding
+   the fact with the corrected one.
 4. Retrieval should prefer active and recent facts but preserve access to older facts.
 5. Provenance must remain intact after supersession.

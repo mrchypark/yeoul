@@ -234,7 +234,8 @@ type IncludedRecords struct {
 - `mode=semantic` may use sparse token relevance plus a dependency-free character n-gram vector fallback for near-text matches.
 - `anchor_ids` bias results toward graph-local context without exposing raw traversal details.
 - `types` restrict the result set; default is `fact, episode, entity`.
-- `predicates` act as a soft filter when searching facts.
+- `predicates` act as a hard exclusion when searching facts: any fact whose
+  predicate is not listed is dropped from the result set.
 - When `include.snippets=true`, returned records may include short matched excerpts.
 
 ## Family 3: Fact Lookup
@@ -329,7 +330,8 @@ type NeighborhoodResponse struct {
 ### Semantics
 
 - `max_hops` defaults to `1`.
-- `max_hops` must be capped by the implementation to prevent explosive expansions.
+- `max_hops` is not capped yet. Callers that accept untrusted input must bound
+  it themselves; a future release may add a hard cap.
 - `edge_types` and `node_types` are allow-lists.
 - `max_nodes` selects the final node set first (anchors and nearest hops win), then filters edges, so every returned edge has both endpoints in `nodes`. `truncated` reports whether `max_nodes` dropped nodes.
 - Neighborhood is a graph context API, not a graph analytics API.
@@ -424,8 +426,10 @@ type ProvenanceResponse struct {
 
 ### Semantics
 
-- Provenance follows `DERIVED_FROM`, `ASSERTS`, `SUPPORTS`, `SUPERSEDES`, and equivalent internal edges.
-- `max_depth` defaults to `2` and must be capped.
+- Provenance follows the `ASSERTS`, `FROM_SOURCE`, `SUPERSEDES`, `SUBJECT`, and
+  `OBJECT` edges the engine emits. `DERIVED_FROM` and `SUPPORTS` are not
+  emitted.
+- `max_depth` defaults to `8` and is not capped yet.
 - Provenance is for explanation and inspection, not arbitrary graph traversal.
 
 ## Temporal semantics
