@@ -11,18 +11,46 @@ import (
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
+// entityIdentityKey is a comparable identity for automatic duplicate detection.
+// Fields are compared exactly (no case folding or trimming) and the stable key
+// is part of the identity, so entities that share a display name but carry
+// different strong identities are never marked as duplicates.
+type entityIdentityKey struct {
+	SpaceID       string
+	Namespace     string
+	Type          string
+	CanonicalName string
+	StableKey     string
+}
+
+func entityIdentityOf(entity yeoul.EntityInput) entityIdentityKey {
+	return entityIdentityKey{
+		SpaceID:       entity.SpaceID,
+		Namespace:     entity.Namespace,
+		Type:          entity.Type,
+		CanonicalName: entity.CanonicalName,
+		StableKey:     stableKeyOf(entity.Metadata),
+	}
+}
+
+func stableKeyOf(metadata map[string]any) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata["stable_key"]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
 func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
-	groups := make(map[string][]yeoul.EntityInput)
+	groups := make(map[entityIdentityKey][]yeoul.EntityInput)
 	for _, entity := range payload.Entities {
 		if duplicateOf(entity.Metadata) != "" {
 			continue
 		}
-		key := strings.Join([]string{
-			normalizeKey(entity.SpaceID),
-			normalizeKey(entity.Namespace),
-			normalizeKey(entity.Type),
-			normalizeKey(entity.CanonicalName),
-		}, "|")
+		key := entityIdentityOf(entity)
 		groups[key] = append(groups[key], entity)
 	}
 	candidates := make([]entityMergeCandidate, 0)
