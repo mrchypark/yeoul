@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -245,6 +246,23 @@ func writeJSON(w io.Writer, value any) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
+}
+
+// decodeSingleJSON decodes exactly one complete JSON document into out. It
+// rejects unknown fields and any trailing value or garbage, so a misspelled
+// key or a concatenated payload cannot be accepted as an empty or partial
+// import. Every JSON entry point uses this decoder.
+func decodeSingleJSON(data []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil || !errors.Is(err, io.EOF) {
+		return fmt.Errorf("unexpected trailing content after the first JSON document")
+	}
+	return nil
 }
 
 func requireDB(dbPath, usage string) error {

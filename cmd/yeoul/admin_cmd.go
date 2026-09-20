@@ -376,7 +376,7 @@ Usage:
 		return err
 	}
 	var payload ingestJSONFile
-	if err := json.Unmarshal(data, &payload); err != nil {
+	if err := decodeSingleJSON(data, &payload); err != nil {
 		return err
 	}
 	if len(payload.EntityRevisions) > 0 || len(payload.FactRevisions) > 0 {

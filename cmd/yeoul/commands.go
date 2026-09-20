@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	json "github.com/goccy/go-json"
 	latticedb "github.com/mrchypark/latticedb-go"
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/retrieval"
@@ -471,9 +470,7 @@ Usage:
 	}
 
 	var payload ingestJSONFile
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
+	if err := decodeSingleJSON(data, &payload); err != nil {
 		return fmt.Errorf("decode ingest file: %w", err)
 	}
 
