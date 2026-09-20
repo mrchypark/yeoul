@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	json "github.com/goccy/go-json"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -294,9 +295,25 @@ func shorten(text string, limit int) string {
 		return text
 	}
 	if limit <= 3 {
-		return text[:limit]
+		return truncateBytes(text, limit)
 	}
-	return text[:limit-3] + "..."
+	return truncateBytes(text, limit-3) + "..."
+}
+
+// truncateBytes returns the longest prefix of s that fits within n bytes
+// without splitting a UTF-8 sequence. The byte budget is preserved, but a
+// trailing partial rune is dropped so previews never emit invalid UTF-8.
+func truncateBytes(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n < 0 {
+		n = 0
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func readFile(path string) (string, error) {
