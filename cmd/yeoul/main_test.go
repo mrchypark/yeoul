@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -2184,5 +2186,60 @@ func TestCLIAdminExportUsesPrivatePermissions(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "ep-private") {
 		t.Fatalf("expected the replacement export to contain the episode, got %q", string(data))
+	}
+}
+
+func TestCLIAdminExportClearsInheritedACL(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("ACL inheritance check applies to macOS")
+	}
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "acl-export.ltdb")
+	exportDir := filepath.Join(tmpDir, "acl-out")
+	exportPath := filepath.Join(exportDir, "acl-export.json")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI(
+		"ingest", "episode",
+		"--db", dbPath,
+		"--id", "ep-acl",
+		"--kind", "note",
+		"--content", "acl export",
+		"--source-kind", "note",
+		"--source-external-ref", "thread-acl",
+	)
+	if err := os.MkdirAll(exportDir, 0o700); err != nil {
+		t.Fatalf("create export directory: %v", err)
+	}
+	account, err := user.Current()
+	if err != nil {
+		t.Fatalf("resolve current user: %v", err)
+	}
+	aclSpec := "user:" + account.Username + " allow read,file_inherit,directory_inherit"
+	if out, err := exec.Command("chmod", "+a", aclSpec, exportDir).CombinedOutput(); err != nil {
+		t.Skipf("cannot install a directory ACL in this environment: %v: %s", err, out)
+	}
+
+	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
+
+	out, err := exec.Command("ls", "-le", exportPath).Output()
+	if err != nil {
+		t.Fatalf("inspect export ACL: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, " allow ") {
+			t.Fatalf("expected the export to carry no inherited ACL entries, got %q", line)
+		}
 	}
 }

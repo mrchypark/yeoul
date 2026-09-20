@@ -294,7 +294,14 @@ Usage:
 // readable by other local accounts. The data is written to a private temporary
 // file in the target directory and published with a rename, so a failed write
 // leaves any previous export intact.
+//
+// Mode bits alone do not guarantee private effective access: inherited ACL
+// entries can grant read access on some platforms, so hardenPrivateFile
+// establishes platform-specific private access before any payload is written.
 func writePrivateFile(path string, data []byte) error {
+	if err := ensurePrivateFileSupported(); err != nil {
+		return err
+	}
 	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -302,6 +309,10 @@ func writePrivateFile(path string, data []byte) error {
 	tempPath := temp.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 
+	if err := hardenPrivateFile(tempPath); err != nil {
+		_ = temp.Close()
+		return err
+	}
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
 		return err
