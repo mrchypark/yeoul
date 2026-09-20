@@ -26,45 +26,71 @@ func BuildContext(resp yeoul.SearchResponse, opts ContextOptions) ContextBundle 
 	if maxBlocks <= 0 {
 		maxBlocks = 16
 	}
-	out := ContextBundle{
-		Meta: resp.Meta,
-		Hits: append([]yeoul.SearchHit(nil), resp.Hits...),
+	maxTextRunes := opts.MaxTextRunes
+	if maxTextRunes <= 0 {
+		maxTextRunes = 512
 	}
-	for _, hit := range resp.Hits {
+	out := ContextBundle{Meta: resp.Meta}
+	// Copy hits with bounded text: a bundle must not carry an unbounded episode
+	// through duplicated hit text when only Blocks are clipped.
+	if len(resp.Hits) > 0 {
+		out.Hits = make([]yeoul.SearchHit, 0, len(resp.Hits))
+		for _, hit := range resp.Hits {
+			text, clipped := clipRunes(hit.MatchedText, maxTextRunes)
+			if clipped {
+				out.Truncated = true
+			}
+			hit.MatchedText = text
+			out.Hits = append(out.Hits, hit)
+		}
+	}
+	for _, hit := range out.Hits {
 		if !appendBlock(&out, maxBlocks, ContextBlock{
 			Kind:      "hit",
 			Title:     hit.HitType + ":" + hit.RecordID,
-			Text:      clipRunes(hit.MatchedText, opts.MaxTextRunes),
+			Text:      hit.MatchedText,
 			RecordIDs: []string{hit.RecordID},
 		}) {
 			break
 		}
 	}
 	for _, fact := range resp.Included.Facts {
+		text, clipped := clipRunes(fact.ValueText, maxTextRunes)
+		if clipped {
+			out.Truncated = true
+		}
 		if !appendBlock(&out, maxBlocks, ContextBlock{
 			Kind:      "supporting_fact",
 			Title:     fact.Predicate + ":" + fact.ID,
-			Text:      clipRunes(fact.ValueText, opts.MaxTextRunes),
+			Text:      text,
 			RecordIDs: []string{fact.ID},
 		}) {
 			return out
 		}
 	}
 	for _, episode := range resp.Included.Episodes {
+		text, clipped := clipRunes(episode.Content, maxTextRunes)
+		if clipped {
+			out.Truncated = true
+		}
 		if !appendBlock(&out, maxBlocks, ContextBlock{
 			Kind:      "supporting_episode",
 			Title:     episode.Kind + ":" + episode.ID,
-			Text:      clipRunes(episode.Content, opts.MaxTextRunes),
+			Text:      text,
 			RecordIDs: []string{episode.ID},
 		}) {
 			return out
 		}
 	}
 	for _, entity := range resp.Included.Entities {
+		text, clipped := clipRunes(entity.CanonicalName, maxTextRunes)
+		if clipped {
+			out.Truncated = true
+		}
 		if !appendBlock(&out, maxBlocks, ContextBlock{
 			Kind:      "related_entity",
 			Title:     entity.Type + ":" + entity.ID,
-			Text:      clipRunes(entity.CanonicalName, opts.MaxTextRunes),
+			Text:      text,
 			RecordIDs: []string{entity.ID},
 		}) {
 			return out
@@ -82,13 +108,19 @@ func appendBlock(bundle *ContextBundle, max int, block ContextBlock) bool {
 	return true
 }
 
-func clipRunes(text string, max int) string {
+// clipRunes returns at most max runes of text and reports whether it clipped.
+// It scans rune boundaries only up to the limit, so a huge input does not
+// allocate a rune slice proportional to its full size.
+func clipRunes(text string, max int) (string, bool) {
 	if max <= 0 {
 		max = 512
 	}
-	runes := []rune(text)
-	if len(runes) <= max {
-		return text
+	count := 0
+	for index := range text {
+		if count == max {
+			return text[:index], true
+		}
+		count++
 	}
-	return string(runes[:max])
+	return text, false
 }
