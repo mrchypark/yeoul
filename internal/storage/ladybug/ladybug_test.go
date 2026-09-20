@@ -88,3 +88,29 @@ func TestOnDiskReopenPersistence(t *testing.T) {
 		t.Fatalf("unexpected persisted value: %#v", value)
 	}
 }
+
+func TestExecuteStatementsSurfacesLaterFailure(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open in-memory store: %v", err)
+	}
+	defer store.Close()
+
+	statements := []string{
+		"CREATE NODE TABLE Run(id STRING PRIMARY KEY, name STRING)",
+		"CREATE (r:Run {id: 'run-01', name: 'first'})",
+		"CREATE (r:Run {id: 'run-02', name: 'second'}",
+	}
+	if err := store.ExecuteStatements(statements); err == nil {
+		t.Fatal("expected the malformed third statement to surface an error")
+	}
+
+	result, err := store.Query("MATCH (r:Run) RETURN r.id")
+	if err != nil {
+		t.Fatalf("query after failed batch: %v", err)
+	}
+	defer result.Close()
+	if !result.HasNext() {
+		t.Fatal("expected the earlier statement to remain applied after the failed batch")
+	}
+}

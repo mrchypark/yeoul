@@ -53,3 +53,29 @@ func (s *Store) Query(query string) (*lbug.QueryResult, error) {
 	}
 	return result, nil
 }
+
+// ExecuteStatements runs each statement on a single connection and returns the
+// first failure. Executing statements one by one is deliberate: a joined batch
+// surfaces only the first statement result, so a later failure could otherwise
+// be missed and a partially applied legacy write could look successful.
+func (s *Store) ExecuteStatements(statements []string) error {
+	if len(statements) == 0 {
+		return nil
+	}
+	conn, err := lbug.OpenConnection(s.db)
+	if err != nil {
+		return fmt.Errorf("open connection: %w", err)
+	}
+	defer conn.Close()
+
+	for i, statement := range statements {
+		result, err := conn.Query(statement)
+		if result != nil {
+			result.Close()
+		}
+		if err != nil {
+			return fmt.Errorf("statement %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
