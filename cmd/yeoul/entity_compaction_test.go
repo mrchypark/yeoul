@@ -53,6 +53,22 @@ func TestBuildEntityMergeCandidatesRespectsStableKeys(t *testing.T) {
 			candidates: 0,
 		},
 		{
+			name: "whitespace-distinct stable keys stay distinct",
+			entities: []yeoul.EntityInput{
+				entity("person:a", "Alex", map[string]any{"stable_key": "key"}),
+				entity("person:b", "Alex", map[string]any{"stable_key": " key "}),
+			},
+			candidates: 0,
+		},
+		{
+			name: "non-string legacy stable keys are excluded",
+			entities: []yeoul.EntityInput{
+				entity("person:a", "Alex", map[string]any{"stable_key": 123}),
+				entity("person:b", "Alex", map[string]any{"stable_key": "123"}),
+			},
+			candidates: 0,
+		},
+		{
 			name: "already marked duplicates are ignored",
 			entities: []yeoul.EntityInput{
 				entity("person:a", "Alex", nil),
@@ -83,7 +99,9 @@ func TestCLIEntityCompactionKeepsDistinctStableKeys(t *testing.T) {
     {"id":"person:alpha","type":"Person","canonical_name":"Alex","stable_key":"alpha-1"},
     {"id":"person:beta","type":"Person","canonical_name":"Alex","stable_key":"beta-1"},
     {"id":"person:gamma","type":"Person","canonical_name":"Alex","stable_key":"gamma-1"},
-    {"id":"person:delta","type":"Person","canonical_name":"Alex","stable_key":"gamma-1"}
+    {"id":"person:delta","type":"Person","canonical_name":"Alex","stable_key":"gamma-1"},
+    {"id":"person:pad-a","type":"Person","canonical_name":"Sam","stable_key":"key"},
+    {"id":"person:pad-b","type":"Person","canonical_name":"Sam","stable_key":" key "}
   ]
 }`
 	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
@@ -125,5 +143,16 @@ func TestCLIEntityCompactionKeepsDistinctStableKeys(t *testing.T) {
 	}
 	if marked != 1 {
 		t.Fatalf("expected exactly one of the matching stable keys to be marked, got %d", marked)
+	}
+
+	for _, id := range []string{"person:pad-a", "person:pad-b"} {
+		record := runCLI("entity", "get", "--db", dbPath, "--id", id)
+		if strings.Contains(record, "duplicate_of") {
+			t.Fatalf("expected %s to stay a distinct identity, got %q", id, record)
+		}
+	}
+	search := runCLI("search", "--db", dbPath, "--query", "Sam", "--json")
+	if !strings.Contains(search, "person:pad-a") || !strings.Contains(search, "person:pad-b") {
+		t.Fatalf("expected both whitespace-distinct entities to stay searchable, got %q", search)
 	}
 }

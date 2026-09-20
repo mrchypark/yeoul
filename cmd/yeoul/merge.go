@@ -23,25 +23,36 @@ type entityIdentityKey struct {
 	StableKey     string
 }
 
-func entityIdentityOf(entity yeoul.EntityInput) entityIdentityKey {
+func entityIdentityOf(entity yeoul.EntityInput, stableKey string) entityIdentityKey {
 	return entityIdentityKey{
 		SpaceID:       entity.SpaceID,
 		Namespace:     entity.Namespace,
 		Type:          entity.Type,
 		CanonicalName: entity.CanonicalName,
-		StableKey:     stableKeyOf(entity.Metadata),
+		StableKey:     stableKey,
 	}
 }
 
-func stableKeyOf(metadata map[string]any) string {
+// entityStableKey returns the stored stable key and whether the entity is
+// eligible for automatic merging at all. The key is used exactly as stored; a
+// non-string legacy value cannot be compared exactly, so such entities are
+// excluded instead of being treated as unkeyed.
+func entityStableKey(metadata map[string]any) (string, bool) {
 	if metadata == nil {
-		return ""
+		return "", true
 	}
 	value, ok := metadata["stable_key"]
 	if !ok {
-		return ""
+		return "", true
 	}
-	return strings.TrimSpace(fmt.Sprint(value))
+	text, isString := value.(string)
+	if !isString {
+		return "", false
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", true
+	}
+	return text, true
 }
 
 func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
@@ -50,7 +61,11 @@ func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
 		if duplicateOf(entity.Metadata) != "" {
 			continue
 		}
-		key := entityIdentityOf(entity)
+		stableKey, eligible := entityStableKey(entity.Metadata)
+		if !eligible {
+			continue
+		}
+		key := entityIdentityOf(entity, stableKey)
 		groups[key] = append(groups[key], entity)
 	}
 	candidates := make([]entityMergeCandidate, 0)
