@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -183,15 +184,53 @@ Usage:
 }
 
 func shouldDropEpisode(pack *policy.Pack, content string) bool {
-	content = strings.ToLower(content)
 	for _, rule := range pack.EpisodeRules.Drop {
-		for _, token := range rule.When.ContainsAny {
-			if strings.Contains(content, strings.ToLower(strings.TrimSpace(token))) {
-				return true
-			}
+		if episodeRuleMatches(rule, content) {
+			return true
 		}
 	}
 	return false
+}
+
+// episodeRuleMatches reports whether an incoming episode satisfies a rule's
+// "when" clause.
+//
+// contains_any tokens match the whole message after lowercasing and trimming
+// surrounding whitespace and punctuation, so an acknowledgement token such as
+// "ok" matches "OK" or "ok." but never "broken" or "book". Whole-message
+// matching keeps substantive messages that merely embed an acknowledgement
+// token, because retaining a low-signal message is preferable to dropping a
+// decision.
+//
+// contains_substring tokens keep explicit substring matching for rules that
+// intentionally look for a phrase inside a longer message.
+func episodeRuleMatches(rule policy.EpisodeRule, content string) bool {
+	normalized := normalizeEpisodeMessage(content)
+	for _, token := range rule.When.ContainsAny {
+		if token = normalizeEpisodeMessage(token); token == "" {
+			continue
+		}
+		if normalized == token {
+			return true
+		}
+	}
+	lowered := strings.ToLower(content)
+	for _, token := range rule.When.ContainsSubstring {
+		if token = strings.ToLower(strings.TrimSpace(token)); token == "" {
+			continue
+		}
+		if strings.Contains(lowered, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeEpisodeMessage(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.TrimFunc(value, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r)
+	})
 }
 
 func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchRequest) (yeoul.SearchRequest, error) {

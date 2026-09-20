@@ -72,4 +72,7 @@ promote_to_episode:
 drop:
   - name: low_signal_ack
     when:
-      contains_any: ["ok", "thanks", "확인", "감사", "ㅇㅋ"]
+      # Whole-message acknowledgements only. Substring tokens such as "ok"
+      # would otherwise drop substantive messages like "broken" or "book",
+      # and capture loss is worse than retaining a low-signal episode.
+      contains_any: ["ok", "okay", "thanks", "thank you", "확인", "감사", "고마워", "ㅇㅋ"]

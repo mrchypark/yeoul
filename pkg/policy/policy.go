@@ -61,7 +61,8 @@ type EpisodeRule struct {
 }
 
 type RuleWhen struct {
-	ContainsAny []string `yaml:"contains_any" json:"contains_any,omitempty"`
+	ContainsAny       []string `yaml:"contains_any" json:"contains_any,omitempty"`
+	ContainsSubstring []string `yaml:"contains_substring" json:"contains_substring,omitempty"`
 }
 
 type SearchRecipes struct {
