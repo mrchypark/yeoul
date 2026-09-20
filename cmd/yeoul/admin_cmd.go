@@ -322,6 +322,12 @@ func writePrivateFile(path string, data []byte) error {
 		_ = os.Remove(stageDir)
 	}()
 
+	// Bind the permission change to the open descriptor: a path-based chmod
+	// would follow a substituted symlink in a shared writable parent.
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
 		return err
@@ -331,9 +337,6 @@ func writePrivateFile(path string, data []byte) error {
 		return err
 	}
 	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tempPath, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tempPath, path)
