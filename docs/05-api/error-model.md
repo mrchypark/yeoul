@@ -1,6 +1,8 @@
 # Error Model
 
-Yeoul needs a predictable error model across embedded API, CLI, and optional service mode.
+Yeoul needs a predictable error model across the embedded API and the CLI. Service mode is planned
+and unavailable in current releases, so the service mapping below is a design target, not a
+supported surface.
 
 ## Goals
 - stable machine-readable errors
@@ -53,7 +55,7 @@ Examples:
 
 ### NotSupported
 Examples:
-- daemon-only feature in embedded mode
+- planned service-only feature in embedded mode
 - unsupported policy version
 - unsupported query operator
 
@@ -91,7 +93,7 @@ There is no separate exit code for blocked operations, and an error that merely
 describes a missing record or an unsupported operation still exits 1 unless it
 carries one of the codes listed above.
 
-## Service API mapping
+## Service API mapping (planned; no service is implemented in current releases)
 - validation -> HTTP 400
 - not found -> HTTP 404
 - conflict -> HTTP 409

@@ -17,7 +17,7 @@ At the current stage, this repository should primarily contain:
 - documentation for the temporal memory model
 - guidance for agent instructions and skills
 - storage and retrieval tool specifications
-- implementation-facing design docs for a Go + Ladybug local system
+- implementation-facing design docs for a Go + LatticeDB local system
 
 It should not expand prematurely into a large runtime platform.
 
@@ -74,7 +74,7 @@ These should be treated as optional future adapters, not active scope drivers.
 These directly drive the current build:
 
 - overview and principles docs
-- Ladybug evaluation and storage constraints
+- LatticeDB storage constraints, and the Ladybug legacy migration path
 - architecture boundaries
 - memory model docs
 - Go API
