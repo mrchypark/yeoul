@@ -166,6 +166,49 @@ func TestShippedRecipeControlsStayExecutable(t *testing.T) {
 	}
 }
 
+// Execution must consume the representation the validator accepted. A recipe
+// that declares a list filter is validated as a list, so applying it must not
+// collapse that list into a single scalar: a decoded YAML list would otherwise
+// reach the request as "[active superseded]".
+func TestApplySearchRecipeAppliesListFiltersAsLists(t *testing.T) {
+	pack := recipePack(map[string]policy.SearchRecipe{
+		"listed": {
+			Strategy: "hybrid",
+			Filters: map[string]any{
+				"fact_status": []any{"active", "superseded"},
+				"predicate":   []any{"SUPERSEDES", "CHANGED_TO"},
+			},
+		},
+		"scalar": {
+			Strategy: "hybrid",
+			Filters:  map[string]any{"fact_status": "active, superseded"},
+		},
+	})
+
+	if issues := policy.ValidateSearchRecipe("listed", pack.SearchRecipes.Recipes["listed"]); len(issues) > 0 {
+		t.Fatalf("expected the list recipe to validate, issues=%v", issues)
+	}
+	applied, err := applySearchRecipe(pack, "listed", yeoul.SearchRequest{})
+	if err != nil {
+		t.Fatalf("apply list recipe: %v", err)
+	}
+	if !reflect.DeepEqual(applied.Scope.FactStatus, []string{"active", "superseded"}) {
+		t.Fatalf("expected both declared statuses in the request, got %#v", applied.Scope.FactStatus)
+	}
+	// mergeStringSlices sorts and dedupes, so compare membership rather than order.
+	if !reflect.DeepEqual(applied.Predicates, []string{"CHANGED_TO", "SUPERSEDES"}) {
+		t.Fatalf("expected both declared predicates in the request, got %#v", applied.Predicates)
+	}
+
+	scalar, err := applySearchRecipe(pack, "scalar", yeoul.SearchRequest{})
+	if err != nil {
+		t.Fatalf("apply scalar recipe: %v", err)
+	}
+	if !reflect.DeepEqual(scalar.Scope.FactStatus, []string{"active", "superseded"}) {
+		t.Fatalf("expected the comma separated scalar to split into both statuses, got %#v", scalar.Scope.FactStatus)
+	}
+}
+
 // Unsupported knobs must also fail policy validation, not only recipe use.
 func TestValidatePackRejectsInertRecipeControls(t *testing.T) {
 	dir := t.TempDir()

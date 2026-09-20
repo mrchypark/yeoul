@@ -243,17 +243,22 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	}
 	// Scope must be populated before the strategy switch: the
 	// predicate_subject_lookup strategy narrows the hit types below.
-	if status, ok := recipe.Filters["fact_status"]; ok {
-		req.Scope.FactStatus = mergeStringSlices(req.Scope.FactStatus, splitCSV(fmt.Sprint(status)))
+	// Execution must consume the same coercion the validator used. Re-parsing
+	// the raw recipe value here would let a value that validates as a list be
+	// applied as a single scalar (a YAML list would become "[a b]").
+	if statuses, declared, err := policy.RecipeFactStatuses(recipe); err != nil {
+		return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+	} else if declared {
+		req.Scope.FactStatus = mergeStringSlices(req.Scope.FactStatus, statuses)
 	}
-	if predicates, ok := recipe.Filters["predicate"]; ok {
-		values, isList := stringSliceFromAny(predicates)
-		if !isList {
-			values = splitCSV(fmt.Sprint(predicates))
-		}
-		req.Predicates = mergeStringSlices(req.Predicates, values)
+	if predicates, declared, err := policy.RecipePredicates(recipe); err != nil {
+		return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+	} else if declared {
+		req.Predicates = mergeStringSlices(req.Predicates, predicates)
 	}
-	if windowDays, ok := intFromAny(recipe.Filters["window_days"]); ok {
+	if windowDays, declared, err := policy.RecipeWindowDays(recipe); err != nil {
+		return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+	} else if declared {
 		from := time.Now().UTC().Add(-time.Duration(windowDays) * 24 * time.Hour)
 		if req.Temporal.ObservedFrom == nil || req.Temporal.ObservedFrom.Before(from) {
 			req.Temporal.ObservedFrom = &from
@@ -266,7 +271,9 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	case "neighborhood":
 		req.Include.RelatedEntities = true
 		req.Include.Provenance = true
-		if types, ok := stringSliceFromAny(recipe.Expand["entity_types"]); ok {
+		if types, declared, err := policy.RecipeEntityTypes(recipe); err != nil {
+			return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+		} else if declared {
 			req.Scope.EntityTypes = mergeStringSlices(req.Scope.EntityTypes, types)
 		}
 	case "predicate_subject_lookup":
