@@ -6,7 +6,7 @@ Last Updated: 2026-04-17
 
 ## Purpose
 
-This document defines the HTTP service surface for Yeoul when Yeoul runs as an optional local daemon.
+This document defines the planned HTTP service surface for Yeoul when it runs as a local daemon. The `yeould` daemon is not implemented in current releases, so the embedded Go API is the only supported boundary today.
 
 The Service API is **not** the primary product boundary. The primary product boundary is the embedded Go API. The Service API exists to support:
 

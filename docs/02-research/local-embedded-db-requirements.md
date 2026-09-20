@@ -62,7 +62,7 @@ The engine must support active and historical fact retrieval side by side.
 ## Operational constraints
 
 ### C1. Multi-process safety is optional
-Yeoul can accept a single-owner local model in MVP, provided that the limitation is documented and daemon mode exists as an escape hatch.
+Yeoul accepts a single-owner local model. The limitation is documented, and callers that need shared access must serialize it themselves; a daemon escape hatch is not available in current releases.
 
 ### C2. No mandatory remote dependency
 The storage engine must not require a remote cluster or cloud service for the default product path.

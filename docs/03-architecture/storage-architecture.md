@@ -17,7 +17,7 @@ remain supported as migration inputs and for in-place compatibility.
 ## Storage ownership
 
 In embedded mode, the host process owns the database.
-In daemon mode, `yeould` owns the database.
+Daemon mode is not available in current releases: the `yeould` service adapter is deferred, so every supported deployment uses embedded ownership.
 
 ## Graph projection
 

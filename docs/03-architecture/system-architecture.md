@@ -22,7 +22,7 @@ It converts policy declarations into ingest and search behavior.
 Optional adapters:
 
 - CLI
-- HTTP and gRPC service
+- HTTP and gRPC service (planned; the `yeould` daemon is not implemented in current releases)
 - MCP adapter
 - AI agent instruction pack
 

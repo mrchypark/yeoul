@@ -42,7 +42,7 @@ yeoul/
 CLI entrypoint.
 
 ### `cmd/yeould`
-Optional local daemon entrypoint.
+Planned local daemon entrypoint; not implemented in current releases.
 
 ### `internal/storage/ladybug`
 Owns database initialization, migrations, queries, and transaction helpers.

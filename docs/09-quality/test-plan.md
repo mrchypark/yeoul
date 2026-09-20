@@ -47,7 +47,7 @@ This document defines the release-oriented quality plan for Yeoul.
 ### Service
 - request/response correctness
 - error mapping
-- daemon ownership model
+- daemon ownership model (planned; unavailable until the daemon ships)
 
 ## Test environments
 - local developer machine

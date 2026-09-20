@@ -17,7 +17,9 @@ Yeoul embedded mode assumes one process owns one read-write LatticeDB database o
 
 ## Operational rule
 
-For multi-process use, run `yeould` as a local daemon and access it through HTTP or gRPC.
+Current releases support one process owning one database. There is no supported multi-process access mode: the `yeould` service adapter that earlier plans reserved for HTTP or gRPC access is not implemented, and running `yeould` reports that it is unavailable instead of starting a daemon.
+
+Processes that need to share a database must serialize access themselves. Stop the other Yeoul processes before opening the database, and treat a lock failure as "another owner is active" rather than retrying or deleting lock state.
 
 ## Why this is explicit
 
