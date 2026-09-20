@@ -1067,7 +1067,7 @@ func raxAssembleIncludedRecords(ctx context.Context, eng yeoul.Engine, req yeoul
 				return nil, false
 			}
 			entity, ok := record.Record.(*yeoul.Entity)
-			if !ok || entity == nil || entity.SpaceID != spaceID || raxEntityMarkedDuplicate(entity) {
+			if !ok || entity == nil || entity.SpaceID != spaceID || raxEntityMarkedDuplicate(entity) || !raxEntityMatchesScope(entity, req) {
 				return nil, false
 			}
 			return entity, true
@@ -1119,6 +1119,12 @@ func raxEntityMarkedDuplicate(entity *yeoul.Entity) bool {
 		return false
 	}
 	return strings.TrimSpace(fmt.Sprint(value)) != ""
+}
+
+// raxEntityMatchesScope keeps the entity-type restriction that core applies to
+// included entities, so both backends return the same related entities.
+func raxEntityMatchesScope(entity *yeoul.Entity, req yeoul.SearchRequest) bool {
+	return len(req.Scope.EntityTypes) == 0 || slices.Contains(req.Scope.EntityTypes, entity.Type)
 }
 
 func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionDocument, projectionManifest) {

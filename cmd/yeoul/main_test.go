@@ -2120,6 +2120,108 @@ func TestRaxPrimarySearchIncludeFlagsAreIndependent(t *testing.T) {
 	}
 }
 
+// TestRaxPrimarySearchKeepsProvenanceUnderHitFilters checks that predicate and
+// anchor filters select hits without also suppressing the supporting episodes
+// that explain them, matching what the core engine returns.
+func TestRaxPrimarySearchKeepsProvenanceUnderHitFilters(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	ep, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-prov", Kind: "note", Content: "provenance episode", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "prov"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	subject, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:prov", Type: "Project", CanonicalName: "Provenance"})
+	if err != nil {
+		t.Fatalf("upsert subject: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-prov", Predicate: "HAS_PROVENANCE", SubjectID: subject.ID, ValueText: "provenance needle", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+	object, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "database:prov", Type: "Database", CanonicalName: "ProvStore"})
+	if err != nil {
+		t.Fatalf("upsert object: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-typed", Predicate: "HAS_PROVENANCE", SubjectID: subject.ID, ObjectID: object.ID, ValueText: "typed provenance needle", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert typed fact: %v", err)
+	}
+
+	coreResp, err := eng.Search(ctx, yeoul.SearchRequest{
+		QueryText:  "provenance needle",
+		Types:      []string{"fact"},
+		Predicates: []string{"HAS_PROVENANCE"},
+		Include:    yeoul.Include{Provenance: true},
+	})
+	if err != nil {
+		t.Fatalf("core search: %v", err)
+	}
+	if len(coreResp.Included.Episodes) != 1 || coreResp.Included.Episodes[0].ID != ep.EpisodeID {
+		t.Fatalf("expected core to keep provenance under predicate filter, got %#v", coreResp.Included.Episodes)
+	}
+
+	raxResp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText:  "provenance needle",
+		Types:      []string{"fact"},
+		Predicates: []string{"HAS_PROVENANCE"},
+		Include:    yeoul.Include{Provenance: true},
+	}, []string{"fact:fact-prov"})
+	if err != nil {
+		t.Fatalf("build rax response: %v", err)
+	}
+	if len(raxResp.Hits) != 1 {
+		t.Fatalf("expected rax fact hit, got %#v", raxResp.Hits)
+	}
+	if len(raxResp.Included.Episodes) != 1 || raxResp.Included.Episodes[0].ID != ep.EpisodeID {
+		t.Fatalf("expected rax to keep provenance under predicate filter, got %#v", raxResp.Included.Episodes)
+	}
+	if len(raxResp.Included.Sources) != 1 {
+		t.Fatalf("expected rax to keep the episode source, got %#v", raxResp.Included.Sources)
+	}
+
+	anchorResp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "provenance needle",
+		Types:     []string{"fact"},
+		AnchorIDs: []string{subject.ID},
+		Include:   yeoul.Include{Provenance: true},
+	}, []string{"fact:fact-prov"})
+	if err != nil {
+		t.Fatalf("build rax anchor response: %v", err)
+	}
+	if len(anchorResp.Hits) != 1 {
+		t.Fatalf("expected rax anchor-matched fact hit, got %#v", anchorResp.Hits)
+	}
+	if len(anchorResp.Included.Episodes) != 1 || anchorResp.Included.Episodes[0].ID != ep.EpisodeID {
+		t.Fatalf("expected rax to keep provenance under anchor filter, got %#v", anchorResp.Included.Episodes)
+	}
+
+	coreScopeResp, err := eng.Search(ctx, yeoul.SearchRequest{
+		QueryText: "typed provenance needle",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{EntityTypes: []string{"Project"}},
+		Include:   yeoul.Include{RelatedEntities: true},
+	})
+	if err != nil {
+		t.Fatalf("core scoped search: %v", err)
+	}
+	if len(coreScopeResp.Included.Entities) != 1 || coreScopeResp.Included.Entities[0].ID != subject.ID {
+		t.Fatalf("expected core to keep only the in-scope related entity, got %#v", coreScopeResp.Included.Entities)
+	}
+	raxScopeResp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "typed provenance needle",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{EntityTypes: []string{"Project"}},
+		Include:   yeoul.Include{RelatedEntities: true},
+	}, []string{"fact:fact-typed"})
+	if err != nil {
+		t.Fatalf("build rax scoped response: %v", err)
+	}
+	if len(raxScopeResp.Included.Entities) != 1 || raxScopeResp.Included.Entities[0].ID != subject.ID {
+		t.Fatalf("expected rax to keep only the in-scope related entity, got %#v", raxScopeResp.Included.Entities)
+	}
+}
+
 func TestCLISearchRejectsAmbiguousTemporalFlags(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
