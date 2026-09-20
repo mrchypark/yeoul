@@ -111,8 +111,10 @@ var supportedRecipeFilterKeys = []string{"fact_status", "window_days", "predicat
 var supportedRecipeStrategies = []string{"hybrid", "neighborhood", "predicate_subject_lookup"}
 
 // supportedRecipeExpandKeys lists the recipe expand settings that map to real
-// request fields.
-var supportedRecipeExpandKeys = []string{"entity_types"}
+// request fields. "hops" is accepted as advisory metadata for backward
+// compatibility: it is validated when present but never applied to the search
+// request, so a recipe that carries it keeps loading.
+var supportedRecipeExpandKeys = []string{"entity_types", "hops"}
 
 // supportedRecipeFactStatuses lists the fact lifecycle states a recipe filter
 // may select, mirroring the status domain the search runtime accepts.
@@ -142,11 +144,28 @@ func ValidateSearchRecipe(name string, recipe SearchRecipe) []string {
 			issues = append(issues, fmt.Sprintf("recipe %q declares unsupported expand setting %q", name, key))
 			continue
 		}
-		if _, _, err := RecipeEntityTypes(recipe); err != nil {
+		if err := validateRecipeExpandValue(key, recipe); err != nil {
 			issues = append(issues, fmt.Sprintf("recipe %q declares invalid expand setting %q: %v", name, key, err))
 		}
 	}
 	return issues
+}
+
+// validateRecipeExpandValue checks the value shape of a supported expand key.
+// The accepted shapes match what applySearchRecipe can execute, so validation
+// and execution can never disagree about a control. Advisory keys such as
+// hops are still shape-checked even though execution ignores their value.
+func validateRecipeExpandValue(key string, recipe SearchRecipe) error {
+	switch key {
+	case "entity_types":
+		_, _, err := RecipeEntityTypes(recipe)
+		return err
+	case "hops":
+		_, _, err := RecipeHops(recipe)
+		return err
+	default:
+		return nil
+	}
 }
 
 // validateRecipeFilterValue checks the value shape of a supported filter key.
@@ -233,6 +252,25 @@ func RecipeEntityTypes(recipe SearchRecipe) ([]string, bool, error) {
 		return nil, true, err
 	}
 	return values, true, nil
+}
+
+// RecipeHops returns the expand.hops value declared by the recipe. The bool
+// reports whether the recipe declares the setting at all. hops is advisory
+// metadata: execution never applies it, but a declared value must still be a
+// non-negative integer so a malformed recipe cannot pass validation.
+func RecipeHops(recipe SearchRecipe) (int, bool, error) {
+	raw, ok := recipe.Expand["hops"]
+	if !ok {
+		return 0, false, nil
+	}
+	hops, err := recipeInteger(raw)
+	if err != nil {
+		return 0, true, err
+	}
+	if hops < 0 {
+		return 0, true, fmt.Errorf("must not be negative, found %d", hops)
+	}
+	return hops, true, nil
 }
 
 // recipeStringList coerces a scalar string or a string list into a non-empty
@@ -374,7 +412,7 @@ func loadPack(path string, sanitize bool) (*Pack, error) {
 // schema mismatches become SchemaError so validation can report them as issues.
 func schemaError(file string, err error) error {
 	var typeErr *yaml.TypeError
-	if errors.As(err, &typeErr) || strings.Contains(err.Error(), "not found in type") {
+	if errors.As(err, &typeErr) || errors.Is(err, errMultipleDocuments) || strings.Contains(err.Error(), "not found in type") {
 		return &SchemaError{File: file, Message: fmt.Sprintf("%s: %v", file, err)}
 	}
 	return fmt.Errorf("read %s: %w", file, err)
@@ -472,8 +510,8 @@ func ValidatePack(path string) (*ValidationResult, error) {
 		if strings.TrimSpace(rule.Name) == "" {
 			addIssue("episode rule name must not be empty")
 		}
-		if len(rule.When.ContainsAny) == 0 {
-			addIssue(fmt.Sprintf("episode rule %q must declare when.contains_any", rule.Name))
+		if len(rule.When.ContainsAny) == 0 && len(rule.When.ContainsSubstring) == 0 {
+			addIssue(fmt.Sprintf("episode rule %q must declare when.contains_any or when.contains_substring", rule.Name))
 		}
 		validateNonBlankTokens(addIssue, fmt.Sprintf("episode rule %q when.contains_any", rule.Name), rule.When.ContainsAny)
 		validateNonBlankTokens(addIssue, fmt.Sprintf("episode rule %q when.contains_substring", rule.Name), rule.When.ContainsSubstring)
@@ -535,101 +573,6 @@ func validateNonBlankTokens(addIssue func(string), field string, values []string
 	}
 }
 
-// validateRecipeFilters rejects filter keys and value types the query layer
-// does not consume. Only fact_status and window_days change search behavior;
-// anything else would silently do nothing.
-func validateRecipeFilters(addIssue func(string), name string, recipe SearchRecipe) {
-	for key, value := range recipe.Filters {
-		switch key {
-		case "fact_status":
-			if len(stringListFromAny(value)) == 0 {
-				addIssue(fmt.Sprintf("recipe %q filter fact_status must be a non-empty string or list of strings", name))
-			}
-		case "window_days":
-			if _, ok := intFromAny(value); !ok {
-				addIssue(fmt.Sprintf("recipe %q filter window_days must be an integer", name))
-			}
-		default:
-			addIssue(fmt.Sprintf("recipe %q declares unsupported filter %q (supported: fact_status, window_days)", name, key))
-		}
-	}
-}
-
-// validateRecipeExpand rejects expand keys the query layer does not consume.
-// entity_types is applied to the search scope; hops is accepted as advisory
-// metadata and must be an integer when present.
-func validateRecipeExpand(addIssue func(string), name string, recipe SearchRecipe) {
-	for key, value := range recipe.Expand {
-		switch key {
-		case "entity_types":
-			if len(stringListFromAny(value)) == 0 {
-				addIssue(fmt.Sprintf("recipe %q expand entity_types must be a non-empty string or list of strings", name))
-			}
-		case "hops":
-			if _, ok := intFromAny(value); !ok {
-				addIssue(fmt.Sprintf("recipe %q expand hops must be an integer", name))
-			}
-		default:
-			addIssue(fmt.Sprintf("recipe %q declares unsupported expand key %q (supported: entity_types, hops)", name, key))
-		}
-	}
-}
-
-func stringListFromAny(value any) []string {
-	switch v := value.(type) {
-	case string:
-		if strings.TrimSpace(v) == "" {
-			return nil
-		}
-		return []string{v}
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			text, ok := item.(string)
-			if !ok || strings.TrimSpace(text) == "" {
-				return nil
-			}
-			out = append(out, text)
-		}
-		return out
-	case []string:
-		for _, item := range v {
-			if strings.TrimSpace(item) == "" {
-				return nil
-			}
-		}
-		return v
-	default:
-		return nil
-	}
-}
-
-func intFromAny(value any) (int, bool) {
-	switch v := value.(type) {
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case float64:
-		return int(v), true
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(v))
-		if err == nil {
-			return parsed, true
-		}
-	}
-	return 0, false
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 func loadYAML(path string, out any) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -651,5 +594,18 @@ func decodeYAML(data []byte, out any) error {
 		}
 		return err
 	}
+	// A second document would escape KnownFields strictness and be silently
+	// ignored, so trailing content is rejected instead of accepted.
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return errMultipleDocuments
+	} else if !errors.Is(err, io.EOF) {
+		return err
+	}
 	return nil
 }
+
+// errMultipleDocuments marks policy files that carry more than one YAML
+// document. Only the first document would be validated, so the extra content
+// must fail loudly instead of being silently dropped.
+var errMultipleDocuments = errors.New("must contain a single YAML document, found additional content")

@@ -132,6 +132,173 @@ fact_promotion:
 	}
 }
 
+func TestEpisodeRuleAcceptsSubstringOnlyMatching(t *testing.T) {
+	cases := []struct {
+		name  string
+		rules string
+		valid bool
+	}{
+		{
+			name:  "substring only",
+			rules: "version: 1\ndrop:\n  - name: sub\n    when:\n      contains_substring: [\"ignore me\"]\n",
+			valid: true,
+		},
+		{
+			name:  "contains_any only",
+			rules: "version: 1\ndrop:\n  - name: any\n    when:\n      contains_any: [\"ok\"]\n",
+			valid: true,
+		},
+		{
+			name:  "both lists",
+			rules: "version: 1\ndrop:\n  - name: both\n    when:\n      contains_any: [\"ok\"]\n      contains_substring: [\"ignore me\"]\n",
+			valid: true,
+		},
+		{
+			name:  "neither list",
+			rules: "version: 1\ndrop:\n  - name: none\n    when:\n      contains_any: []\n",
+			valid: false,
+		},
+		{
+			name:  "blank substring token",
+			rules: "version: 1\ndrop:\n  - name: blank\n    when:\n      contains_substring: [\"\"]\n",
+			valid: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+			writeFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+			writeFile(t, filepath.Join(dir, "episode_rules.yaml"), tc.rules)
+			writeFile(t, filepath.Join(dir, "search_recipes.yaml"), "version: 1\nrecipes: {}\n")
+
+			result, err := ValidatePack(dir)
+			if err != nil {
+				t.Fatalf("validate pack: %v", err)
+			}
+			if result.Valid != tc.valid {
+				t.Fatalf("expected valid=%v, got valid=%v issues=%v", tc.valid, result.Valid, result.Issues)
+			}
+		})
+	}
+}
+
+func TestRecipeAcceptsAdvisoryHops(t *testing.T) {
+	cases := []struct {
+		name   string
+		recipe string
+		valid  bool
+	}{
+		{
+			name:   "entity_types with advisory hops",
+			recipe: "    strategy: neighborhood\n    expand:\n      entity_types: [Project]\n      hops: 2\n",
+			valid:  true,
+		},
+		{
+			name:   "hops alone",
+			recipe: "    strategy: neighborhood\n    expand:\n      hops: 2\n",
+			valid:  true,
+		},
+		{
+			name:   "hops as word",
+			recipe: "    strategy: neighborhood\n    expand:\n      hops: two\n",
+			valid:  false,
+		},
+		{
+			name:   "hops as fraction",
+			recipe: "    strategy: neighborhood\n    expand:\n      hops: 1.5\n",
+			valid:  false,
+		},
+		{
+			name:   "hops negative",
+			recipe: "    strategy: neighborhood\n    expand:\n      hops: -1\n",
+			valid:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+			writeFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+			writeFile(t, filepath.Join(dir, "episode_rules.yaml"), "version: 1\n")
+			writeFile(t, filepath.Join(dir, "search_recipes.yaml"),
+				"version: 1\nrecipes:\n  hops_recipe:\n"+tc.recipe)
+
+			result, err := ValidatePack(dir)
+			if err != nil {
+				t.Fatalf("validate pack: %v", err)
+			}
+			if result.Valid != tc.valid {
+				t.Fatalf("expected valid=%v, got valid=%v issues=%v", tc.valid, result.Valid, result.Issues)
+			}
+
+			// ValidateSearchRecipe must agree with ValidatePack so a recipe the
+			// pack accepts is never rejected at search execution time.
+			pack, err := LoadPack(dir)
+			if err != nil {
+				t.Fatalf("load pack: %v", err)
+			}
+			recipeIssues := ValidateSearchRecipe("hops_recipe", pack.SearchRecipes.Recipes["hops_recipe"])
+			if (len(recipeIssues) == 0) != tc.valid {
+				t.Fatalf("ValidateSearchRecipe disagreed with ValidatePack: issues=%v", recipeIssues)
+			}
+		})
+	}
+}
+
+func TestRecipeExpandHopsIsAdvisoryOnly(t *testing.T) {
+	recipe := SearchRecipe{
+		Strategy: "neighborhood",
+		Expand:   map[string]any{"entity_types": []any{"Project"}, "hops": 2},
+	}
+	if issues := ValidateSearchRecipe("advisory", recipe); len(issues) != 0 {
+		t.Fatalf("expected advisory hops to validate, got %v", issues)
+	}
+	hops, ok, err := RecipeHops(recipe)
+	if err != nil {
+		t.Fatalf("recipe hops: %v", err)
+	}
+	if !ok || hops != 2 {
+		t.Fatalf("expected hops=2 declared, got hops=%d declared=%v", hops, ok)
+	}
+	if _, ok, _ := RecipeHops(SearchRecipe{Expand: map[string]any{}}); ok {
+		t.Fatal("expected hops to be undeclared when absent")
+	}
+}
+
+func TestDecodeYAMLRejectsTrailingDocument(t *testing.T) {
+	multi := "version: 1\nrecipes: {}\n---\nrecipes:\n  x:\n    stratgy: hybrid\n"
+	var out map[string]any
+	if err := decodeYAML([]byte(multi), &out); err == nil {
+		t.Fatal("expected trailing YAML document to be rejected")
+	}
+
+	var single map[string]any
+	if err := decodeYAML([]byte("version: 1\nrecipes: {}\n"), &single); err != nil {
+		t.Fatalf("expected single document to decode: %v", err)
+	}
+}
+
+func TestValidatePackRejectsTrailingDocument(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+	writeFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+	writeFile(t, filepath.Join(dir, "episode_rules.yaml"), "version: 1\n")
+	writeFile(t, filepath.Join(dir, "search_recipes.yaml"),
+		"version: 1\nrecipes: {}\n---\nrecipes:\n  x:\n    stratgy: hybrid\n")
+
+	if _, err := LoadPack(dir); err == nil {
+		t.Fatal("expected LoadPack to reject a multi-document policy file")
+	}
+	result, err := ValidatePack(dir)
+	if err != nil {
+		t.Fatalf("validate pack: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected ValidatePack to reject a multi-document policy file")
+	}
+}
+
 func TestValidatePackRejectsBlankEpisodeRuleTokens(t *testing.T) {
 	cases := []struct {
 		name   string
