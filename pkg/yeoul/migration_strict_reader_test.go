@@ -96,6 +96,83 @@ func execLegacyStatements(t *testing.T, dbPath string, statements ...string) {
 	}
 }
 
+// addStrictLegacySource ingests a second episode with its own source into an
+// existing strict fixture. It gives a test an existing-but-wrong Source to
+// retarget a FROM_SOURCE edge onto and a second Episode to attach an extra
+// ASSERTS edge to.
+func addStrictLegacySource(t *testing.T, dbPath, episodeID, sourceID string) {
+	t.Helper()
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+	})
+	if err != nil {
+		t.Fatalf("reopen legacy fixture engine: %v", err)
+	}
+	if _, err := eng.IngestEpisode(ctx, EpisodeInput{
+		ID:      episodeID,
+		Kind:    "note",
+		Content: "second source fixture",
+		Source:  SourceInput{ID: sourceID, Kind: "test", ExternalRef: "strict-other"},
+	}); err != nil {
+		t.Fatalf("ingest second legacy fixture episode: %v", err)
+	}
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close second legacy fixture engine: %v", err)
+	}
+}
+
+// writeStrictSharedSourceFixture builds a legacy database with the legitimate
+// shapes the writer actually produces for these relationships: two episodes
+// that share one source and one fact supported by both episodes.
+func writeStrictSharedSourceFixture(t *testing.T, dbPath string) (string, []string, string) {
+	t.Helper()
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		CreateIfMissing:     true,
+		legacyLadybugWrites: true,
+	})
+	if err != nil {
+		t.Fatalf("open shared-source fixture engine: %v", err)
+	}
+	source := SourceInput{ID: "src-shared", Kind: "test", ExternalRef: "shared"}
+	episodeIDs := make([]string, 0, 2)
+	for index, content := range []string{"shared source a", "shared source b"} {
+		episode, err := eng.IngestEpisode(ctx, EpisodeInput{
+			ID:      fmt.Sprintf("ep-shared-%d", index),
+			Kind:    "note",
+			Content: content,
+			Source:  source,
+		})
+		if err != nil {
+			t.Fatalf("ingest shared-source episode: %v", err)
+		}
+		episodeIDs = append(episodeIDs, episode.EpisodeID)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "ent-shared", Type: "Project", CanonicalName: "Yeoul"})
+	if err != nil {
+		t.Fatalf("upsert shared-source entity: %v", err)
+	}
+	fact, err := eng.AssertFact(ctx, FactInput{
+		ID:                   "fact-shared",
+		Predicate:            "HAS_STORAGE",
+		SubjectID:            entity.ID,
+		ValueText:            "Ladybug",
+		SupportingEpisodeIDs: episodeIDs,
+	})
+	if err != nil {
+		t.Fatalf("assert shared-source fact: %v", err)
+	}
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close shared-source fixture engine: %v", err)
+	}
+	return "src-shared", episodeIDs, fact.ID
+}
+
 // legacyDatabaseFileSet hashes every data file that belongs to one database
 // file (the main file plus its sidecars) so a test can prove a failed migration
 // did not touch the source on disk. Ownership lock files are excluded: taking
@@ -345,6 +422,207 @@ func TestMigrateDatabaseStrictReaderRejectsForeignSchema(t *testing.T) {
 	assertNoMigrationArtifacts(t, dbPath)
 	if after := legacyDatabaseFileSet(t, dbPath); !mapsEqual(before, after) {
 		t.Fatalf("failed migration changed the foreign source file set\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+// TestMigrateDatabaseStrictReaderRejectsDisagreeingRelationships covers the two
+// mandatory relationship tables the strict reader previously only checked for
+// existence. FROM_SOURCE duplicates Episode.source_id and ASSERTS duplicates the
+// fact's supporting-episode set, so a row that disagrees with the decoded state
+// is corruption the migration must reject rather than silently discard. Each
+// case corrupts exactly one relationship table and leaves the other
+// representation valid.
+func TestMigrateDatabaseStrictReaderRejectsDisagreeingRelationships(t *testing.T) {
+	useInProcessMigration(t)
+	ctx := context.Background()
+	cases := []struct {
+		name       string
+		prepare    func(t *testing.T, dbPath string, ids legacyFixtureIDs)
+		statements func(ids legacyFixtureIDs) []string
+	}{
+		{
+			name: "from_source retargeted",
+			prepare: func(t *testing.T, dbPath string, ids legacyFixtureIDs) {
+				addStrictLegacySource(t, dbPath, "ep-other", "src-other")
+			},
+			// Episode.source_id still points at src-strict; only the edge moves.
+			statements: func(ids legacyFixtureIDs) []string {
+				return []string{
+					fmt.Sprintf("MATCH (e:Episode {id: %s})-[r:FROM_SOURCE]->(:Source) DELETE r", lstore.StringLiteral(ids.episodeID)),
+					fmt.Sprintf("MATCH (e:Episode {id: %s}), (s:Source {id: 'src-other'}) CREATE (e)-[:FROM_SOURCE {created_at: timestamp('2024-01-01T00:00:00Z')}]->(s)", lstore.StringLiteral(ids.episodeID)),
+				}
+			},
+		},
+		{
+			name: "from_source removed",
+			statements: func(ids legacyFixtureIDs) []string {
+				return []string{fmt.Sprintf("MATCH (e:Episode {id: %s})-[r:FROM_SOURCE]->(:Source) DELETE r", lstore.StringLiteral(ids.episodeID))}
+			},
+		},
+		{
+			name: "from_source duplicated",
+			prepare: func(t *testing.T, dbPath string, ids legacyFixtureIDs) {
+				addStrictLegacySource(t, dbPath, "ep-other", "src-other")
+			},
+			// The original edge stays; a second edge to another existing source
+			// makes the table disagree with source_id by multiplicity.
+			statements: func(ids legacyFixtureIDs) []string {
+				return []string{fmt.Sprintf("MATCH (e:Episode {id: %s}), (s:Source {id: 'src-other'}) CREATE (e)-[:FROM_SOURCE {created_at: timestamp('2024-01-01T00:00:00Z')}]->(s)", lstore.StringLiteral(ids.episodeID))}
+			},
+		},
+		{
+			name: "asserts removed",
+			statements: func(ids legacyFixtureIDs) []string {
+				return []string{fmt.Sprintf("MATCH (:Episode)-[r:ASSERTS]->(:Fact {id: %s}) DELETE r", lstore.StringLiteral(ids.factID))}
+			},
+		},
+		{
+			name: "asserts added for an unsupporting episode",
+			prepare: func(t *testing.T, dbPath string, ids legacyFixtureIDs) {
+				addStrictLegacySource(t, dbPath, "ep-other", "src-other")
+			},
+			statements: func(ids legacyFixtureIDs) []string {
+				return []string{fmt.Sprintf("MATCH (e:Episode {id: 'ep-other'}), (f:Fact {id: %s}) CREATE (e)-[:ASSERTS {created_at: timestamp('2024-01-01T00:00:00Z')}]->(f)", lstore.StringLiteral(ids.factID))}
+			},
+		},
+		{
+			name: "asserts duplicated",
+			statements: func(ids legacyFixtureIDs) []string {
+				return []string{fmt.Sprintf("MATCH (e:Episode {id: %s}), (f:Fact {id: %s}) CREATE (e)-[:ASSERTS {created_at: timestamp('2024-01-01T00:00:00Z')}]->(f)", lstore.StringLiteral(ids.episodeID), lstore.StringLiteral(ids.factID))}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "disagreeing.lbug")
+			ids := writeStrictLegacyFixture(t, dbPath)
+			if tc.prepare != nil {
+				tc.prepare(t, dbPath, ids)
+			}
+			execLegacyStatements(t, dbPath, tc.statements(ids)...)
+			before := legacyDatabaseFileSet(t, dbPath)
+
+			_, err := MigrateDatabase(ctx, dbPath)
+			if err == nil {
+				t.Fatal("expected migration to reject a relationship table that disagrees with the decoded state")
+			}
+			yeoulErr := unwrapYeoulError(err)
+			if yeoulErr == nil || yeoulErr.Code != ErrStorageFailed {
+				t.Fatalf("expected %s error, got %v", ErrStorageFailed, err)
+			}
+			assertNoMigrationArtifacts(t, dbPath)
+			if after := legacyDatabaseFileSet(t, dbPath); !mapsEqual(before, after) {
+				t.Fatalf("failed migration changed the source file set\nbefore: %v\nafter:  %v", before, after)
+			}
+		})
+	}
+}
+
+// TestStrictReaderRejectsMalformedRelationshipColumns checks the row shape of
+// the two mandatory relationship tables. Their ids are projected from typed node
+// columns, so a non-string or missing id column cannot be resolved to a record
+// and must fail the same way the other strict-reader tables do. The check runs
+// through the same helper the loaders use, in strict mode only.
+func TestStrictReaderRejectsMalformedRelationshipColumns(t *testing.T) {
+	strict := &ladybugStore{cfg: Config{DatabasePath: "strict.lbug", legacyStrictRead: true}}
+	lenient := &ladybugStore{cfg: Config{DatabasePath: "lenient.lbug"}}
+	cases := []struct {
+		name   string
+		table  string
+		values []any
+	}{
+		{name: "from_source typed episode id", table: "FROM_SOURCE", values: []any{int64(1), "src-strict"}},
+		{name: "from_source typed source id", table: "FROM_SOURCE", values: []any{"ep-strict", int64(2)}},
+		{name: "from_source missing column", table: "FROM_SOURCE", values: []any{"ep-strict"}},
+		{name: "asserts typed episode id", table: "ASSERTS", values: []any{int64(1), "fact-strict"}},
+		{name: "asserts typed fact id", table: "ASSERTS", values: []any{"ep-strict", int64(2)}},
+		{name: "asserts missing column", table: "ASSERTS", values: []any{"ep-strict"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := strict.checkEdgeRow(tc.table, tc.values, 2, 2)
+			if err == nil {
+				t.Fatal("expected the strict reader to reject a malformed relationship row")
+			}
+			yeoulErr := unwrapYeoulError(err)
+			if yeoulErr == nil || yeoulErr.Code != ErrStorageFailed {
+				t.Fatalf("expected %s error, got %v", ErrStorageFailed, err)
+			}
+			if yeoulErr.Details["table"] != tc.table {
+				t.Fatalf("expected the error to name table %s, got %#v", tc.table, yeoulErr.Details)
+			}
+			if err := lenient.checkEdgeRow(tc.table, tc.values, 2, 2); err != nil {
+				t.Fatalf("lenient mode must keep tolerating the row, got %v", err)
+			}
+		})
+	}
+}
+
+// TestMigrateDatabaseStrictReaderAcceptsSharedSourceAndMultiSupport proves the
+// agreement checks do not invent stricter rules than the writer produces: a
+// source shared by two episodes and a fact supported by both episodes must still
+// migrate.
+func TestMigrateDatabaseStrictReaderAcceptsSharedSourceAndMultiSupport(t *testing.T) {
+	useInProcessMigration(t)
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "shared.lbug")
+	sourceID, episodeIDs, factID := writeStrictSharedSourceFixture(t, dbPath)
+
+	result, err := MigrateDatabase(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("migrate a valid shared-source database: %v", err)
+	}
+	if !result.Migrated || result.BackupPath == "" {
+		t.Fatalf("unexpected migration result: %#v", result)
+	}
+
+	migrated, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open migrated database: %v", err)
+	}
+	defer func() { _ = migrated.Close(ctx) }()
+	for _, episodeID := range episodeIDs {
+		episode, err := migrated.GetEpisode(ctx, episodeID)
+		if err != nil {
+			t.Fatalf("read migrated episode %s: %v", episodeID, err)
+		}
+		if episode.SourceID != sourceID {
+			t.Fatalf("episode %s lost its shared source: %q", episodeID, episode.SourceID)
+		}
+	}
+	fact, err := migrated.GetFact(ctx, factID)
+	if err != nil {
+		t.Fatalf("read migrated fact: %v", err)
+	}
+	if !sameStringSet(fact.SupportingEpisodeIDs, episodeIDs) {
+		t.Fatalf("migrated fact supporting episodes %v, want %v", fact.SupportingEpisodeIDs, episodeIDs)
+	}
+}
+
+// TestLenientLegacyReadIgnoresDisagreeingRelationships keeps the tolerance
+// boundary explicit: the ordinary read path still reconstructs state from
+// Episode.source_id and SUPPORTED_BY, so a disagreeing FROM_SOURCE edge is not a
+// read failure outside migration.
+func TestLenientLegacyReadIgnoresDisagreeingRelationships(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "lenient-relationship.lbug")
+	ids := writeStrictLegacyFixture(t, dbPath)
+	addStrictLegacySource(t, dbPath, "ep-other", "src-other")
+	execLegacyStatements(t, dbPath,
+		fmt.Sprintf("MATCH (e:Episode {id: %s})-[r:FROM_SOURCE]->(:Source) DELETE r", lstore.StringLiteral(ids.episodeID)),
+		fmt.Sprintf("MATCH (e:Episode {id: %s}), (s:Source {id: 'src-other'}) CREATE (e)-[:FROM_SOURCE {created_at: timestamp('2024-01-01T00:00:00Z')}]->(s)", lstore.StringLiteral(ids.episodeID)))
+
+	eng, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("lenient read must tolerate a disagreeing relationship row: %v", err)
+	}
+	defer func() { _ = eng.Close(ctx) }()
+	episode, err := eng.GetEpisode(ctx, ids.episodeID)
+	if err != nil {
+		t.Fatalf("read episode through the lenient path: %v", err)
+	}
+	if episode.SourceID != ids.sourceID {
+		t.Fatalf("lenient read should reconstruct the source from source_id, got %q", episode.SourceID)
 	}
 }
 

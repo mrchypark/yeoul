@@ -116,6 +116,16 @@ func (s *ladybugStore) Load() (*persistedState, error) {
 	if err := s.loadSupersedesEdges(&state); err != nil {
 		return nil, err
 	}
+	// FROM_SOURCE and ASSERTS carry the same information as the episode's
+	// source_id column and the fact's SUPPORTED_BY edges, so the strict reader
+	// compares the two representations instead of reconstructing the state from
+	// only one of them. The lenient read path never consults these tables.
+	if err := s.verifyFromSourceEdges(&state); err != nil {
+		return nil, err
+	}
+	if err := s.verifyAssertsEdges(&state); err != nil {
+		return nil, err
+	}
 
 	s.lastState = clonePersistedState(state)
 	s.loaded = true
@@ -657,6 +667,135 @@ func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
 		state.Facts[newID] = newFact
 		return nil
 	})
+}
+
+// verifyFromSourceEdges compares the mandatory FROM_SOURCE relationship table
+// against the source_id the episode loader decoded. The writer emits exactly one
+// edge per episode whose source_id is non-empty and no edge for an episode whose
+// source_id is empty, so in strict mode a missing, extra, retargeted, or
+// duplicate edge is a disagreement between two persisted representations of the
+// same state and must fail the migration instead of letting the reader pick one.
+func (s *ladybugStore) verifyFromSourceEdges(state *persistedState) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	targets := make(map[string][]string, len(state.Episodes))
+	err := s.loadRows("FROM_SOURCE", lstore.QueryFromSourceEdges(), func(values []any) error {
+		if err := s.checkEdgeRow("FROM_SOURCE", values, 2, 2); err != nil {
+			return err
+		}
+		episodeID, sourceID := asString(values[0]), asString(values[1])
+		if _, ok := state.Episodes[episodeID]; !ok {
+			return s.danglingReference("FROM_SOURCE", "Episode", episodeID)
+		}
+		if _, ok := state.Sources[sourceID]; !ok {
+			return s.danglingReference("FROM_SOURCE", "Source", sourceID)
+		}
+		targets[episodeID] = append(targets[episodeID], sourceID)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, episodeID := range sortedKeys(state.Episodes) {
+		episode := state.Episodes[episodeID]
+		expected := 0
+		if episode.SourceID != "" {
+			expected = 1
+		}
+		actual := targets[episodeID]
+		if len(actual) != expected {
+			return s.relationshipDisagreement("FROM_SOURCE", "episode", episodeID, episode.SourceID, actual)
+		}
+		if expected == 1 && actual[0] != episode.SourceID {
+			return s.relationshipDisagreement("FROM_SOURCE", "episode", episodeID, episode.SourceID, actual)
+		}
+	}
+	return nil
+}
+
+// verifyAssertsEdges compares the mandatory ASSERTS relationship table against
+// the supporting episodes the fact loader decoded. The writer emits exactly one
+// ASSERTS edge for every (episode, fact) pair in the fact's supporting set and
+// nothing for a fact without support, so strict mode requires the two
+// representations to agree exactly, including multiplicity.
+func (s *ladybugStore) verifyAssertsEdges(state *persistedState) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	asserted := make(map[string]map[string]bool, len(state.Facts))
+	err := s.loadRows("ASSERTS", lstore.QueryAssertsEdges(), func(values []any) error {
+		if err := s.checkEdgeRow("ASSERTS", values, 2, 2); err != nil {
+			return err
+		}
+		episodeID, factID := asString(values[0]), asString(values[1])
+		if _, ok := state.Episodes[episodeID]; !ok {
+			return s.danglingReference("ASSERTS", "Episode", episodeID)
+		}
+		if _, ok := state.Facts[factID]; !ok {
+			return s.danglingReference("ASSERTS", "Fact", factID)
+		}
+		if asserted[factID] == nil {
+			asserted[factID] = make(map[string]bool)
+		}
+		if asserted[factID][episodeID] {
+			return s.duplicateEdge("ASSERTS", "fact", factID, episodeID)
+		}
+		asserted[factID][episodeID] = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, factID := range sortedKeys(state.Facts) {
+		fact := state.Facts[factID]
+		expected := make(map[string]bool, len(fact.SupportingEpisodeIDs))
+		for _, episodeID := range fact.SupportingEpisodeIDs {
+			expected[episodeID] = true
+		}
+		actual := asserted[factID]
+		if len(actual) != len(expected) {
+			return s.relationshipDisagreement("ASSERTS", "fact", factID, "", sortedKeys(actual))
+		}
+		for episodeID := range expected {
+			if !actual[episodeID] {
+				return s.relationshipDisagreement("ASSERTS", "fact", factID, "", sortedKeys(actual))
+			}
+		}
+	}
+	return nil
+}
+
+// relationshipDisagreement reports that a mandatory relationship table does not
+// match the state decoded from the node columns it duplicates. Neither
+// representation is preferred, so the migration fails and names the relation,
+// the offending record, and both sides of the disagreement.
+func (s *ladybugStore) relationshipDisagreement(table, kind, recordID, expected string, actual []string) error {
+	details := map[string]any{
+		"database_path": s.cfg.DatabasePath,
+		"table":         table,
+		"record_kind":   kind,
+		"record_id":     recordID,
+		"edges":         actual,
+	}
+	if expected != "" {
+		details["expected"] = expected
+	}
+	return errorf(ErrStorageFailed, "legacy relationship rows disagree with the decoded legacy state", details, nil)
+}
+
+// duplicateEdge reports a relationship table that stores the same edge more
+// than once. The writer creates each edge at most once, and the lenient loader
+// collapses duplicates, so a repeat row is corruption rather than a legal
+// legacy shape.
+func (s *ladybugStore) duplicateEdge(table, kind, recordID, duplicateID string) error {
+	return errorf(ErrStorageFailed, "legacy relationship table stores a duplicate edge", map[string]any{
+		"database_path": s.cfg.DatabasePath,
+		"table":         table,
+		"record_kind":   kind,
+		"record_id":     recordID,
+		"duplicate_id":  duplicateID,
+	}, nil)
 }
 
 func (s *ladybugStore) loadNodes(label string, apply func(node lbug.Node) error) error {
