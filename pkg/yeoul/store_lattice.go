@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strconv"
 
@@ -41,6 +42,16 @@ type latticeStore struct {
 }
 
 func newLatticeStore(cfg Config) (stateStore, error) {
+	// A writable open can itself modify the database: the native engine may
+	// checkpoint and replace state/WAL files while recovering an interrupted
+	// write. The application-state version is therefore resolved through a
+	// read-only inspection first, so a database this build cannot read is
+	// rejected before any writable handle exists.
+	if !cfg.ReadOnly {
+		if err := validateStateVersionReadOnly(cfg.DatabasePath, cfg.CreateIfMissing); err != nil {
+			return nil, err
+		}
+	}
 	store, err := lstore.Open(cfg.DatabasePath, cfg.CreateIfMissing, cfg.ReadOnly)
 	if err != nil {
 		return nil, errorf(ErrStorageFailed, "open lattice database", map[string]any{
@@ -48,9 +59,8 @@ func newLatticeStore(cfg Config) (stateStore, error) {
 		}, err)
 	}
 	state := &latticeStore{cfg: cfg, store: store, lastState: emptyPersistedState()}
-	// Resolve the application-state version before any index, seeding, or
-	// application write, so a rejected version leaves the database exactly as it
-	// was found.
+	// Re-check through the handle that will actually serve reads: the inspection
+	// above cannot observe a database that only exists after CreateIfMissing.
 	if err := state.validateStateVersion(); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -212,6 +222,60 @@ func (s *latticeStore) Load() (*persistedState, error) {
 	s.lastState = clonePersistedState(state)
 	s.loaded = true
 	return &state, nil
+}
+
+// validateStateVersionReadOnly resolves the persisted application-state version
+// through a read-only handle, so a writable open never performs native recovery
+// on a database this build cannot read. A database that does not exist yet has
+// no persisted version to reject, and a database the native engine cannot open
+// at all is left for the real open to report.
+func validateStateVersionReadOnly(databasePath string, createIfMissing bool) error {
+	if _, err := os.Stat(databasePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// A database that does not exist yet has no persisted version to
+			// reject. The real open reports a missing database when creation is
+			// not allowed, with the error that belongs to that decision.
+			return nil
+		}
+		return errorf(ErrStorageFailed, "inspect lattice database for state version", map[string]any{
+			"database_path": databasePath,
+		}, err)
+	}
+	if err := readStateVersionReadOnly(databasePath); err != nil {
+		if errors.Is(err, errUnsupportedStateVersion) {
+			return err
+		}
+		// The native engine cannot read the file at all; the caller's real open
+		// reports that failure with its own error, so the version check stays out
+		// of the way here.
+		return nil
+	}
+	return nil
+}
+
+// readStateVersionReadOnly resolves the application-state version of an
+// existing database through a read-only handle. It reports a native open or
+// close failure as it stands, so a caller that must not act on an unreadable
+// database can refuse instead of deferring to a later writable open.
+func readStateVersionReadOnly(databasePath string) error {
+	store, err := lstore.Open(databasePath, false, true)
+	if err != nil {
+		return errorf(ErrStorageFailed, "open lattice database for state version inspection", map[string]any{
+			"database_path": databasePath,
+		}, err)
+	}
+	state := &latticeStore{cfg: Config{DatabasePath: databasePath, ReadOnly: true}, store: store, lastState: emptyPersistedState()}
+	versionErr := state.validateStateVersion()
+	closeErr := store.Close()
+	if versionErr != nil {
+		return versionErr
+	}
+	if closeErr != nil {
+		return errorf(ErrStorageFailed, "close lattice database after state version inspection", map[string]any{
+			"database_path": databasePath,
+		}, closeErr)
+	}
+	return nil
 }
 
 // validateStateVersion rejects a persisted application-state version this build

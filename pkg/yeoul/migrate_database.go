@@ -526,6 +526,9 @@ func recoverDatabaseMigration(databasePath string) error {
 			// the installation intent before renaming staging into place, so a
 			// retry after the rename finalizes the installation instead of
 			// trying to roll it back.
+			if err := validateStagingDatabaseVersion(marker.StagingPath); err != nil {
+				return err
+			}
 			marker.Phase = migrationPhaseBackedUp
 			if err := writeDatabaseMigrationMarker(marker); err != nil {
 				return err
@@ -551,6 +554,9 @@ func recoverDatabaseMigration(databasePath string) error {
 			return os.Remove(markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {
+			if err := validateStagingDatabaseVersion(marker.StagingPath); err != nil {
+				return err
+			}
 			if err := os.Rename(marker.StagingPath, databasePath); err != nil {
 				return fmt.Errorf("resume lattice database install: %w", err)
 			}
@@ -583,6 +589,18 @@ func validateDatabaseMigrationPaths(marker databaseMigrationMarker) error {
 		return fmt.Errorf("migration staging path is outside the expected database sibling namespace")
 	}
 	return nil
+}
+
+// validateStagingDatabaseVersion proves a staged migration result is a
+// database this build can read before recovery installs it at the canonical
+// path. A staging database left behind by another build is otherwise only
+// discovered after the rename, when the legacy backup has already been consumed
+// and the rejection can no longer be undone by a retry. A staging path the
+// native engine cannot open is refused for the same reason: installing it would
+// consume the backup for a database that cannot be opened, and the rejection
+// keeps the migration state intact so a later retry can still install it.
+func validateStagingDatabaseVersion(stagingPath string) error {
+	return readStateVersionReadOnly(stagingPath)
 }
 
 func writeDatabaseMigrationMarker(marker databaseMigrationMarker) error {
