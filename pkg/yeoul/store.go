@@ -72,7 +72,29 @@ type persistedState struct {
 	MigrationWatermarks map[string]MigrationWatermark `json:"migration_watermarks,omitempty"`
 }
 
+// openStoreOwnership selects the ownership lock an open holds for its whole
+// lifetime.
+type openStoreOwnership int
+
+const (
+	// openStoreSharedOwnership is the lock an ordinary open holds. It is shared
+	// with every other store and only excludes a migration.
+	openStoreSharedOwnership openStoreOwnership = iota
+	// openStoreExclusiveOwnership is the writable ownership an explicit
+	// maintenance window holds. Every other open is refused for the window's
+	// whole lifetime, so the state a maintenance operation reads cannot be
+	// changed between deciding on a change and applying it.
+	openStoreExclusiveOwnership
+)
+
 func openStateStore(cfg Config) (stateStore, error) {
+	return openStateStoreWithOwnership(cfg, openStoreSharedOwnership)
+}
+
+// openStateStoreWithOwnership opens the store while holding ownership of the
+// requested kind. An ordinary open shares the database with every other store;
+// a maintenance window owns it exclusively for the whole operation.
+func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stateStore, error) {
 	if cfg.InMemory {
 		return memoryStore{}, nil
 	}
@@ -102,26 +124,43 @@ func openStateStore(cfg Config) (stateStore, error) {
 	// One attempt may be spent converting a legacy database, which has to
 	// happen while this open holds no ownership at all.
 	for attempt := 0; attempt < openStoreAttempts; attempt++ {
-		// Shared ownership is held across the driver open and the store's whole
-		// lifetime. A migration needs the exclusive lock, so it can neither
-		// snapshot a database this store will keep changing nor install a
-		// replacement underneath it.
-		ownership, err := acquireOpenOwnership(cfg, databasePath)
+		// Ownership is held across the driver open and the store's whole
+		// lifetime. An ordinary open holds the shared lock, so a migration needs
+		// the exclusive lock and can neither snapshot a database this store will
+		// keep changing nor install a replacement underneath it. A maintenance
+		// window holds the exclusive lock itself, so no other process can change
+		// the database while its operation runs.
+		lock, err := acquireOpenOwnership(cfg, databasePath, ownership)
 		if err != nil {
 			return nil, err
 		}
 
 		// A marker can only exist while a migration holds the exclusive lock or
-		// after one crashed. Holding the shared lock rules out a live migration,
+		// after one crashed. The lock this open holds rules out a live migration,
 		// so a marker here means recovery is due. Recovery changes the database
-		// namespace, so it runs under the exclusive lock instead.
+		// namespace, so it runs under the exclusive lock.
 		pending, pendingErr := migrationRecoveryPending(databasePath)
 		if pendingErr != nil {
-			_ = ownership.Release()
+			_ = lock.Release()
 			return nil, pendingErr
 		}
 		if pending {
-			retry, recoverErr := recoverPendingMigration(ownership, cfg, databasePath)
+			// A maintenance window already holds the exclusive lock recovery
+			// requires, so it recovers the marker itself instead of handing
+			// ownership back and forth.
+			if ownership == openStoreExclusiveOwnership {
+				recoveryErr := recoverDatabaseMigration(databasePath)
+				if releaseErr := lock.Release(); releaseErr != nil {
+					return nil, errors.Join(recoveryErr, releaseErr)
+				}
+				if recoveryErr != nil {
+					return nil, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
+						"database_path": databasePath,
+					}, recoveryErr)
+				}
+				continue
+			}
+			retry, recoverErr := recoverPendingMigration(lock, cfg, databasePath)
 			if recoverErr != nil {
 				return nil, recoverErr
 			}
@@ -133,9 +172,9 @@ func openStateStore(cfg Config) (stateStore, error) {
 
 		store, openErr := openDriverStore(cfg)
 		if openErr == nil {
-			return &ownershipStore{stateStore: store, ownership: ownership, databasePath: databasePath}, nil
+			return &ownershipStore{stateStore: store, ownership: lock, databasePath: databasePath}, nil
 		}
-		if releaseErr := ownership.Release(); releaseErr != nil {
+		if releaseErr := lock.Release(); releaseErr != nil {
 			return nil, errors.Join(openErr, releaseErr)
 		}
 		if !openMayRequireMigration(cfg) {
@@ -177,8 +216,9 @@ func (s *ownershipStore) Checkpoint() error {
 	return checkpoint.Checkpoint()
 }
 
-// acquireOpenOwnership takes the shared ownership lock that an open holds for
-// the store's lifetime.
+// acquireOpenOwnership takes the ownership lock that an open holds for the
+// store's lifetime: the shared lock for an ordinary open, and the exclusive
+// lock for a maintenance window.
 //
 // A contended lock means a migration owns the database. A migration holds it for
 // the whole conversion, far longer than the retry window below, so the retries
@@ -189,17 +229,25 @@ func (s *ownershipStore) Checkpoint() error {
 // established may mean another process is migrating this database right now, and
 // an open without the lock could read a half-converted database or install a
 // recovery over a live one, so the failure is reported instead.
-func acquireOpenOwnership(cfg Config, databasePath string) (*databaseOwnershipLock, error) {
+//
+// The exclusive lock is only granted while no other store holds the database, so
+// a maintenance window that cannot take it reports the refusal instead of
+// reading state another owner may still change.
+func acquireOpenOwnership(cfg Config, databasePath string, ownership openStoreOwnership) (*databaseOwnershipLock, error) {
 	_ = cfg
+	exclusive := ownership == openStoreExclusiveOwnership
 	for attempt := 0; attempt < ownershipAcquireAttempts; attempt++ {
-		ownership, err := acquireDatabaseOwnership(databasePath, false)
+		lock, err := acquireDatabaseOwnership(databasePath, exclusive)
 		if err == nil {
-			return ownership, nil
+			return lock, nil
 		}
 		if !errors.Is(err, errDatabaseOwnershipBusy) {
 			return nil, err
 		}
 		time.Sleep(ownershipRetryDelay)
+	}
+	if exclusive {
+		return nil, databaseInUseError(databasePath)
 	}
 	return nil, migrationInProgressError(databasePath)
 }
@@ -260,6 +308,14 @@ func recoverPendingMigration(shared *databaseOwnershipLock, cfg Config, database
 
 func migrationInProgressError(databasePath string) error {
 	return errorf(ErrStorageFailed, "database migration is in progress", map[string]any{
+		"database_path": databasePath,
+	}, nil)
+}
+
+// databaseInUseError reports that the database is owned by another process, so
+// the exclusive ownership a maintenance operation needs cannot be established.
+func databaseInUseError(databasePath string) error {
+	return errorf(ErrStorageFailed, "database is owned by another process", map[string]any{
 		"database_path": databasePath,
 	}, nil)
 }

@@ -156,3 +156,68 @@ func TestCLIEntityCompactionKeepsDistinctStableKeys(t *testing.T) {
 		t.Fatalf("expected both whitespace-distinct entities to stay searchable, got %q", search)
 	}
 }
+
+// TestCLIAdminCompactApplyOwnsTheDatabase verifies that applying compaction is
+// explicit maintenance: it takes writable ownership before it discovers its
+// candidates, so it is refused while another store holds the database instead
+// of applying a candidate list taken from state that store can still change.
+// The read-only preview keeps working, because only the apply changes the
+// database and it is the only step that needs the writable ownership.
+func TestCLIAdminCompactApplyOwnsTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "compact-ownership.ltdb")
+	ingestPath := filepath.Join(tmpDir, "compact-ownership.json")
+
+	payload := `{
+  "entities": [
+    {"id":"person:alpha","type":"Person","canonical_name":"Alex","stable_key":"alex-1"},
+    {"id":"person:beta","type":"Person","canonical_name":"Alex","stable_key":"alex-1"}
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+
+	runCLI := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
+	}
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	owner, err := yeoul.Open(ctx, yeoul.Config{DatabasePath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open competing owner: %v", err)
+	}
+
+	if _, err := runCLI("admin", "compact", "--db", dbPath, "--json"); err != nil {
+		t.Fatalf("expected the preview to keep working while another owner reads, got %v", err)
+	}
+	if _, err := runCLI("admin", "compact", "--confirm", "--apply", "--db", dbPath); err == nil {
+		t.Fatal("expected compaction to be refused while another owner holds the database")
+	} else if !strings.Contains(err.Error(), "database is owned by another process") {
+		t.Fatalf("expected an ownership refusal, got %v", err)
+	}
+
+	if err := owner.Close(ctx); err != nil {
+		t.Fatalf("close competing owner: %v", err)
+	}
+	if _, err := runCLI("admin", "compact", "--confirm", "--apply", "--db", dbPath); err != nil {
+		t.Fatalf("expected compaction to apply once ownership is free, got %v", err)
+	}
+	record, err := runCLI("entity", "get", "--db", dbPath, "--id", "person:beta")
+	if err != nil {
+		t.Fatalf("get compacted entity: %v", err)
+	}
+	if !strings.Contains(record, "duplicate_of") {
+		t.Fatalf("expected the duplicate to be marked after compaction, got %q", record)
+	}
+}

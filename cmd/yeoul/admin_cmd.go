@@ -145,81 +145,61 @@ Usage:
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
 	}
-	payload, err := exportDatabase(ctx, dbPath)
-	if err != nil {
-		return err
-	}
-	entityCandidates := buildEntityMergeCandidates(payload)
-	factCandidates := buildFactDuplicateCandidates(payload)
-	report := map[string]any{
-		"database_path":               dbPath,
-		"mode":                        "dry-run",
-		"entity_duplicate_candidates": len(entityCandidates),
-		"fact_duplicate_candidates":   len(factCandidates),
-		"entity_candidates":           entityCandidates,
-		"fact_candidates":             factCandidates,
-	}
 	if !apply {
+		// The dry run only reports candidates, so it stays a read-only preview
+		// and does not take the writable ownership an apply needs.
+		payload, err := exportDatabase(ctx, dbPath)
+		if err != nil {
+			return err
+		}
+		candidates := compactionPlanFromPayload(payload)
+		report := map[string]any{
+			"database_path":               dbPath,
+			"mode":                        "dry-run",
+			"entity_duplicate_candidates": len(candidates.EntityCandidates),
+			"fact_duplicate_candidates":   len(candidates.FactCandidates),
+			"entity_candidates":           candidates.EntityCandidates,
+			"fact_candidates":             candidates.FactCandidates,
+		}
 		if jsonOut {
 			return writeJSON(c.stdout, report)
 		}
-		_, err = fmt.Fprintf(c.stdout, "dry-run entity_candidates=%d fact_candidates=%d\n", len(entityCandidates), len(factCandidates))
+		_, err = fmt.Fprintf(c.stdout, "dry-run entity_candidates=%d fact_candidates=%d\n", len(candidates.EntityCandidates), len(candidates.FactCandidates))
 		return err
 	}
 
-	eng, err := openWriteEngine(ctx, dbPath)
+	// Applying compaction is explicit maintenance, so the whole operation runs
+	// inside one maintenance window: the candidates are discovered and applied
+	// while this process holds writable ownership, and no other process can
+	// change a candidate between the two steps.
+	eng, err := openMaintenanceEngine(ctx, dbPath)
 	if err != nil {
 		return err
 	}
+	candidates, err := compactionPlanFromEngine(ctx, eng)
+	if err != nil {
+		_ = closeEngine(ctx, eng)
+		return err
+	}
+	report := map[string]any{
+		"database_path":               dbPath,
+		"mode":                        "apply",
+		"entity_duplicate_candidates": len(candidates.EntityCandidates),
+		"fact_duplicate_candidates":   len(candidates.FactCandidates),
+		"entity_candidates":           candidates.EntityCandidates,
+		"fact_candidates":             candidates.FactCandidates,
+	}
 	markedEntities := 0
-	for _, candidate := range entityCandidates {
-		target, err := eng.GetEntity(ctx, candidate.TargetID)
+	for _, candidate := range candidates.EntityCandidates {
+		marked, err := applyEntityMergeCandidate(ctx, eng, candidate)
 		if err != nil {
 			_ = closeEngine(ctx, eng)
 			return err
 		}
-		targetMeta := mergeMaps(target.Metadata, map[string]any{
-			"compaction_entity_duplicates": mergeStringSlices(anyStrings(target.Metadata["compaction_entity_duplicates"]), candidate.SourceIDs),
-			"compaction_marked":            time.Now().UTC().Format(time.RFC3339),
-		})
-		if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
-			ID:            target.ID,
-			SpaceID:       target.SpaceID,
-			Namespace:     target.Namespace,
-			Type:          target.Type,
-			CanonicalName: target.CanonicalName,
-			Aliases:       target.Aliases,
-			Metadata:      targetMeta,
-		}); err != nil {
-			_ = closeEngine(ctx, eng)
-			return err
-		}
-		for _, sourceID := range candidate.SourceIDs {
-			source, err := eng.GetEntity(ctx, sourceID)
-			if err != nil {
-				_ = closeEngine(ctx, eng)
-				return err
-			}
-			if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
-				ID:            source.ID,
-				SpaceID:       source.SpaceID,
-				Namespace:     source.Namespace,
-				Type:          source.Type,
-				CanonicalName: source.CanonicalName,
-				Aliases:       source.Aliases,
-				Metadata: mergeMaps(source.Metadata, map[string]any{
-					"duplicate_of":      target.ID,
-					"compaction_marked": time.Now().UTC().Format(time.RFC3339),
-				}),
-			}); err != nil {
-				_ = closeEngine(ctx, eng)
-				return err
-			}
-			markedEntities++
-		}
+		markedEntities += marked
 	}
 	retractedFacts := 0
-	for _, candidate := range factCandidates {
+	for _, candidate := range candidates.FactCandidates {
 		for _, factID := range candidate.SourceIDs {
 			if _, err := eng.RetractFact(ctx, factID, "duplicate_of:"+candidate.TargetID); err != nil {
 				_ = closeEngine(ctx, eng)
@@ -231,7 +211,6 @@ Usage:
 	if err := closeEngine(ctx, eng); err != nil {
 		return err
 	}
-	report["mode"] = "apply"
 	report["entity_marked"] = markedEntities
 	report["facts_retracted"] = retractedFacts
 	if jsonOut {
@@ -239,6 +218,86 @@ Usage:
 	}
 	_, err = fmt.Fprintf(c.stdout, "applied compaction entity_marked=%d facts_retracted=%d\n", markedEntities, retractedFacts)
 	return err
+}
+
+// compactionPlan is the set of changes one maintenance window decided to apply.
+// It is built from state read while the window holds writable ownership, so the
+// records it names cannot change between building and applying it.
+type compactionPlan struct {
+	EntityCandidates []entityMergeCandidate
+	FactCandidates   []factDuplicateCandidate
+}
+
+// compactionPlanFromPayload derives the candidates from one snapshot of the
+// database.
+func compactionPlanFromPayload(payload *exportFile) *compactionPlan {
+	return &compactionPlan{
+		EntityCandidates: buildEntityMergeCandidates(payload),
+		FactCandidates:   buildFactDuplicateCandidates(payload),
+	}
+}
+
+// compactionPlanFromEngine snapshots the engine it is given and derives the
+// compaction candidates from that snapshot. The caller must hold the writable
+// ownership of that engine, so the snapshot taken here is the state the plan
+// will be applied to.
+func compactionPlanFromEngine(ctx context.Context, eng yeoul.Engine) (*compactionPlan, error) {
+	payload, err := exportDatabaseFromEngine(ctx, eng)
+	if err != nil {
+		return nil, err
+	}
+	return compactionPlanFromPayload(payload), nil
+}
+
+// applyEntityMergeCandidate marks one duplicate group: the target records the
+// sources it absorbed and each source records the target it duplicates. It
+// returns how many sources were marked. The records are re-read from the engine
+// so the marks are written onto the state the window owns, not onto a copy taken
+// earlier.
+func applyEntityMergeCandidate(ctx context.Context, eng yeoul.Engine, candidate entityMergeCandidate) (int, error) {
+	marked := time.Now().UTC().Format(time.RFC3339)
+	target, err := eng.GetEntity(ctx, candidate.TargetID)
+	if err != nil {
+		return 0, err
+	}
+	targetMeta := mergeMaps(target.Metadata, map[string]any{
+		"compaction_entity_duplicates": mergeStringSlices(anyStrings(target.Metadata["compaction_entity_duplicates"]), candidate.SourceIDs),
+		"compaction_marked":            marked,
+	})
+	if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
+		ID:            target.ID,
+		SpaceID:       target.SpaceID,
+		Namespace:     target.Namespace,
+		Type:          target.Type,
+		CanonicalName: target.CanonicalName,
+		Aliases:       target.Aliases,
+		Metadata:      targetMeta,
+	}); err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, sourceID := range candidate.SourceIDs {
+		source, err := eng.GetEntity(ctx, sourceID)
+		if err != nil {
+			return count, err
+		}
+		if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
+			ID:            source.ID,
+			SpaceID:       source.SpaceID,
+			Namespace:     source.Namespace,
+			Type:          source.Type,
+			CanonicalName: source.CanonicalName,
+			Aliases:       source.Aliases,
+			Metadata: mergeMaps(source.Metadata, map[string]any{
+				"duplicate_of":      target.ID,
+				"compaction_marked": marked,
+			}),
+		}); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
 }
 
 func (c cli) runAdminExport(ctx context.Context, args []string) error {
