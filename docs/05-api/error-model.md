@@ -77,10 +77,13 @@ Examples:
 - lifecycle consistency errors: not retryable without logic change
 
 ## CLI mapping
-- validation/config errors -> exit 2
+- success -> exit 0
+- usage, validation, config, input, lifecycle, and unsupported errors -> exit 2
 - not found -> exit 3
-- storage/query failures -> exit 4
-- unsafe operation blocked -> exit 5
+- query failures -> exit 4
+- storage failures and anything else -> exit 1
+
+There is no separate exit code for blocked operations: a destructive command without `--confirm` is a usage error (exit 2), and storage failures such as an open or lock failure map to exit 1.
 
 ## Service API mapping
 - validation -> HTTP 400
