@@ -81,9 +81,10 @@ func TestDefaultOpenMigratesLadybugWithFullStateAndBackup(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "legacy.lbug")
 	legacy, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open legacy engine: %v", err)
@@ -173,9 +174,10 @@ func TestMigrateDatabaseFailsClosedWithoutLegacyHelper(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "legacy.lbug")
 	legacy, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open legacy engine: %v", err)

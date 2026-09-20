@@ -7,4 +7,9 @@ type Config struct {
 	InMemory        bool
 	ReadOnly        bool
 	CreateIfMissing bool
+
+	// legacyLadybugWrites enables the non-transactional legacy Ladybug write
+	// path. It exists only for in-repo tests that build legacy fixtures; the
+	// Ladybug driver is read-only for every other caller.
+	legacyLadybugWrites bool
 }

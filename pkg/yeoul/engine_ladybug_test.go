@@ -15,9 +15,10 @@ func TestLadybugDriverReopenPersistence(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "yeoul.lbug")
 
 	eng, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open ladybug engine: %v", err)
@@ -60,8 +61,9 @@ func TestLadybugDriverReopenPersistence(t *testing.T) {
 	}
 
 	reopened, err := Open(ctx, Config{
-		Driver:       StorageDriverLadybug,
-		DatabasePath: dbPath,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
 	})
 	if err != nil {
 		t.Fatalf("reopen ladybug engine: %v", err)
@@ -80,14 +82,33 @@ func TestLadybugDriverReopenPersistence(t *testing.T) {
 	}
 }
 
+func TestLadybugDriverRejectsWritableOpenByDefault(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "yeoul-writable-guard.lbug")
+
+	_, err := Open(ctx, Config{
+		Driver:          StorageDriverLadybug,
+		DatabasePath:    dbPath,
+		CreateIfMissing: true,
+	})
+	if err == nil {
+		t.Fatal("expected writable ladybug open to be rejected")
+	}
+	yeoulErr := unwrapYeoulError(err)
+	if yeoulErr == nil || yeoulErr.Code != ErrNotSupported {
+		t.Fatalf("expected %s error, got %v", ErrNotSupported, err)
+	}
+}
+
 func TestLadybugDriverPersistsGraphNativeRecords(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "yeoul-graph.lbug")
 
 	eng, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open ladybug engine: %v", err)
@@ -156,9 +177,10 @@ func TestLadybugDriverReadOnlyOpenAndWriteBlock(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "yeoul-readonly.lbug")
 
 	writable, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open writable engine: %v", err)
@@ -220,9 +242,10 @@ func TestLadybugDriverPreservesSequenceAcrossReopen(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "yeoul-sequence.lbug")
 
 	eng, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
@@ -242,8 +265,9 @@ func TestLadybugDriverPreservesSequenceAcrossReopen(t *testing.T) {
 	}
 
 	reopened, err := Open(ctx, Config{
-		Driver:       StorageDriverLadybug,
-		DatabasePath: dbPath,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
 	})
 	if err != nil {
 		t.Fatalf("reopen engine: %v", err)
@@ -269,9 +293,10 @@ func TestLadybugDriverIncrementalWritesDoNotDuplicateNodesOrEdges(t *testing.T) 
 	dbPath := filepath.Join(t.TempDir(), "yeoul-incremental.lbug")
 
 	eng, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
@@ -345,9 +370,10 @@ func TestLadybugDriverPersistsBitemporalRevisions(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "yeoul-revisions.lbug")
 
 	eng, err := Open(ctx, Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
@@ -410,8 +436,9 @@ func TestLadybugDriverPersistsBitemporalRevisions(t *testing.T) {
 	raw.Close()
 
 	reopened, err := Open(ctx, Config{
-		Driver:       StorageDriverLadybug,
-		DatabasePath: dbPath,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
 	})
 	if err != nil {
 		t.Fatalf("reopen engine: %v", err)
@@ -448,9 +475,10 @@ func TestLadybugDriverSeedsRevisionMigrationForLegacyState(t *testing.T) {
 	createdAt := time.Date(2026, time.June, 1, 12, 0, 0, 0, time.UTC)
 
 	store, err := newLadybugStore(Config{
-		Driver:          StorageDriverLadybug,
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
 	})
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
@@ -479,8 +507,9 @@ func TestLadybugDriverSeedsRevisionMigrationForLegacyState(t *testing.T) {
 	}
 
 	eng, err := Open(ctx, Config{
-		Driver:       StorageDriverLadybug,
-		DatabasePath: dbPath,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
 	})
 	if err != nil {
 		t.Fatalf("open migrated engine: %v", err)
@@ -490,8 +519,9 @@ func TestLadybugDriverSeedsRevisionMigrationForLegacyState(t *testing.T) {
 	}
 
 	reopened, err := Open(ctx, Config{
-		Driver:       StorageDriverLadybug,
-		DatabasePath: dbPath,
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
 	})
 	if err != nil {
 		t.Fatalf("reopen migrated engine: %v", err)
@@ -514,7 +544,7 @@ func TestLadybugDriverSeedsRevisionMigrationForLegacyState(t *testing.T) {
 func TestLadybugDriverPreservesMultipleSupersedesOnReopen(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "yeoul.lbug")
-	eng, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, CreateIfMissing: true, legacyLadybugWrites: true})
 	if err != nil {
 		t.Fatalf("open ladybug engine: %v", err)
 	}
@@ -542,7 +572,7 @@ func TestLadybugDriverPreservesMultipleSupersedesOnReopen(t *testing.T) {
 		t.Fatalf("close engine: %v", err)
 	}
 
-	reopened, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath})
+	reopened, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, legacyLadybugWrites: true})
 	if err != nil {
 		t.Fatalf("reopen ladybug engine: %v", err)
 	}

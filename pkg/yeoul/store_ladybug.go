@@ -17,9 +17,16 @@ type ladybugStore struct {
 	store     *lstore.Store
 	lastState persistedState
 	loaded    bool
+	failed    error
 }
 
 func newLadybugStore(cfg Config) (stateStore, error) {
+	if !cfg.ReadOnly && !cfg.legacyLadybugWrites {
+		return nil, errorf(ErrNotSupported, "ladybug storage driver is read-only; migrate the database to the lattice driver to write", map[string]any{
+			"driver":        string(StorageDriverLadybug),
+			"database_path": cfg.DatabasePath,
+		}, nil)
+	}
 	store, err := lstore.Open(cfg.DatabasePath, cfg.ReadOnly)
 	if err != nil {
 		return nil, errorf(ErrStorageFailed, "open ladybug database", map[string]any{
@@ -89,6 +96,11 @@ func (s *ladybugStore) Save(state persistedState) error {
 	if s.cfg.ReadOnly {
 		return nil
 	}
+	if s.failed != nil {
+		return errorf(ErrStorageFailed, "ladybug legacy write path is in a failed state after a partial write; reopen the database and migrate to the lattice driver", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+		}, s.failed)
+	}
 	if err := s.ensureSchema(); err != nil {
 		return err
 	}
@@ -105,9 +117,11 @@ func (s *ladybugStore) Save(state persistedState) error {
 		return nil
 	}
 
-	if err := s.exec(strings.Join(statements, ";\n")); err != nil {
-		return errorf(ErrStorageFailed, "write ladybug graph state", map[string]any{
+	if err := s.execStatements(statements); err != nil {
+		s.failed = err
+		return errorf(ErrStorageFailed, "write ladybug graph state; the legacy non-transactional path may have applied part of the change", map[string]any{
 			"database_path": s.cfg.DatabasePath,
+			"statements":    len(statements),
 		}, err)
 	}
 	s.lastState = clonePersistedState(state)
@@ -124,7 +138,7 @@ func (s *ladybugStore) Close() error {
 }
 
 func (s *ladybugStore) ensureSchema() error {
-	if err := s.exec(strings.Join(lstore.DDLStatements(), ";\n")); err != nil {
+	if err := s.execStatements(lstore.DDLStatements()); err != nil {
 		return errorf(ErrStorageFailed, "ensure ladybug graph schema", map[string]any{
 			"database_path": s.cfg.DatabasePath,
 		}, err)
@@ -379,12 +393,10 @@ func (s *ladybugStore) loadRows(query string, apply func(values []any) error) er
 	return nil
 }
 
-func (s *ladybugStore) exec(query string) error {
-	result, err := s.store.Query(query)
-	if result != nil {
-		result.Close()
-	}
-	return err
+// execStatements runs legacy write statements one by one so a later failure is
+// surfaced instead of being hidden behind the first statement's result.
+func (s *ladybugStore) execStatements(statements []string) error {
+	return s.store.ExecuteStatements(statements)
 }
 
 func (s *ladybugStore) buildDeltaStatements(prev, next persistedState) []string {
