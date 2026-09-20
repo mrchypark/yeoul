@@ -2319,6 +2319,55 @@ func TestCommittedMutationIsNotReportedAsCanceled(t *testing.T) {
 		t.Fatalf("expected the committed episode to be persisted, got %#v", store.state.Episodes)
 	}
 }
+
+// TestCanceledBeforeSaveBeginsRollsBackTheMutation covers the window between
+// the mutation body finishing and the durable save starting. Nothing is durable
+// in that window, so an abandoned request must roll back instead of committing:
+// a mutation body that ran to completion is not itself a commit.
+func TestCanceledBeforeSaveBeginsRollsBackTheMutation(t *testing.T) {
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel inside the pre-save window: the mutation body has completed and
+	// produced in-memory records, but no durable work has started.
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	previousHook := mutatePreSaveHook
+	mutatePreSaveHook = func() {
+		close(reached)
+		<-release
+	}
+	t.Cleanup(func() { mutatePreSaveHook = previousHook })
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "canceled before the save", Source: SourceInput{Kind: "note"}})
+		errs <- err
+	}()
+
+	<-reached
+	cancel()
+	close(release)
+
+	if err := <-errs; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the pre-save cancellation to be reported, got %v", err)
+	}
+	if store.saveCount != 0 {
+		t.Fatalf("expected the abandoned mutation to skip the durable save, got %d saves", store.saveCount)
+	}
+
+	rawEng := eng
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.episodes) != 0 || len(rawEng.sources) != 0 {
+		t.Fatalf("expected the rolled-back mutation to leave no records, got episodes=%d sources=%d", len(rawEng.episodes), len(rawEng.sources))
+	}
+	if rawEng.sequence != 0 {
+		t.Fatalf("expected the rolled-back mutation to leave no ID sequence consumption, got %d", rawEng.sequence)
+	}
+}
+
 func TestFactSupportRejectsCrossSpaceEpisodeSource(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})

@@ -865,6 +865,11 @@ func (e *engine) saveLocked() error {
 	return e.store.Save(e.snapshotLocked())
 }
 
+// mutatePreSaveHook runs after the mutation body returns and before the save
+// starts. Tests replace it to cancel a request inside that window; production
+// leaves it nil.
+var mutatePreSaveHook func()
+
 // mutateLocked runs fn under the engine lock and persists the mutated
 // state. When fn or the save fails, in-memory state is rolled back to the
 // pre-mutation snapshot so a failed write never leaks partial mutations.
@@ -893,12 +898,24 @@ func (e *engine) mutateLocked(ctx context.Context, fn func() error) error {
 		e.restoreLocked(snapshot)
 		return err
 	}
+	if mutatePreSaveHook != nil {
+		mutatePreSaveHook()
+	}
+	// Re-check after the mutation body and before the save starts. A request
+	// can be abandoned in the window between the last in-memory change and the
+	// commit, and that window is still pre-commit work: nothing durable exists
+	// yet, so the mutation must roll back rather than commit an abandoned write.
+	if err := ctx.Err(); err != nil {
+		e.restoreLocked(snapshot)
+		return err
+	}
 	if err := e.saveLocked(); err != nil {
 		e.restoreLocked(snapshot)
 		return err
 	}
-	// The save is the commit point: the context is not consulted again, so
-	// cancellation racing the commit cannot mislabel durable work as skipped.
+	// The save is the commit point. The context is not consulted once the save
+	// has begun, so cancellation racing the commit cannot mislabel durable work
+	// as skipped; the check above covers only the pre-commit window.
 	return nil
 }
 
