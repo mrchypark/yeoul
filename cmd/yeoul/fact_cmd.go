@@ -249,7 +249,6 @@ Usage:
 		}
 		if strings.TrimSpace(subjectID) == "" {
 			subjectID = yeoul.EntityID(subjectNamespace, subjectType, fallbackString(subjectStableKey, subjectName))
-			subjectInput.ID = subjectID
 		}
 		batch.Entities = append(batch.Entities, subjectInput)
 	}
@@ -263,7 +262,6 @@ Usage:
 		}
 		if strings.TrimSpace(objectID) == "" {
 			objectID = yeoul.EntityID(objectNamespace, objectType, fallbackString(objectStableKey, objectName))
-			objectInput.ID = objectID
 		}
 		batch.Entities = append(batch.Entities, objectInput)
 	}

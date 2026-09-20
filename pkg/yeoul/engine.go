@@ -179,6 +179,7 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 			}
 			result.EpisodeIDs = append(result.EpisodeIDs, item.EpisodeID)
 		}
+		referenceRewrites := make(map[string]string)
 		for _, entity := range input.Entities {
 			if strings.TrimSpace(entity.Type) == "" || strings.TrimSpace(entity.CanonicalName) == "" {
 				return errorf(ErrInputInvalid, "entity type and canonical_name are required", map[string]any{"id": entity.ID}, nil)
@@ -188,10 +189,20 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 				return err
 			}
 			result.EntityIDs = append(result.EntityIDs, item.ID)
+			if strings.TrimSpace(entity.ID) == "" {
+				derived := EntityID(entity.Namespace, entity.Type, firstNonEmpty(entity.StableKey, entity.CanonicalName))
+				referenceRewrites[derived] = item.ID
+			}
 		}
 		for _, fact := range input.Facts {
 			if strings.TrimSpace(fact.Predicate) == "" || strings.TrimSpace(fact.SubjectID) == "" || len(fact.SupportingEpisodeIDs) == 0 {
 				return errorf(ErrInputInvalid, "fact predicate, subject_id, and supporting_episode_ids are required", map[string]any{"id": fact.ID}, nil)
+			}
+			if rewritten, ok := referenceRewrites[fact.SubjectID]; ok {
+				fact.SubjectID = rewritten
+			}
+			if rewritten, ok := referenceRewrites[fact.ObjectID]; ok {
+				fact.ObjectID = rewritten
 			}
 			item, err := e.assertFactLocked(normalizeSpaceID(fact.SpaceID), fact, false)
 			if err != nil {
@@ -292,6 +303,11 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 		}
 	}
 	metadata := cloneAnyMap(input.Metadata)
+	if metadata != nil {
+		// stable_key is engine-managed: ordinary metadata must not be able to
+		// change a stored strong identity.
+		delete(metadata, "stable_key")
+	}
 	if strings.TrimSpace(input.StableKey) != "" {
 		metadata = mergeAnyMap(metadata, map[string]any{"stable_key": input.StableKey})
 	}
@@ -710,9 +726,14 @@ func (e *engine) resolveSource(spaceID, sourceID string, input SourceInput, now 
 			input.Kind = "inline"
 		}
 		sourceID = normalizeSourceID(spaceID, input.Kind, input.ExternalRef)
-		legacyID := normalizeLegacySourceID(input.Kind, input.ExternalRef)
-		if source, ok := e.sources[legacyID]; ok && sourceMatches(source, spaceID, input.Kind, input.ExternalRef) {
-			sourceID = legacyID
+		for _, legacyID := range []string{
+			legacySourceID(spaceID, input.Kind, input.ExternalRef),
+			normalizeLegacySourceID(input.Kind, input.ExternalRef),
+		} {
+			if source, ok := e.sources[legacyID]; ok && sourceMatches(source, spaceID, input.Kind, input.ExternalRef) {
+				sourceID = legacyID
+				break
+			}
 		}
 	}
 	if sourceID == "" {

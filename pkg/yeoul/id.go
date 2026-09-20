@@ -16,6 +16,13 @@ func legacyEntityID(namespace, entityType, canonical string) string {
 	return readableIdentitySlug(namespace, entityType, canonical)
 }
 
+// legacySourceID is the source ID format written by releases before the
+// fingerprint suffix (space-qualified readable slug) and stays a checked
+// compatibility lookup target.
+func legacySourceID(spaceID, kind, externalRef string) string {
+	return "src:" + readableIdentitySlug(spaceID, kind, externalRef)
+}
+
 func normalizeLegacySourceID(kind, externalRef string) string {
 	return readableIdentitySlug("src", kind, externalRef)
 }
@@ -54,23 +61,34 @@ func identityFingerprint(parts ...string) string {
 	for _, part := range parts {
 		fmt.Fprintf(hasher, "%d:%s|", len(part), part)
 	}
-	return hex.EncodeToString(hasher.Sum(nil)[:6])
+	return hex.EncodeToString(hasher.Sum(nil)[:8])
 }
 
 func entityIdentityMatches(entity Entity, input EntityInput) bool {
 	if entity.Namespace != input.Namespace || entity.Type != input.Type {
 		return false
 	}
-	if strings.TrimSpace(input.StableKey) != "" {
-		return metadataStableKey(entity.Metadata) == input.StableKey
+	incomingKey := strings.TrimSpace(input.StableKey)
+	storedKey := metadataStableKey(entity.Metadata)
+	if incomingKey != "" || storedKey != "" {
+		return incomingKey == storedKey
 	}
 	return entity.CanonicalName == input.CanonicalName
 }
 
 func legacyEntityIdentityMatches(entity Entity, input EntityInput) bool {
-	return entity.Namespace == input.Namespace &&
-		entity.Type == input.Type &&
-		entity.CanonicalName == input.CanonicalName
+	if entity.Namespace != input.Namespace || entity.Type != input.Type {
+		return false
+	}
+	incomingKey := strings.TrimSpace(input.StableKey)
+	storedKey := metadataStableKey(entity.Metadata)
+	if incomingKey != "" {
+		return incomingKey == storedKey
+	}
+	if storedKey != "" {
+		return false
+	}
+	return entity.CanonicalName == input.CanonicalName
 }
 
 func metadataStableKey(metadata map[string]any) string {
