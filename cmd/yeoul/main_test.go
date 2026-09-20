@@ -2934,6 +2934,178 @@ func TestCLIIndexPublishRaxAppendsToExistingStore(t *testing.T) {
 	}
 }
 
+// installedRaxLibraryPaths lists the rax libraries of every Yeoul install under
+// <home>/.local/share/yeoul/<tag>/lib, newest install first. The installed CLI
+// resolves its runtime relative to its own executable, which a test binary in a
+// temporary directory cannot reproduce, so tests fall back to this layout. The
+// ordering uses each install's modification time rather than its tag, because
+// tag names do not sort as versions (v0.5.10 precedes v0.5.4 lexicographically).
+func installedRaxLibraryPaths(home string) []string {
+	matches, err := filepath.Glob(filepath.Join(home, ".local", "share", "yeoul", "*", "lib", raxLibraryName()))
+	if err != nil {
+		return nil
+	}
+	type installed struct {
+		path    string
+		modTime time.Time
+	}
+	found := make([]installed, 0, len(matches))
+	for _, match := range matches {
+		info, err := os.Stat(match)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		found = append(found, installed{path: match, modTime: info.ModTime()})
+	}
+	slices.SortFunc(found, func(a, b installed) int {
+		return b.modTime.Compare(a.modTime)
+	})
+	paths := make([]string, 0, len(found))
+	for _, item := range found {
+		paths = append(paths, item.path)
+	}
+	return paths
+}
+
+// raxRealFFILibraryPath resolves a real bundled rax FFI library for this
+// machine, following the same precedence as lookupRaxLibrary: an explicit
+// YEOUL_RAX_LIB, then the candidates derived from the test binary location,
+// then the newest installed CLI runtime. It returns "" when no library is
+// discoverable, so callers can skip instead of fabricating a runtime.
+func raxRealFFILibraryPath() string {
+	if explicit := strings.TrimSpace(os.Getenv("YEOUL_RAX_LIB")); explicit != "" && isRegularFile(explicit) {
+		return explicit
+	}
+	for _, candidate := range bundledRaxLibraryCandidates() {
+		if isRegularFile(candidate) {
+			return candidate
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if paths := installedRaxLibraryPaths(home); len(paths) > 0 {
+		return paths[0]
+	}
+	return ""
+}
+
+// raxFFICompiledOut reports whether this test binary was built without cgo, in
+// which case rax_ffi_stub.go supplies a stub that always fails and the real FFI
+// path cannot run.
+func raxFFICompiledOut() bool {
+	_, err := raxFFISearchText("", "", "probe", 1)
+	return err != nil && strings.Contains(err.Error(), "requires cgo")
+}
+
+// TestCLIIndexPublishRaxRealFFIAppendsToExistingStore closes the gap left by
+// TestCLIIndexPublishRaxAppendsToExistingStore, which exercises only a fake rax
+// executable: it runs the same two-corpus scenario through the real bundled rax
+// FFI runtime and reads the store back with the real native search. Every rax
+// call travels the production seam (lookupRaxRuntime -> raxIngestDocs /
+// raxSearchText) rather than a test-owned implementation.
+//
+// The test skips when no real library is discoverable or the binary lacks cgo,
+// so machines and CI without a bundled runtime are unaffected.
+func TestCLIIndexPublishRaxRealFFIAppendsToExistingStore(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("rax FFI is built only for darwin and linux, running on %s", runtime.GOOS)
+	}
+	libPath := raxRealFFILibraryPath()
+	if libPath == "" {
+		t.Skip("no bundled rax FFI library found; install the rax runtime or set YEOUL_RAX_LIB to a real librax_ffi library")
+	}
+	if raxFFICompiledOut() {
+		t.Skip("test binary was built without cgo; rax FFI is compiled out")
+	}
+	t.Logf("using real rax FFI library %s", libPath)
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "shared.rax")
+	// Route both the CLI publish and the read-back search through the real
+	// library. Everything else stays under t.TempDir(), so no managed store or
+	// user data is touched.
+	t.Setenv("YEOUL_RAX_LIB", libPath)
+	t.Setenv("YEOUL_RAX_BIN", "")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	// Each corpus lives in its own database and index root so the two
+	// projections are disjoint, exactly like publishing two different sources
+	// into one reused store.
+	buildCorpus := func(name, episodeID, factID string) string {
+		t.Helper()
+		dbPath := filepath.Join(tmpDir, name+".ltdb")
+		ingestPath := filepath.Join(tmpDir, name+"-ingest.json")
+		root := filepath.Join(tmpDir, name+"-index")
+		payload := `{
+  "episodes": [{"id":"` + episodeID + `","kind":"note","content":"` + name + ` corpus note","source":{"kind":"note","external_ref":"` + name + `"}}],
+  "entities": [{"id":"project:` + name + `","type":"Project","canonical_name":"` + name + `"}],
+  "facts": [{"id":"` + factID + `","predicate":"DESCRIBES","subject_id":"project:` + name + `","value_text":"` + name + ` corpus fact","supporting_episode_ids":["` + episodeID + `"]}]
+}`
+		if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+			t.Fatalf("write ingest payload: %v", err)
+		}
+		runCLI("init", "--db", dbPath)
+		runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+		runCLI("index", "build", "--db", dbPath, "--root", root, "--json")
+		return root
+	}
+
+	firstRoot := buildCorpus("alpha", "ep-alpha", "fact-alpha")
+	secondRoot := buildCorpus("beta", "ep-beta", "fact-beta")
+
+	first := runCLI("index", "publish-rax", "--root", firstRoot, "--store", storePath, "--json")
+	if !strings.Contains(first, `"published_document_count": 3`) {
+		t.Fatalf("expected first publish to report its own 3 documents, got %q", first)
+	}
+	second := runCLI("index", "publish-rax", "--root", secondRoot, "--store", storePath, "--json")
+	if !strings.Contains(second, `"published_document_count": 3`) {
+		t.Fatalf("expected second publish to report its own 3 documents, got %q", second)
+	}
+
+	// Read the store back through the real native search. A query drawn from
+	// each corpus must surface that corpus's fact, which only holds if the second
+	// publish merged into the first store instead of replacing it.
+	realRuntime, ok := lookupRaxRuntime("", "")
+	if !ok {
+		t.Fatalf("expected the real rax FFI runtime to resolve from YEOUL_RAX_LIB=%q", libPath)
+	}
+	if realRuntime.Kind != "ffi" || realRuntime.Path != libPath {
+		t.Fatalf("expected the resolved runtime to be the real FFI library %q, got %#v", libPath, realRuntime)
+	}
+
+	found := map[string]bool{}
+	for _, query := range []string{"alpha", "beta"} {
+		output, err := raxSearchText(ctx, realRuntime, storePath, query, 10)
+		if err != nil {
+			t.Fatalf("real rax search %q: %v", query, err)
+		}
+		docIDs, err := parseRaxDocIDs(output)
+		if err != nil {
+			t.Fatalf("parse real rax search %q output %q: %v", query, string(output), err)
+		}
+		for _, docID := range docIDs {
+			found[docID] = true
+		}
+	}
+	for _, docID := range []string{"fact:fact-alpha", "fact:fact-beta"} {
+		if !found[docID] {
+			t.Fatalf("expected the reused store to still answer %s after both real publishes, got %v", docID, found)
+		}
+	}
+}
+
 // TestCLIIngestRejectsSecretCanaries exercises the pre-ingest boundary through
 // the CLI entry points that persist caller text: a single episode, a bulk JSON
 // payload (including metadata), and a lifecycle reason. Synthetic canaries are

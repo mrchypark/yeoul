@@ -57,8 +57,17 @@ func metadataSecretFields(path string, metadata map[string]any) []secretField {
 	if len(metadata) == 0 {
 		return nil
 	}
+	// The path is diagnostic metadata and must never contain the credential,
+	// whether it appeared as a value or as a key. When a key is itself the
+	// credential, report a constant placeholder segment instead of the key.
 	fields := make([]secretField, 0, len(metadata))
 	for key, value := range metadata {
+		if _, keyIsSecret := scanSecretClass(key); keyIsSecret {
+			// The key itself is the credential, so it must not appear in the
+			// diagnostic path either; the rejection reports the location only.
+			fields = append(fields, secretField{path: path + ".<redacted-key>", value: key})
+			continue
+		}
 		keyPath := path + "." + key
 		fields = append(fields, secretField{path: keyPath, value: key})
 		fields = append(fields, anySecretFields(keyPath, value)...)
@@ -108,8 +117,11 @@ func episodeSecretFields(input EpisodeInput) []secretField {
 		{path: "episode.content", value: input.Content},
 		{path: "episode.kind", value: input.Kind},
 		{path: "episode.id", value: input.ID},
+		{path: "episode.space_id", value: input.SpaceID},
 		{path: "episode.group_id", value: input.GroupID},
 		{path: "episode.source_id", value: input.SourceID},
+		{path: "episode.source.id", value: input.Source.ID},
+		{path: "episode.source.space_id", value: input.Source.SpaceID},
 		{path: "episode.source.kind", value: input.Source.Kind},
 		{path: "episode.source.uri", value: input.Source.URI},
 		{path: "episode.source.external_ref", value: input.Source.ExternalRef},
@@ -122,6 +134,7 @@ func episodeSecretFields(input EpisodeInput) []secretField {
 func entitySecretFields(input EntityInput) []secretField {
 	fields := []secretField{
 		{path: "entity.id", value: input.ID},
+		{path: "entity.space_id", value: input.SpaceID},
 		{path: "entity.namespace", value: input.Namespace},
 		{path: "entity.type", value: input.Type},
 		{path: "entity.canonical_name", value: input.CanonicalName},
@@ -137,6 +150,7 @@ func entitySecretFields(input EntityInput) []secretField {
 func factSecretFields(input FactInput) []secretField {
 	fields := []secretField{
 		{path: "fact.id", value: input.ID},
+		{path: "fact.space_id", value: input.SpaceID},
 		{path: "fact.predicate", value: input.Predicate},
 		{path: "fact.subject_id", value: input.SubjectID},
 		{path: "fact.object_id", value: input.ObjectID},

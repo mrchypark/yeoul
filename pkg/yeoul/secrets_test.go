@@ -180,3 +180,69 @@ func TestCleanInputIsAcceptedByEveryWritePath(t *testing.T) {
 		t.Fatalf("ingest clean batch: %v", err)
 	}
 }
+
+// TestIngestEpisodeRejectsSecretMetadataKeyWithoutLeakingKey covers the case
+// where the credential is the metadata key rather than the value. The key must
+// still be scanned and rejected, but it must not appear in the diagnostic path.
+func TestIngestEpisodeRejectsSecretMetadataKeyWithoutLeakingKey(t *testing.T) {
+	ctx := context.Background()
+	eng, _ := newSecretTestEngine(t)
+	_, err := eng.IngestEpisode(ctx, EpisodeInput{
+		Kind:     "note",
+		Content:  "clean",
+		Source:   SourceInput{Kind: "note"},
+		Metadata: map[string]any{canaryAWSAccessKey: "clean-value"},
+	})
+	if err == nil {
+		t.Fatal("expected the credential-shaped metadata key to be rejected")
+	}
+	var yeoulErr *Error
+	if !errors.As(err, &yeoulErr) {
+		t.Fatalf("expected a structured Yeoul error, got %v", err)
+	}
+	if yeoulErr.Code != ErrInputInvalid {
+		t.Fatalf("expected %s, got %s", ErrInputInvalid, yeoulErr.Code)
+	}
+	got, _ := yeoulErr.Details["field"].(string)
+	if got != "episode.metadata.<redacted-key>" {
+		t.Fatalf("expected the diagnostic path to use the placeholder segment, got %#v", yeoulErr.Details)
+	}
+	if strings.Contains(got, canaryAWSAccessKey) {
+		t.Fatalf("rejection path leaked the credential-shaped key: %q", got)
+	}
+	if _, ok := yeoulErr.Details["secret_class"]; !ok {
+		t.Fatalf("expected a secret_class detail, got %#v", yeoulErr.Details)
+	}
+	if strings.Contains(yeoulErr.Error(), canaryAWSAccessKey) {
+		t.Fatalf("error message echoed the credential-shaped key: %q", yeoulErr.Error())
+	}
+	if strings.Contains(yeoulErr.Message, canaryAWSAccessKey) {
+		t.Fatalf("error message field echoed the credential-shaped key: %q", yeoulErr.Message)
+	}
+}
+
+// TestNewlyScannedSpaceAndSourceFieldsRejectSecrets covers the input fields the
+// engine persists but the scanner previously skipped: SpaceID on episodes,
+// entities, and facts, plus the promoted source id and source space id.
+func TestNewlyScannedSpaceAndSourceFieldsRejectSecrets(t *testing.T) {
+	ctx := context.Background()
+	eng, episode := newSecretTestEngine(t)
+
+	_, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "clean", SpaceID: canaryAWSAccessKey, Source: SourceInput{Kind: "note"}})
+	assertSecretRejected(t, err, "episode.space_id")
+
+	_, err = eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "clean", Source: SourceInput{Kind: "note", ID: canaryGitHubToken}})
+	assertSecretRejected(t, err, "episode.source.id")
+
+	_, err = eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "clean space thing", SpaceID: canaryAWSAccessKey})
+	assertSecretRejected(t, err, "entity.space_id")
+
+	_, err = eng.AssertFact(ctx, FactInput{
+		Predicate:            "HAS_STATE",
+		SubjectID:            "thing:x",
+		ValueText:            "clean",
+		SpaceID:              canaryAWSAccessKey,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	assertSecretRejected(t, err, "fact.space_id")
+}

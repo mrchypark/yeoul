@@ -158,6 +158,15 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 		// after one crashed. The lock this open holds rules out a live migration,
 		// so a marker here means recovery is due. Recovery changes the database
 		// namespace, so it runs under the exclusive lock.
+		//
+		// Recovery runs for a read-only open too, and deliberately so: the
+		// read-only contract below forbids starting a conversion, not finishing
+		// one. A marker is proof that a migration already began on this
+		// database, and the only complete snapshot may still be sitting in the
+		// staging path. Refusing to recover would leave the database unusable
+		// for a reader that never asked for a conversion, so completing the
+		// interrupted protocol is treated as part of opening, not as a mutation
+		// the caller must opt into with AllowMigration.
 		pending, pendingErr := migrationRecoveryPending(databasePath)
 		if pendingErr != nil {
 			_ = lock.Release()

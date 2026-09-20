@@ -24,11 +24,26 @@ const (
 	historyInferredKey = "history_inferred"
 )
 
+// reservedFactMetadataKeys are engine-managed fact keys: an ordinary fact write
+// must not be able to set them, because they carry lifecycle state rather than
+// caller context.
 var reservedFactMetadataKeys = map[string]bool{
 	"superseded_by":    true,
 	"supersedes":       true,
 	"supersede_reason": true,
 	"duplicate_of":     true,
+	historyInferredKey: true,
+	entityHistoryKey:   true,
+}
+
+// reservedEntityMetadataKeys are the engine-managed entity keys an ordinary
+// entity write must not set. The list is deliberately shorter than the fact
+// list: "duplicate_of" is caller-supplied entity context here, written by the
+// entity merge and compaction commands, so it stays writable. The two keys
+// below are provenance: _history is the engine's own revision log, and
+// history_inferred claims a historical answer was reconstructed, so accepting
+// either from a caller would let a write forge the engine's provenance.
+var reservedEntityMetadataKeys = map[string]bool{
 	historyInferredKey: true,
 	entityHistoryKey:   true,
 }
@@ -335,6 +350,15 @@ func (e *engine) ingestEpisodeLocked(spaceID string, input EpisodeInput, source 
 }
 
 func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
+	// An entity revision carries no status field, so its metadata is the only
+	// place a lifecycle marker can live. Ordinary entity writes therefore fail
+	// closed on engine-managed keys exactly like assertFactLocked does, before
+	// any state changes.
+	for key := range input.Metadata {
+		if reservedEntityMetadataKeys[key] {
+			return nil, errorf(ErrLifecycleInvalid, "entity metadata key is lifecycle-managed", map[string]any{"metadata_key": key}, nil)
+		}
+	}
 	now := e.now()
 	spaceID := normalizeSpaceID(input.SpaceID)
 	id := input.ID
@@ -362,6 +386,13 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 		// stable_key is engine-managed: ordinary metadata must not be able to
 		// change a stored strong identity.
 		delete(metadata, "stable_key")
+		// Engine-managed lifecycle keys must not be able to change stored
+		// history semantics either. The ordinary write path already rejects
+		// them above; stripping here keeps a future lifecycle-permitting path
+		// from letting them ride into a seeded or recorded revision.
+		for key := range reservedEntityMetadataKeys {
+			delete(metadata, key)
+		}
 	}
 	if strings.TrimSpace(input.StableKey) != "" {
 		metadata = mergeAnyMap(metadata, map[string]any{"stable_key": input.StableKey})
