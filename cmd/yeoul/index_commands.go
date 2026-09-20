@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,7 +93,7 @@ type raxRuntime struct {
 }
 
 const raxChunkMarker = "#chunk:"
-const projectionManifestVersion = 4
+const projectionManifestVersion = 5
 
 func (c cli) runIndex(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
@@ -993,7 +994,39 @@ func raxRecordKindID(docID string) (string, string, bool) {
 	if id == "" {
 		return "", "", false
 	}
-	return kind, id, true
+	return kind, raxUnescapeRecordID(id), true
+}
+
+// raxProjectionRecordID builds the rax document identity for a record. Caller
+// IDs may legitimately contain the "#chunk:" native chunk suffix, so the ID
+// portion is percent-escaped to keep kind/id decoding and chunk stripping
+// unambiguous. The ':' separator is not escaped: the kind/id split is on the
+// first colon, so colons inside the ID survive unchanged.
+func raxProjectionRecordID(kind, id string) string {
+	return kind + ":" + raxEscapeRecordID(id)
+}
+
+// raxEscapeRecordID escapes the characters that make the concatenated
+// projection identity ambiguous. '%' is escaped first so decoding is stable,
+// and '#' is escaped so it cannot be mistaken for a native chunk suffix.
+func raxEscapeRecordID(id string) string {
+	id = strings.ReplaceAll(id, "%", "%25")
+	id = strings.ReplaceAll(id, "#", "%23")
+	return id
+}
+
+// raxUnescapeRecordID reverses raxEscapeRecordID. IDs that were written before
+// the escaped format (no '%') pass through unchanged, so an old store still
+// resolves its records.
+func raxUnescapeRecordID(id string) string {
+	if !strings.Contains(id, "%") {
+		return id
+	}
+	decoded, err := url.PathUnescape(id)
+	if err != nil {
+		return id
+	}
+	return decoded
 }
 
 func raxMatchedText(record any) string {
@@ -1148,7 +1181,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			meta["record_metadata"] = episode.Metadata
 		}
 		doc := projectionDocument{
-			ProjectionID: "episode:" + episode.ID,
+			ProjectionID: raxProjectionRecordID("episode", episode.ID),
 			SearchText:   strings.TrimSpace(episode.Content),
 			Metadata:     meta,
 		}
@@ -1177,7 +1210,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			entityRevisionText[entity.ID],
 		)
 		projections = append(projections, projectionDocument{
-			ProjectionID: "entity:" + entity.ID,
+			ProjectionID: raxProjectionRecordID("entity", entity.ID),
 			SearchText:   text,
 			Metadata:     meta,
 		})
@@ -1211,7 +1244,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			factRevisionText[fact.ID],
 		)
 		doc := projectionDocument{
-			ProjectionID: "fact:" + fact.ID,
+			ProjectionID: raxProjectionRecordID("fact", fact.ID),
 			SearchText:   text,
 			Metadata:     meta,
 		}

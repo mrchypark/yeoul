@@ -551,6 +551,45 @@ func TestRaxProjectionChunkIDsMapBackToRecords(t *testing.T) {
 	}
 }
 
+// TestRaxProjectionIDsRoundTripChunkMarker verifies that record IDs which
+// themselves contain the native chunk marker survive the projection identity
+// round trip, that a native chunk suffix is still stripped, and that the
+// shortened ID stays a distinct record.
+func TestRaxProjectionIDsRoundTripChunkMarker(t *testing.T) {
+	for _, kind := range []string{"fact", "episode", "entity"} {
+		id := "project" + raxChunkMarker + "notes"
+		docID := raxProjectionRecordID(kind, id)
+		gotKind, gotID, ok := raxRecordKindID(docID)
+		if !ok || gotKind != kind || gotID != id {
+			t.Fatalf("expected %s identity round trip, got kind=%q id=%q ok=%v from %q", kind, gotKind, gotID, ok, docID)
+		}
+		if projectionID, ok := raxRecordProjectionID(docID); !ok || projectionID != kind+":"+id {
+			t.Fatalf("expected %s projection id %q, got %q ok=%v", kind, kind+":"+id, projectionID, ok)
+		}
+		// A native chunk suffix appended to the escaped identity must still map
+		// back to the marker-containing record, not the shortened one.
+		gotKind, gotID, ok = raxRecordKindID(docID + raxChunkMarker + "3")
+		if !ok || gotKind != kind || gotID != id {
+			t.Fatalf("expected %s chunked identity to keep marker id, got kind=%q id=%q ok=%v", kind, gotKind, gotID, ok)
+		}
+	}
+
+	// The shortened ID must remain a distinct record from the marker-containing
+	shortened := raxProjectionRecordID("fact", "project")
+	marker := raxProjectionRecordID("fact", "project"+raxChunkMarker+"notes")
+	if shortened == marker {
+		t.Fatalf("expected shortened and marker ids to stay distinct, both %q", shortened)
+	}
+	if _, id, ok := raxRecordKindID(shortened); !ok || id != "project" {
+		t.Fatalf("expected shortened id to decode to project, got id=%q ok=%v", id, ok)
+	}
+
+	// Legacy unescaped identities (pre-version-bump) must still decode.
+	if _, id, ok := raxRecordKindID("fact:fact-legacy"); !ok || id != "fact-legacy" {
+		t.Fatalf("expected unescaped legacy id preserved, got id=%q ok=%v", id, ok)
+	}
+}
+
 func TestRaxProjectionIncludesRevisionText(t *testing.T) {
 	projections, manifest := buildProjectionArtifacts("test.ltdb", &exportFile{
 		Entities: []yeoul.EntityInput{{
