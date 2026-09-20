@@ -67,6 +67,15 @@ func writeStrictLegacyFixture(t *testing.T, dbPath string) legacyFixtureIDs {
 	if err != nil {
 		t.Fatalf("assert legacy fixture fact: %v", err)
 	}
+	if _, err := eng.SupersedeFact(ctx, fact.ID, FactInput{
+		ID:                   "fact-strict-new",
+		Predicate:            "HAS_STORAGE",
+		SubjectID:            entity.ID,
+		ValueText:            "Lattice",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}, "storage engine moved"); err != nil {
+		t.Fatalf("supersede legacy fixture fact: %v", err)
+	}
 	if err := eng.Close(ctx); err != nil {
 		t.Fatalf("close legacy fixture engine: %v", err)
 	}

@@ -370,12 +370,56 @@ func (s *ladybugStore) loadSources(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadMeta(state *persistedState) error {
+	// The legacy writer only creates the singleton meta row once it has to
+	// generate an id, so a database whose records all carry explicit ids has no
+	// row at all. An absent row is therefore legal and means sequence 0; a
+	// present row must still decode strictly.
 	return s.loadRows("YeoulMeta", lstore.QueryMetaSequence(), func(values []any) error {
-		if len(values) > 0 {
-			state.Sequence = asUint64(values[0])
+		if err := s.checkMetaRow(values); err != nil {
+			return err
 		}
+		state.Sequence = asUint64(values[0])
 		return nil
 	})
+}
+
+// checkMetaRow validates the singleton meta row in strict mode. The meta row
+// carries live state (the id sequence), so a missing column or a sequence that
+// is not a non-negative integer must fail the migration instead of being
+// coerced to zero.
+func (s *ladybugStore) checkMetaRow(values []any) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	if len(values) == 0 {
+		return errorf(ErrStorageFailed, "legacy meta row is missing its sequence column", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+			"table":         "YeoulMeta",
+		}, nil)
+	}
+	switch value := values[0].(type) {
+	case int64:
+		if value < 0 {
+			return s.malformedMetaSequence(value)
+		}
+	case int:
+		if value < 0 {
+			return s.malformedMetaSequence(value)
+		}
+	case uint64:
+	default:
+		return s.malformedMetaSequence(values[0])
+	}
+	return nil
+}
+
+func (s *ladybugStore) malformedMetaSequence(value any) error {
+	return errorf(ErrStorageFailed, "legacy meta row has a malformed sequence value", map[string]any{
+		"database_path": s.cfg.DatabasePath,
+		"table":         "YeoulMeta",
+		"field":         "sequence",
+		"value_type":    fmt.Sprintf("%T", value),
+	}, nil)
 }
 
 func (s *ladybugStore) loadEpisodes(state *persistedState) error {
@@ -587,6 +631,9 @@ func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
 		if err := s.checkEdgeRow("SUPERSEDES", values, 3, 2); err != nil {
 			return err
 		}
+		if err := s.checkSupersedesReason(values); err != nil {
+			return err
+		}
 		newID, oldID, reason := asString(values[0]), asString(values[1]), asString(values[2])
 		if err := s.checkFactEdgeReference("SUPERSEDES", newID, "Fact", state.Facts); err != nil {
 			return err
@@ -682,11 +729,30 @@ func (s *ladybugStore) loadRows(table, query string, apply func(values []any) er
 	return nil
 }
 
+// checkSupersedesReason validates the trailing reason column of a SUPERSEDES
+// row. The column is nullable, so a string or SQL NULL is legal and every
+// other representation must fail instead of being stringified into a value
+// that differs from what the source database stored.
+func (s *ladybugStore) checkSupersedesReason(values []any) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	if _, ok := values[2].(string); !ok && values[2] != nil {
+		return errorf(ErrStorageFailed, "legacy relationship row has an unexpectedly typed reason", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+			"table":         "SUPERSEDES",
+			"column":        "reason",
+			"value_type":    fmt.Sprintf("%T", values[2]),
+		}, nil)
+	}
+	return nil
+}
+
 // checkEdgeRow rejects a relationship row whose projected columns are missing
 // or whose id columns are not strings. A row that does not carry the ids its
 // query projects cannot be resolved to records, so the strict reader refuses it
-// instead of writing an edge onto the empty id. Columns past idColumns (for
-// example the nullable SUPERSEDES reason) may hold any value.
+// instead of writing an edge onto the empty id. Columns past idColumns are
+// validated by the caller when they carry meaning.
 func (s *ladybugStore) checkEdgeRow(table string, values []any, total, idColumns int) error {
 	if !s.cfg.legacyStrictRead {
 		return nil
