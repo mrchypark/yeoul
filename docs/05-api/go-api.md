@@ -151,7 +151,9 @@ Read methods that accept `TemporalFilter` must obey the temporal rules defined i
 
 `SupersedeFact` and `RetractFact` must preserve historical state rather than overwrite or delete it.
 `AssertFact` with `FactInput.Cardinality = "one"` supersedes active facts in the same `space_id + subject_id + predicate` slot when their validity intervals overlap. Empty cardinality or `"many"` preserves append-only assertion behavior.
+Cardinality-one replacement supersedes the whole overlapping fact rather than splitting its validity interval. Replacing an open-ended `[January, infinity)` fact with a bounded `[February, March)` fact therefore leaves no active fact after March: January resolves only with `TemporalFilter.IncludeInactive` (and is reported superseded), February resolves to the replacement, and April resolves to nothing in either setting. Use `SupersedeFact` when the earlier fact should remain active outside the replacement window; interval splitting is not implemented.
 `UpsertEntity` may use `EntityInput.StableKey` when the caller has a durable identity key; generated IDs should come from namespace, type, and stable key rather than mutable display names.
+Generated entity IDs are global across spaces: `EntityID(namespace, type, key)` does not include `SpaceID`, so the same namespace/type/key in two spaces derives one ID and the second upsert fails closed with `YEOUL_LIFECYCLE_INVALID` and an `entity_id` detail instead of creating a space-local entity. Supply a distinct explicit `EntityInput.ID` or a space-qualified namespace when the same identity must exist in more than one space.
 
 ### 4.1 Context construction
 

@@ -54,6 +54,9 @@ func runFakeRax() int {
 		_, _ = os.Stderr.WriteString("fake ingest failure\n")
 		return 2
 	}
+	if os.Getenv("YEOUL_FAKE_RAX_MERGE_DOCIDS") == "1" {
+		return runFakeRaxMergeDocIDs(args)
+	}
 	for i, arg := range args {
 		if arg == "--store" && i+1 < len(args) {
 			if err := os.WriteFile(args[i+1], []byte("fake rax store"), 0o644); err != nil {
@@ -80,6 +83,67 @@ func runFakeRax() int {
 
 	_, _ = os.Stderr.WriteString("missing --input\n")
 	return 2
+}
+
+// runFakeRaxMergeDocIDs models rax ingest semantics faithfully enough to
+// observe publication: documents are appended or updated by doc_id, and
+// document IDs already present in the store are retained. The store file holds
+// one doc_id per line so a test can read the effective membership back.
+func runFakeRaxMergeDocIDs(args []string) int {
+	var storePath, inputPath string
+	for i, arg := range args {
+		switch arg {
+		case "--store":
+			if i+1 < len(args) {
+				storePath = args[i+1]
+			}
+		case "--input":
+			if i+1 < len(args) {
+				inputPath = args[i+1]
+			}
+		}
+	}
+	if storePath == "" || inputPath == "" {
+		_, _ = os.Stderr.WriteString("merge fake rax needs --store and --input\n")
+		return 2
+	}
+	seen := map[string]bool{}
+	order := []string{}
+	if existing, err := os.ReadFile(storePath); err == nil {
+		for _, line := range strings.Split(strings.TrimRight(string(existing), "\n"), "\n") {
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			order = append(order, line)
+		}
+	}
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		return 2
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var doc struct {
+			DocID string `json:"doc_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &doc); err != nil || doc.DocID == "" {
+			_, _ = os.Stderr.WriteString("merge fake rax cannot read doc_id\n")
+			return 2
+		}
+		if !seen[doc.DocID] {
+			seen[doc.DocID] = true
+			order = append(order, doc.DocID)
+		}
+	}
+	if err := os.WriteFile(storePath, []byte(strings.Join(order, "\n")+"\n"), 0o644); err != nil {
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		return 2
+	}
+	return 0
 }
 
 func TestLookupRaxRuntimeFindsBundledFFI(t *testing.T) {
@@ -460,7 +524,7 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	}
 
 	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
-	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_runtime": "cli:`) || !strings.Contains(publish, `"rax_document_count": 4`) {
+	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_runtime": "cli:`) || !strings.Contains(publish, `"published_document_count": 4`) {
 		t.Fatalf("expected publish JSON output, got %q", publish)
 	}
 	raxArgs, err := os.ReadFile(raxArgsPath)
