@@ -14,10 +14,10 @@ The storage and memory engine. It has no built-in LLM calls, prompt execution, a
 A set of skills, instruction files, ontology templates, episode rules, and search recipes designed for AI agent integrations.
 
 ### Embedded mode
-A deployment mode where Yeoul runs inside the host application's process and directly owns the Ladybug database object.
+A deployment mode where Yeoul runs inside the host application's process and directly owns the LatticeDB database object.
 
 ### Daemon mode
-A deployment mode where a local Yeoul service process owns the Ladybug database and other local processes access it through an API.
+Planned deployment mode where a local Yeoul service process would own the database and other local processes would access it through an API. The `yeould` daemon is not implemented in current releases.
 
 ## Memory model terms
 

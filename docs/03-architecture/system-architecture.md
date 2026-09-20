@@ -4,8 +4,7 @@ Yeoul consists of four layers:
 
 ## 1. Storage Layer
 
-Backed by Ladybug.
-Responsible for database lifecycle, schema migration, query execution, and transactions.
+Backed by LatticeDB, the canonical embedded graph store. The Ladybug adapter is retained only as a legacy migration reader. Responsible for database lifecycle, schema migration, query execution, and transactions.
 
 ## 2. Memory Core
 
