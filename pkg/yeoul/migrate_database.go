@@ -246,12 +246,15 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 		}
 		return nil, fmt.Errorf("install lattice database: %w", err)
 	}
+	if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
+		return nil, fmt.Errorf("sync installed lattice database directory: %w", err)
+	}
 	marker.Phase = migrationPhaseInstalled
 	if err := writeDatabaseMigrationMarker(marker); err != nil {
 		return nil, err
 	}
-	if err := os.Remove(databaseMigrationMarkerPath(databasePath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("remove migration marker: %w", err)
+	if err := removeDatabaseMigrationMarker(databaseMigrationMarkerPath(databasePath)); err != nil {
+		return nil, err
 	}
 	return &DatabaseMigrationResult{
 		DatabasePath: databasePath,
@@ -318,6 +321,9 @@ func moveLegacyDatabaseFileSet(databasePath, backupPath string) error {
 		}
 		applied = append(applied, move)
 	}
+	if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
+		return fmt.Errorf("sync legacy database backup directory: %w", err)
+	}
 	return nil
 }
 
@@ -351,7 +357,13 @@ func restoreLegacyDatabaseFileSet(databasePath, backupPath string) error {
 			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore legacy database file %q: %w", move.source, err))
 		}
 	}
-	return restoreErr
+	if restoreErr != nil {
+		return restoreErr
+	}
+	if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
+		return fmt.Errorf("sync restored legacy database directory: %w", err)
+	}
+	return nil
 }
 
 // restoreLegacyDatabaseSet records the restoring phase before moving backup
@@ -373,7 +385,10 @@ func restoreLegacyDatabaseSet(marker databaseMigrationMarker, markerPath string)
 	if err := os.RemoveAll(marker.StagingPath); err != nil {
 		return fmt.Errorf("remove abandoned migration staging database: %w", err)
 	}
-	return os.Remove(markerPath)
+	if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
+		return fmt.Errorf("sync migration staging cleanup: %w", err)
+	}
+	return removeDatabaseMigrationMarker(markerPath)
 }
 
 // legacyDatabasePartiallyBackedUp reports whether some native members already
@@ -451,7 +466,10 @@ func recoverDatabaseMigration(databasePath string) error {
 			if err := os.RemoveAll(marker.StagingPath); err != nil {
 				return fmt.Errorf("remove abandoned migration staging database: %w", err)
 			}
-			return os.Remove(markerPath)
+			if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
+				return fmt.Errorf("sync migration staging cleanup: %w", err)
+			}
+			return removeDatabaseMigrationMarker(markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {
 			// The legacy set was moved but the marker was not advanced. Record
@@ -465,11 +483,14 @@ func recoverDatabaseMigration(databasePath string) error {
 			if err := os.Rename(marker.StagingPath, databasePath); err != nil {
 				return fmt.Errorf("resume prepared lattice database install: %w", err)
 			}
+			if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
+				return fmt.Errorf("sync resumed lattice database install: %w", err)
+			}
 			marker.Phase = migrationPhaseInstalled
 			if err := writeDatabaseMigrationMarker(marker); err != nil {
 				return err
 			}
-			return os.Remove(markerPath)
+			return removeDatabaseMigrationMarker(markerPath)
 		}
 		if _, err := os.Stat(marker.BackupPath); err != nil {
 			return fmt.Errorf("migration is prepared but source and backup databases are missing")
@@ -480,23 +501,26 @@ func recoverDatabaseMigration(databasePath string) error {
 		if _, err := os.Stat(databasePath); err == nil {
 			// The installation completed (or the set was already restored);
 			// the backup stays in place.
-			return os.Remove(markerPath)
+			return removeDatabaseMigrationMarker(markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {
 			if err := os.Rename(marker.StagingPath, databasePath); err != nil {
 				return fmt.Errorf("resume lattice database install: %w", err)
 			}
+			if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
+				return fmt.Errorf("sync resumed lattice database install: %w", err)
+			}
 			marker.Phase = migrationPhaseInstalled
 			if err := writeDatabaseMigrationMarker(marker); err != nil {
 				return err
 			}
-			return os.Remove(markerPath)
+			return removeDatabaseMigrationMarker(markerPath)
 		}
 		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseRestoring:
 		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseInstalled:
-		return os.Remove(markerPath)
+		return removeDatabaseMigrationMarker(markerPath)
 	default:
 		return fmt.Errorf("unsupported migration phase %q", marker.Phase)
 	}
@@ -513,6 +537,53 @@ func validateDatabaseMigrationPaths(marker databaseMigrationMarker) error {
 	}
 	if filepath.Dir(stagingPath) != parent || !strings.HasPrefix(filepath.Base(stagingPath), base+".lattice-migrate-") {
 		return fmt.Errorf("migration staging path is outside the expected database sibling namespace")
+	}
+	return nil
+}
+
+// syncMigrationDirectory is the directory durability hook for the migration
+// protocol. Tests replace it to observe or fail namespace syncs without a real
+// crash; production always runs syncDirectory.
+var syncMigrationDirectory = syncDirectory
+
+// syncDirectory flushes a directory so the namespace changes inside it
+// (renames and removals that publish, move, or clear migration state) survive a
+// power loss. Syncing file contents alone does not make the enclosing directory
+// entries durable, so every protocol transition that depends on a rename or a
+// removal must sync the parent directory before the protocol advances or
+// migration success is reported.
+//
+// Directory fsync is not portable: on Windows os.Open succeeds for a directory
+// but the handle cannot be flushed, so this is a documented no-op there and
+// callers cannot rely on directory durability on that platform. On every other
+// platform a genuine failure is returned to the caller.
+func syncDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open directory %q for sync: %w", path, err)
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return fmt.Errorf("sync directory %q: %w", path, syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close directory %q after sync: %w", path, closeErr)
+	}
+	return nil
+}
+
+// removeDatabaseMigrationMarker removes the marker and makes the removal
+// durable before the caller reports success.
+func removeDatabaseMigrationMarker(markerPath string) error {
+	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove migration marker: %w", err)
+	}
+	if err := syncMigrationDirectory(filepath.Dir(markerPath)); err != nil {
+		return fmt.Errorf("sync migration marker removal for %q: %w", markerPath, err)
 	}
 	return nil
 }
@@ -546,6 +617,11 @@ func writeDatabaseMigrationMarker(marker databaseMigrationMarker) error {
 	}
 	if err := os.Rename(temporaryPath, markerPath); err != nil {
 		return fmt.Errorf("install migration marker: %w", err)
+	}
+	// Publishing the marker is a namespace change; sync the parent so the new
+	// directory entry and the marker contents become durable together.
+	if err := syncMigrationDirectory(filepath.Dir(markerPath)); err != nil {
+		return fmt.Errorf("sync migration marker directory: %w", err)
 	}
 	return nil
 }
