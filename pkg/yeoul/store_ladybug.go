@@ -616,6 +616,14 @@ func (s *ladybugStore) loadObjectEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadSupportedByEdges(state *persistedState) error {
+	// Strict migration reads must not collapse duplicate SUPPORTED_BY rows: the
+	// writer creates each edge at most once, so a repeated (fact, episode) row is
+	// corruption that must fail instead of being normalized away before the
+	// ASSERTS agreement check runs. Lenient reads keep deduplicating.
+	var seen map[string]map[string]bool
+	if s.cfg.legacyStrictRead {
+		seen = make(map[string]map[string]bool, len(state.Facts))
+	}
 	return s.loadRows("SUPPORTED_BY", lstore.QuerySupportedByEdges(), func(values []any) error {
 		if err := s.checkEdgeRow("SUPPORTED_BY", values, 2, 2); err != nil {
 			return err
@@ -626,6 +634,15 @@ func (s *ladybugStore) loadSupportedByEdges(state *persistedState) error {
 		}
 		if _, ok := state.Episodes[episodeID]; !ok && s.cfg.legacyStrictRead {
 			return s.danglingReference("SUPPORTED_BY", "Episode", episodeID)
+		}
+		if s.cfg.legacyStrictRead {
+			if seen[factID] == nil {
+				seen[factID] = make(map[string]bool, 1)
+			}
+			if seen[factID][episodeID] {
+				return s.duplicateEdge("SUPPORTED_BY", "fact", factID, episodeID)
+			}
+			seen[factID][episodeID] = true
 		}
 		fact := state.Facts[factID]
 		if !slices.Contains(fact.SupportingEpisodeIDs, episodeID) {

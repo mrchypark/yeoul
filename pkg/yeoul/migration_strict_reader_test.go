@@ -519,6 +519,56 @@ func TestMigrateDatabaseStrictReaderRejectsDisagreeingRelationships(t *testing.T
 }
 
 // TestStrictReaderRejectsMalformedRelationshipColumns checks the row shape of
+// TestMigrateDatabaseStrictReaderRejectsDuplicateSupportedByEdge covers the
+// strict reader's SUPPORTED_BY multiplicity rule: the writer emits exactly one
+// edge per (fact, episode) pair, so a repeated row is corruption even when the
+// single ASSERTS edge still agrees with the decoded supporting-episode set. The
+// reader must not collapse the duplicate before the agreement check runs and
+// then migrate as if the source were intact.
+func TestMigrateDatabaseStrictReaderRejectsDuplicateSupportedByEdge(t *testing.T) {
+	useInProcessMigration(t)
+	ctx := context.Background()
+
+	t.Run("uncorrupted fixture migrates", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "supported-by-valid.lbug")
+		writeStrictLegacyFixture(t, dbPath)
+
+		result, err := MigrateDatabase(ctx, dbPath)
+		if err != nil {
+			t.Fatalf("migrate an uncorrupted fixture: %v", err)
+		}
+		if !result.Migrated || result.BackupPath == "" {
+			t.Fatalf("unexpected migration result: %#v", result)
+		}
+	})
+
+	t.Run("duplicate supported_by edge is rejected", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "supported-by-duplicate.lbug")
+		ids := writeStrictLegacyFixture(t, dbPath)
+		// The original SUPPORTED_BY and ASSERTS edges stay intact; only a second
+		// SUPPORTED_BY row for the same pair is added.
+		execLegacyStatements(t, dbPath, fmt.Sprintf("MATCH (f:Fact {id: %s}), (e:Episode {id: %s}) CREATE (f)-[:SUPPORTED_BY {support_kind: 'observed', created_at: timestamp('2024-01-01T00:00:00Z')}]->(e)", lstore.StringLiteral(ids.factID), lstore.StringLiteral(ids.episodeID)))
+		before := legacyDatabaseFileSet(t, dbPath)
+
+		_, err := MigrateDatabase(ctx, dbPath)
+		if err == nil {
+			t.Fatal("expected migration to reject a duplicated SUPPORTED_BY edge")
+		}
+		yeoulErr := unwrapYeoulError(err)
+		if yeoulErr == nil || yeoulErr.Code != ErrStorageFailed {
+			t.Fatalf("expected %s error, got %v", ErrStorageFailed, err)
+		}
+		if yeoulErr.Details["table"] != "SUPPORTED_BY" {
+			t.Fatalf("expected the error to name the SUPPORTED_BY table, got %#v", yeoulErr.Details)
+		}
+		assertNoMigrationArtifacts(t, dbPath)
+		if after := legacyDatabaseFileSet(t, dbPath); !mapsEqual(before, after) {
+			t.Fatalf("failed migration changed the source file set\nbefore: %v\nafter:  %v", before, after)
+		}
+	})
+}
+
+// TestStrictReaderRejectsMalformedRelationshipColumns checks the row shape of
 // the two mandatory relationship tables. Their ids are projected from typed node
 // columns, so a non-string or missing id column cannot be resolved to a record
 // and must fail the same way the other strict-reader tables do. The check runs
