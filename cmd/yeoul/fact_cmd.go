@@ -605,17 +605,39 @@ Usage:
 		_ = closeEngine(ctx, eng)
 		return err
 	}
-	mergedFrom := make([]string, 0, len(sourceIDs))
-	aliases := append([]string{}, target.Aliases...)
+	if duplicateOf, ok := target.Metadata["duplicate_of"]; ok && fmt.Sprint(duplicateOf) != "" {
+		_ = closeEngine(ctx, eng)
+		return fmt.Errorf("entity merge target %s must be a canonical entity (not a duplicate); duplicate_of=%v", target.ID, duplicateOf)
+	}
+	sources := make([]*yeoul.Entity, 0, len(sourceIDs))
 	for _, sourceID := range sourceIDs {
 		if sourceID == targetID {
-			continue
+			_ = closeEngine(ctx, eng)
+			return fmt.Errorf("entity merge source %s must not equal target %s", sourceID, targetID)
 		}
 		source, err := eng.GetEntity(ctx, sourceID)
 		if err != nil {
 			_ = closeEngine(ctx, eng)
 			return err
 		}
+		if source.SpaceID != target.SpaceID {
+			_ = closeEngine(ctx, eng)
+			return fmt.Errorf("entity merge source %s has a different space_id than target %s (source=%q, target=%q)", source.ID, target.ID, source.SpaceID, target.SpaceID)
+		}
+		if source.Namespace != target.Namespace {
+			_ = closeEngine(ctx, eng)
+			return fmt.Errorf("entity merge source %s has a different namespace than target %s (source=%q, target=%q)", source.ID, target.ID, source.Namespace, target.Namespace)
+		}
+		if source.Type != target.Type {
+			_ = closeEngine(ctx, eng)
+			return fmt.Errorf("entity merge source %s has a different type than target %s (source=%q, target=%q)", source.ID, target.ID, source.Type, target.Type)
+		}
+		sources = append(sources, source)
+	}
+
+	mergedFrom := make([]string, 0, len(sources))
+	aliases := append([]string{}, target.Aliases...)
+	for _, source := range sources {
 		mergedFrom = append(mergedFrom, source.ID)
 		aliases = append(aliases, source.CanonicalName)
 		aliases = append(aliases, source.Aliases...)
