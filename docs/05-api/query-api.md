@@ -10,7 +10,7 @@ This document defines the **canonical query model** for Yeoul Core.
 Yeoul is a local-first Temporal Graph Memory Engine written in Go and backed by LatticeDB. The Query API is the stable, transport-independent surface for reading memory from Yeoul. It applies equally to:
 
 - embedded Go usage;
-- a local daemon exposed over HTTP or gRPC; and
+- a local daemon exposed over HTTP or gRPC (planned; the `yeould` daemon is not implemented in current releases); and
 - future adapters that need to read Yeoul without using raw Cypher.
 
 The Query API is the semantic contract. The Service API is only an HTTP mapping of this contract.

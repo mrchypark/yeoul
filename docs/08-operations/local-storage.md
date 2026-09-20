@@ -1,6 +1,6 @@
 # Local Storage
 
-This document defines how Yeoul uses local storage in embedded and daemon modes.
+This document defines how Yeoul uses local storage in embedded mode. Daemon mode is planned and not available in current releases.
 
 ## Goals
 - predictable storage location
@@ -13,7 +13,7 @@ Yeoul should default to an explicit configured path.
 Example defaults:
 - embedded app: application-controlled path
 - CLI quickstart: `./yeoul.ltdb`
-- daemon mode: user-configurable application data directory
+- daemon mode: not available in current releases (planned user-configurable application data directory)
 
 ## Storage ownership
 In embedded mode, the host process owns the database.
@@ -32,7 +32,7 @@ Daemon mode is not available in current releases: the `yeould` service adapter i
 
 ## Recommended config fields
 - `db_path`
-- `mode` (`embedded` or `daemon`)
+- `mode` (`embedded`; `daemon` is reserved and unavailable in current releases)
 - `checkpoint_policy`
 - `log_path`
 - `export_path`

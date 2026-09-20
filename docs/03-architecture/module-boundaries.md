@@ -36,5 +36,4 @@ CLI for local development, inspection, migration, and benchmarks.
 
 ## `cmd/yeould`
 
-Optional local daemon.
-Must use the same public core API as embedded applications.
+Planned local service adapter; not implemented in current releases. The executable reports that no daemon was started and exits with a failure status. Any future implementation must use the same public core API as embedded applications.
