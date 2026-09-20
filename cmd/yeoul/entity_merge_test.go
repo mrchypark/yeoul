@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
 func TestCLIEntityMergeRejectsAlreadyDuplicateTarget(t *testing.T) {
@@ -145,5 +149,163 @@ func TestCLIEntityMergeRejectsIncompatibleScope(t *testing.T) {
 	}
 	if strings.Contains(afterSource, `"duplicate_of"`) {
 		t.Fatalf("rejected merge marked source as a duplicate, got %q", afterSource)
+	}
+}
+
+func TestCLIEntityMergeMissingSourceLeavesStateUnchanged(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "merge-missing-source.ltdb")
+	ingestPath := filepath.Join(tmpDir, "merge-missing-source.json")
+
+	payload := `{
+  "episodes": [
+    {
+      "id":"ep-merge-missing",
+      "kind":"note",
+      "content":"missing merge source",
+      "source":{"kind":"note","external_ref":"thread-merge-missing"}
+    }
+  ],
+  "entities": [
+    {"id":"project:yeoul-a","type":"Project","canonical_name":"Yeoul","aliases":["Yeoul Alpha"]},
+    {"id":"project:yeoul-b","type":"Project","canonical_name":"Yeoul Beta","aliases":["Yeoul Bee"]}
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+	runCLIExpectErr := func(args ...string) error {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		return run(ctx, args, &stdout, &stderr)
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+	beforeA := runCLI("entity", "get", "--db", dbPath, "--id", "project:yeoul-a")
+	beforeB := runCLI("entity", "get", "--db", dbPath, "--id", "project:yeoul-b")
+
+	err := runCLIExpectErr("entity", "merge", "--confirm", "--db", dbPath, "--target", "project:yeoul-a", "--source", "project:yeoul-b,project:missing", "--reason", "missing source")
+	if err == nil {
+		t.Fatal("expected merge with a missing final source to fail")
+	}
+
+	afterA := runCLI("entity", "get", "--db", dbPath, "--id", "project:yeoul-a")
+	afterB := runCLI("entity", "get", "--db", dbPath, "--id", "project:yeoul-b")
+	if afterA != beforeA {
+		t.Fatalf("failed merge changed target entity:\nbefore=%s\nafter=%s", beforeA, afterA)
+	}
+	if afterB != beforeB {
+		t.Fatalf("failed merge changed the valid source entity:\nbefore=%s\nafter=%s", beforeB, afterB)
+	}
+	if strings.Contains(afterB, `"duplicate_of"`) {
+		t.Fatalf("failed merge marked the valid source as a duplicate, got %q", afterB)
+	}
+	if strings.Contains(afterA, `"merged_from"`) {
+		t.Fatalf("failed merge recorded merged_from on the target, got %q", afterA)
+	}
+}
+
+// failBatchEngine delegates reads and single-entity writes to a real engine but
+// fails the transactional batch write, simulating a storage failure during the
+// merge commit.
+type failBatchEngine struct {
+	yeoul.Engine
+	err         error
+	upsertCalls int
+}
+
+func (e *failBatchEngine) UpsertEntity(ctx context.Context, input yeoul.EntityInput) (*yeoul.Entity, error) {
+	e.upsertCalls++
+	return e.Engine.UpsertEntity(ctx, input)
+}
+
+func (e *failBatchEngine) IngestBatch(context.Context, yeoul.BatchInput) (*yeoul.BatchResult, error) {
+	return nil, e.err
+}
+
+func TestEntityMergeStorageFailureLeavesStateUnchanged(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "merge-storage-failure.ltdb")
+	ingestPath := filepath.Join(tmpDir, "merge-storage-failure.json")
+
+	payload := `{
+  "episodes": [
+    {
+      "id":"ep-merge-storage",
+      "kind":"note",
+      "content":"merge storage failure",
+      "source":{"kind":"note","external_ref":"thread-merge-storage"}
+    }
+  ],
+  "entities": [
+    {"id":"project:yeoul-a","type":"Project","canonical_name":"Yeoul","aliases":["Yeoul Alpha"]},
+    {"id":"project:yeoul-b","type":"Project","canonical_name":"Yeoul Beta","aliases":["Yeoul Bee"]},
+    {"id":"project:yeoul-c","type":"Project","canonical_name":"Yeoul Gamma","aliases":["Yeoul Cee"]}
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+
+	eng, err := yeoul.Open(ctx, yeoul.Config{DatabasePath: dbPath})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	defer func() { _ = eng.Close(ctx) }()
+
+	before, err := yeoul.Snapshot(ctx, eng)
+	if err != nil {
+		t.Fatalf("snapshot before merge: %v", err)
+	}
+
+	injectedErr := errors.New("injected storage failure")
+	injected := &failBatchEngine{Engine: eng, err: injectedErr}
+	if _, _, err := mergeEntities(ctx, injected, "project:yeoul-a", []string{"project:yeoul-b", "project:yeoul-c"}, "injected failure"); !errors.Is(err, injectedErr) {
+		t.Fatalf("expected injected storage failure, got %v", err)
+	}
+	if injected.upsertCalls != 0 {
+		t.Fatalf("merge wrote %d entities outside the batch transaction", injected.upsertCalls)
+	}
+
+	after, err := yeoul.Snapshot(ctx, eng)
+	if err != nil {
+		t.Fatalf("snapshot after merge: %v", err)
+	}
+
+	if !reflect.DeepEqual(before.Entities, after.Entities) {
+		t.Fatalf("failed merge changed entities:\nbefore=%#v\nafter=%#v", before.Entities, after.Entities)
+	}
+	if !reflect.DeepEqual(before.EntityRevisions, after.EntityRevisions) {
+		t.Fatalf("failed merge changed entity revisions:\nbefore=%#v\nafter=%#v", before.EntityRevisions, after.EntityRevisions)
+	}
+	if before.Sequence != after.Sequence {
+		t.Fatalf("failed merge advanced the database sequence from %d to %d", before.Sequence, after.Sequence)
 	}
 }
