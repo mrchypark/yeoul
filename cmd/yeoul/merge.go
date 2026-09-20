@@ -11,18 +11,61 @@ import (
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
+// entityIdentityKey is a comparable identity for automatic duplicate detection.
+// Fields are compared exactly (no case folding or trimming) and the stable key
+// is part of the identity, so entities that share a display name but carry
+// different strong identities are never marked as duplicates.
+type entityIdentityKey struct {
+	SpaceID       string
+	Namespace     string
+	Type          string
+	CanonicalName string
+	StableKey     string
+}
+
+func entityIdentityOf(entity yeoul.EntityInput, stableKey string) entityIdentityKey {
+	return entityIdentityKey{
+		SpaceID:       entity.SpaceID,
+		Namespace:     entity.Namespace,
+		Type:          entity.Type,
+		CanonicalName: entity.CanonicalName,
+		StableKey:     stableKey,
+	}
+}
+
+// entityStableKey returns the stored stable key and whether the entity is
+// eligible for automatic merging at all. The key is used exactly as stored; a
+// non-string legacy value cannot be compared exactly, so such entities are
+// excluded instead of being treated as unkeyed.
+func entityStableKey(metadata map[string]any) (string, bool) {
+	if metadata == nil {
+		return "", true
+	}
+	value, ok := metadata["stable_key"]
+	if !ok {
+		return "", true
+	}
+	text, isString := value.(string)
+	if !isString {
+		return "", false
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", true
+	}
+	return text, true
+}
+
 func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
-	groups := make(map[string][]yeoul.EntityInput)
+	groups := make(map[entityIdentityKey][]yeoul.EntityInput)
 	for _, entity := range payload.Entities {
 		if duplicateOf(entity.Metadata) != "" {
 			continue
 		}
-		key := strings.Join([]string{
-			normalizeKey(entity.SpaceID),
-			normalizeKey(entity.Namespace),
-			normalizeKey(entity.Type),
-			normalizeKey(entity.CanonicalName),
-		}, "|")
+		stableKey, eligible := entityStableKey(entity.Metadata)
+		if !eligible {
+			continue
+		}
+		key := entityIdentityOf(entity, stableKey)
 		groups[key] = append(groups[key], entity)
 	}
 	candidates := make([]entityMergeCandidate, 0)
