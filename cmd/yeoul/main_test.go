@@ -1313,9 +1313,10 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 		"--value-text", "Confirmed durable decisions should be promoted to facts when the subject is clear.",
 		"--supporting-episodes", "ep-decision",
 		"--json")
+	subjectID := yeoul.EntityID("", "DecisionTopic", "Structured memory promotion")
 	for _, want := range []string{
 		`"predicate": "HAS_DECISION"`,
-		`"subject_id": "decisiontopic:structured-memory-promotion"`,
+		`"subject_id": "` + subjectID + `"`,
 		`"observed_at": "2026-05-28T03:10:00Z"`,
 		`"observed_at_basis": "supporting_episode"`,
 		`"observed_at_supporting_episode_id": "ep-decision"`,
@@ -1333,7 +1334,7 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 	}
 
 	lookup := runCLI("fact", "lookup", "--db", dbPath,
-		"--subject-id", "decisiontopic:structured-memory-promotion",
+		"--subject-id", subjectID,
 		"--predicate", "HAS_DECISION",
 		"--json")
 	if !strings.Contains(lookup, `"HAS_DECISION"`) || !strings.Contains(lookup, `"ep-decision"`) {
@@ -1352,8 +1353,8 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 		"--json")
 	for _, want := range []string{
 		`"predicate": "USES_STORAGE_ENGINE"`,
-		`"subject_id": "project:yeoul"`,
-		`"object_id": "database:ladybug"`,
+		`"subject_id": "` + yeoul.EntityID("", "Project", "Yeoul") + `"`,
+		`"object_id": "` + yeoul.EntityID("", "Database", "Ladybug") + `"`,
 	} {
 		if !strings.Contains(relationship, want) {
 			t.Fatalf("expected relationship fact output to contain %q, got %q", want, relationship)
@@ -1381,7 +1382,7 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 		"--value-text", "stable key keeps entity identity",
 		"--supporting-episodes", "ep-decision",
 		"--json")
-	if !strings.Contains(stableKeyFact, `"subject_id": "feature:feature-stable-1"`) {
+	if !strings.Contains(stableKeyFact, `"subject_id": "`+yeoul.EntityID("", "Feature", "feature-stable-1")+`"`) {
 		t.Fatalf("expected stable key subject id, got %q", stableKeyFact)
 	}
 	stableKeyFact = runCLI("fact", "assert", "--db", dbPath,
@@ -1393,7 +1394,7 @@ func TestCLIFactAssertCanUpsertSubjectEntity(t *testing.T) {
 		"--value-text", "stable key still keeps entity identity",
 		"--supporting-episodes", "ep-decision",
 		"--json")
-	if !strings.Contains(stableKeyFact, `"subject_id": "feature:feature-stable-1"`) {
+	if !strings.Contains(stableKeyFact, `"subject_id": "`+yeoul.EntityID("", "Feature", "feature-stable-1")+`"`) {
 		t.Fatalf("expected stable key subject id after rename, got %q", stableKeyFact)
 	}
 

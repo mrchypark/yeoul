@@ -1838,6 +1838,171 @@ func TestLegacySourceIDIsReusedWhenSpaceMatches(t *testing.T) {
 	}
 }
 
+func TestDistinctSourceRefsCreateDistinctSources(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	first, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "slashed", Source: SourceInput{Kind: "note", ExternalRef: "a/b"}})
+	if err != nil {
+		t.Fatalf("ingest slashed source: %v", err)
+	}
+	second, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "dashed", Source: SourceInput{Kind: "note", ExternalRef: "a-b"}})
+	if err != nil {
+		t.Fatalf("ingest dashed source: %v", err)
+	}
+	if first.SourceID != normalizeSourceID("default", "note", "a/b") {
+		t.Fatalf("unexpected exact source id %q", first.SourceID)
+	}
+	if second.SourceID != normalizeSourceID("default", "note", "a-b") {
+		t.Fatalf("unexpected exact source id %q", second.SourceID)
+	}
+	if first.SourceID == second.SourceID {
+		t.Fatalf("expected distinct source ids for a/b and a-b, got %q", first.SourceID)
+	}
+	if first.EpisodeID == second.EpisodeID {
+		t.Fatalf("expected distinct episode ids, got %q", first.EpisodeID)
+	}
+}
+
+func TestExactEntityStableKeysCreateDistinctEntities(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	keys := []string{"a/b", "a-b", "Key", "key"}
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		entity, err := eng.UpsertEntity(ctx, EntityInput{
+			Namespace:     "default",
+			Type:          "Thing",
+			CanonicalName: "ignored",
+			StableKey:     key,
+		})
+		if err != nil {
+			t.Fatalf("upsert stable key %q: %v", key, err)
+		}
+		ids = append(ids, entity.ID)
+		if entity.ID != EntityID("default", "Thing", key) {
+			t.Fatalf("expected exact entity id for %q, got %q", key, entity.ID)
+		}
+	}
+	for i := 0; i < len(ids); i++ {
+		for j := i + 1; j < len(ids); j++ {
+			if ids[i] == ids[j] {
+				t.Fatalf("expected distinct entity ids for %q and %q, both %q", keys[i], keys[j], ids[i])
+			}
+		}
+	}
+}
+
+func TestLegacyEntityIDReusedWhenIdentityMatches(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	now := time.Now().UTC()
+	legacyID := legacyEntityID("default", "Project", "Legacy")
+	rawEng.entities[legacyID] = Entity{
+		ID:            legacyID,
+		SpaceID:       "default",
+		Namespace:     "default",
+		Type:          "Project",
+		CanonicalName: "Legacy",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	got, err := eng.UpsertEntity(ctx, EntityInput{
+		Namespace:     "default",
+		Type:          "Project",
+		CanonicalName: "Legacy",
+	})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	if got.ID != legacyID {
+		t.Fatalf("expected legacy entity id reuse %q, got %q", legacyID, got.ID)
+	}
+	if got.ID == EntityID("default", "Project", "Legacy") {
+		t.Fatalf("expected legacy id %q to differ from exact id", got.ID)
+	}
+	if got.CanonicalName != "Legacy" {
+		t.Fatalf("expected legacy canonical name, got %q", got.CanonicalName)
+	}
+}
+
+func TestDerivedEntityIDCollisionRejectsDifferentCanonicalName(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	now := time.Now().UTC()
+	id := EntityID("default", "Thing", "a/b")
+	rawEng.entities[id] = Entity{
+		ID:            id,
+		SpaceID:       "default",
+		Namespace:     "default",
+		Type:          "Thing",
+		CanonicalName: "Stored Name",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	_, err = eng.UpsertEntity(ctx, EntityInput{
+		Namespace:     "default",
+		Type:          "Thing",
+		CanonicalName: "a/b",
+	})
+	if err == nil || !strings.Contains(err.Error(), "different identity") {
+		t.Fatalf("expected different identity rejection, got %v", err)
+	}
+	got, err := eng.GetEntity(ctx, id)
+	if err != nil {
+		t.Fatalf("get entity: %v", err)
+	}
+	if got.CanonicalName != "Stored Name" {
+		t.Fatalf("expected stored entity unchanged, got %q", got.CanonicalName)
+	}
+}
+
+func TestDerivedSourceIDCollisionRejectsDifferentIdentity(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	now := time.Now().UTC()
+	id := normalizeSourceID("default", "note", "same")
+	rawEng.sources[id] = Source{
+		ID:          id,
+		SpaceID:     "default",
+		Kind:        "note",
+		ExternalRef: "DIFFERENT",
+		CreatedAt:   now,
+	}
+	_, err = eng.IngestEpisode(ctx, EpisodeInput{
+		Kind:    "note",
+		Content: "content",
+		Source:  SourceInput{Kind: "note", ExternalRef: "same"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "different identity") {
+		t.Fatalf("expected source identity rejection, got %v", err)
+	}
+	got, err := eng.GetSource(ctx, id)
+	if err != nil {
+		t.Fatalf("get source: %v", err)
+	}
+	if got.ExternalRef != "DIFFERENT" {
+		t.Fatalf("expected stored source unchanged, got %q", got.ExternalRef)
+	}
+}
+
 func TestEpisodeSourceKindFilterMissingSourceFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})

@@ -236,6 +236,9 @@ func (e *engine) ingestEpisodeLocked(spaceID string, input EpisodeInput, source 
 		if existing.SpaceID != spaceID {
 			return nil, errorf(ErrLifecycleInvalid, "source id already exists in another space", map[string]any{"source_id": source.ID, "space_id": spaceID}, nil)
 		}
+		if input.SourceID == "" && input.Source.ID == "" && (existing.SpaceID != source.SpaceID || existing.Kind != source.Kind || existing.ExternalRef != source.ExternalRef) {
+			return nil, errorf(ErrLifecycleInvalid, "source id already exists with different identity", map[string]any{"source_id": source.ID}, nil)
+		}
 	} else {
 		e.sources[source.ID] = source
 	}
@@ -276,8 +279,17 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 	now := e.now()
 	spaceID := normalizeSpaceID(input.SpaceID)
 	id := input.ID
-	if id == "" {
-		id = normalizeEntityID(input.Namespace, input.Type, firstNonEmpty(input.StableKey, input.CanonicalName))
+	derived := id == ""
+	if derived {
+		identity := firstNonEmpty(input.StableKey, input.CanonicalName)
+		id = EntityID(input.Namespace, input.Type, identity)
+		if _, ok := e.entities[id]; !ok {
+			if legacyID := legacyEntityID(input.Namespace, input.Type, identity); legacyID != id {
+				if legacy, ok := e.entities[legacyID]; ok && legacyEntityIdentityMatches(legacy, input) {
+					id = legacyID
+				}
+			}
+		}
 	}
 	metadata := cloneAnyMap(input.Metadata)
 	if strings.TrimSpace(input.StableKey) != "" {
@@ -300,6 +312,12 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 		e.entities[id] = entity
 		e.appendEntityRevisionLocked(entity, "assert")
 		return cloneEntity(entity), nil
+	}
+
+	if derived && !entityIdentityMatches(entity, input) {
+		return nil, errorf(ErrLifecycleInvalid, "entity id already exists with different identity", map[string]any{
+			"entity_id": id,
+		}, nil)
 	}
 
 	if entity.SpaceID != "" && entity.SpaceID != spaceID {
