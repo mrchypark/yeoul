@@ -132,6 +132,82 @@ fact_promotion:
 	}
 }
 
+func TestValidatePackRejectsBlankEpisodeRuleTokens(t *testing.T) {
+	cases := []struct {
+		name   string
+		rules  string
+		issues []string
+	}{
+		{
+			name:   "empty token",
+			rules:  "version: 1\ndrop:\n  - name: blank\n    when:\n      contains_any: [\"\"]\n",
+			issues: []string{"episode rule \"blank\" when.contains_any must not contain blank tokens"},
+		},
+		{
+			name:   "whitespace token",
+			rules:  "version: 1\ndrop:\n  - name: blank\n    when:\n      contains_any: [\" \"]\n",
+			issues: []string{"episode rule \"blank\" when.contains_any must not contain blank tokens"},
+		},
+		{
+			name:   "mixed valid and blank",
+			rules:  "version: 1\npromote_to_episode:\n  - name: mixed\n    when:\n      contains_any: [\"decided\", \"  \"]\n",
+			issues: []string{"episode rule \"mixed\" when.contains_any must not contain blank tokens"},
+		},
+		{
+			name:   "blank substring token",
+			rules:  "version: 1\ndrop:\n  - name: blank_sub\n    when:\n      contains_any: [\"ok\"]\n      contains_substring: [\"\"]\n",
+			issues: []string{"episode rule \"blank_sub\" when.contains_substring must not contain blank tokens"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+			writeFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+			writeFile(t, filepath.Join(dir, "episode_rules.yaml"), tc.rules)
+			writeFile(t, filepath.Join(dir, "search_recipes.yaml"), "version: 1\nrecipes: {}\n")
+
+			result, err := ValidatePack(dir)
+			if err != nil {
+				t.Fatalf("validate blank token pack: %v", err)
+			}
+			if result.Valid {
+				t.Fatalf("expected invalid pack, got issues=%v", result.Issues)
+			}
+			joined := strings.Join(result.Issues, "\n")
+			for _, expected := range tc.issues {
+				if !strings.Contains(joined, expected) {
+					t.Fatalf("expected issue %q in %q", expected, joined)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadPackDropsBlankEpisodeRuleTokens(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+	writeFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+	writeFile(t, filepath.Join(dir, "episode_rules.yaml"),
+		"version: 1\ndrop:\n  - name: blank\n    when:\n      contains_any: [\" \", \"ok\"]\n")
+	writeFile(t, filepath.Join(dir, "search_recipes.yaml"), "version: 1\nrecipes: {}\n")
+
+	pack, err := LoadPack(dir)
+	if err != nil {
+		t.Fatalf("load pack: %v", err)
+	}
+	if len(pack.EpisodeRules.Drop) != 1 {
+		t.Fatalf("expected one drop rule, got %d", len(pack.EpisodeRules.Drop))
+	}
+	tokens := pack.EpisodeRules.Drop[0].When.ContainsAny
+	if contains(tokens, " ") {
+		t.Fatalf("expected blank token to be dropped, got %v", tokens)
+	}
+	if !contains(tokens, "ok") {
+		t.Fatalf("expected valid token to survive, got %v", tokens)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o644); err != nil {

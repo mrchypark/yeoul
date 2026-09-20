@@ -120,6 +120,13 @@ func sortedKeys(values map[string]any) []string {
 }
 
 func LoadPack(path string) (*Pack, error) {
+	return loadPack(path, true)
+}
+
+// loadPack reads a policy directory. When sanitize is true, blank episode-rule
+// tokens are removed from the returned rules; validation uses sanitize=false so
+// it can report the blank tokens it is meant to reject.
+func loadPack(path string, sanitize bool) (*Pack, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat policy path: %w", err)
@@ -145,14 +152,49 @@ func LoadPack(path string) (*Pack, error) {
 	if err := loadYAML(filepath.Join(path, "episode_rules.yaml"), &pack.EpisodeRules); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read episode_rules.yaml: %w", err)
 	}
+	if sanitize {
+		dropBlankTokens(&pack.EpisodeRules)
+	}
 	if err := loadYAML(filepath.Join(path, "search_recipes.yaml"), &pack.SearchRecipes); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read search_recipes.yaml: %w", err)
 	}
 	return pack, nil
 }
 
+// dropBlankTokens defensively removes blank episode-rule tokens after load.
+// Validation rejects such packs, but direct LoadPack callers still use the
+// returned rules; dropping the tokens keeps a blank entry from matching every
+// episode and suppressing all captures.
+func dropBlankTokens(rules *EpisodeRules) {
+	if rules == nil {
+		return
+	}
+	all := make([][]EpisodeRule, 0, 2)
+	all = append(all, rules.PromoteToEpisode, rules.Drop)
+	for _, group := range all {
+		for i := range group {
+			group[i].When.ContainsAny = trimBlankTokens(group[i].When.ContainsAny)
+			group[i].When.ContainsSubstring = trimBlankTokens(group[i].When.ContainsSubstring)
+		}
+	}
+}
+
+func trimBlankTokens(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
 func ValidatePack(path string) (*ValidationResult, error) {
-	pack, err := LoadPack(path)
+	pack, err := loadPack(path, false)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +248,8 @@ func ValidatePack(path string) (*ValidationResult, error) {
 		if len(rule.When.ContainsAny) == 0 {
 			addIssue(fmt.Sprintf("episode rule %q must declare when.contains_any", rule.Name))
 		}
+		validateNonBlankTokens(addIssue, fmt.Sprintf("episode rule %q when.contains_any", rule.Name), rule.When.ContainsAny)
+		validateNonBlankTokens(addIssue, fmt.Sprintf("episode rule %q when.contains_substring", rule.Name), rule.When.ContainsSubstring)
 	}
 
 	if pack.SearchRecipes.Version != 1 {
@@ -246,6 +290,19 @@ func validateNonEmptyList(addIssue func(string), field string, values []string) 
 	for _, value := range values {
 		if strings.TrimSpace(value) == "" {
 			addIssue(fmt.Sprintf("episode_rules.yaml %s must not contain empty values", field))
+			return
+		}
+	}
+}
+
+// validateNonBlankTokens rejects empty and whitespace-only tokens. A blank
+// token would otherwise become an empty substring at match time and suppress
+// every episode, so a pack that relies on intentional match-all behavior must
+// say so explicitly instead of hiding it in a blank list entry.
+func validateNonBlankTokens(addIssue func(string), field string, values []string) {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			addIssue(fmt.Sprintf("%s must not contain blank tokens", field))
 			return
 		}
 	}
