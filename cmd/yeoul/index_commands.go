@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,7 +96,13 @@ type raxRuntime struct {
 }
 
 const raxChunkMarker = "#chunk:"
-const projectionManifestVersion = 4
+const projectionManifestVersion = 5
+
+// emptyRaxStoreMarker is the on-disk body of the supported empty derived rax
+// store. The pinned rax runtime rejects an empty document list, so Yeoul never
+// ingests zero projections: it writes this marker and search short-circuits on
+// an empty manifest instead of opening the native store.
+const emptyRaxStoreMarker = "yeoul-empty-rax-store\n"
 
 func (c cli) runIndex(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
@@ -322,6 +330,13 @@ Use a fresh --store path when the store must contain only this projection.
 	if len(projections) != manifest.ProjectionCount {
 		return fmt.Errorf("rax publish failed: projection count %d does not match manifest count %d", len(projections), manifest.ProjectionCount)
 	}
+	runtime, ok := lookupRaxRuntime(raxLib, raxBin)
+	if !ok {
+		return fmt.Errorf("rax publish failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
+	}
+	if len(projections) == 0 {
+		return c.finishEmptyRaxPublish(root, projectionPath, storePath, runtime, jsonOut)
+	}
 
 	rawDocsPath, err := writeTemporaryRaxRawDocuments(root, projections)
 	if err != nil {
@@ -329,10 +344,6 @@ Use a fresh --store path when the store must contain only this projection.
 	}
 	defer os.Remove(rawDocsPath)
 
-	runtime, ok := lookupRaxRuntime(raxLib, raxBin)
-	if !ok {
-		return fmt.Errorf("rax publish failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
-	}
 	if _, err := raxIngestDocs(ctx, runtime, storePath, rawDocsPath); err != nil {
 		return fmt.Errorf("rax publish failed: %w", err)
 	}
@@ -348,6 +359,28 @@ Use a fresh --store path when the store must contain only this projection.
 		return writeJSON(c.stdout, result)
 	}
 	_, err = fmt.Fprintf(c.stdout, "published %d projections to rax store %s\n", len(projections), storePath)
+	return err
+}
+
+// finishEmptyRaxPublish publishes an empty index without invoking the rax
+// runtime, which rejects an empty document list. It writes the supported empty
+// store marker so the publish has a real artifact, and reports zero documents.
+func (c cli) finishEmptyRaxPublish(root, projectionPath, storePath string, runtime raxRuntime, jsonOut bool) error {
+	if err := os.WriteFile(storePath, []byte(emptyRaxStoreMarker), 0o644); err != nil {
+		return fmt.Errorf("rax publish failed: %w", err)
+	}
+	result := indexPublishRaxResult{
+		Root:                   root,
+		ProjectionPath:         projectionPath,
+		StorePath:              storePath,
+		RaxRuntime:             runtime.String(),
+		Published:              true,
+		PublishedDocumentCount: 0,
+	}
+	if jsonOut {
+		return writeJSON(c.stdout, result)
+	}
+	_, err := fmt.Fprintf(c.stdout, "published 0 projections to rax store %s\n", storePath)
 	return err
 }
 
@@ -510,15 +543,24 @@ func runRaxPrimarySearch(ctx context.Context, eng yeoul.Engine, dbPath string, r
 	if err != nil {
 		return nil, err
 	}
-	if raxPrimaryShouldFallbackToCore(req, len(docIDs), fetchLimit) {
+	resp, err := buildRaxPrimarySearchResponse(ctx, eng, req, docIDs)
+	if err != nil {
+		return nil, err
+	}
+	if raxPrimaryShouldFallbackToCore(req, raxPrimaryEligibleCount(resp), len(docIDs), fetchLimit) {
 		if cursor != "" {
 			return nil, fmt.Errorf("cursor_invalid: filtered rax cursor cannot continue after core fallback; restart search")
 		}
 		return eng.Search(ctx, req)
 	}
-	resp, err := buildRaxPrimarySearchResponse(ctx, eng, req, docIDs)
-	if err != nil {
-		return nil, err
+	if len(docIDs) >= fetchLimit {
+		// The native window is bounded by fetchLimit, so a saturated search
+		// cannot prove there are no more eligible matches. Surface the horizon
+		// as an explicit truncation signal instead of ending pagination
+		// silently, which is the complete-results contract for queries that
+		// were not answered by a core fallback.
+		horizon := int64(fetchLimit)
+		resp.Meta.TotalApprox = &horizon
 	}
 	return resp, nil
 }
@@ -533,7 +575,6 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		return nil, err
 	}
 	candidates := make([]raxCandidate, 0, len(docIDs))
-	included := yeoul.IncludedRecords{}
 	coreScores := raxCoreRerankScores(ctx, eng, req, len(docIDs)*2)
 	types := compactStrings(req.Types...)
 	if len(types) == 0 {
@@ -563,14 +604,14 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		if err != nil {
 			continue
 		}
-		if !yeoul.RecordPassesSearchFilters(ctx, eng, record.Record, req) {
+		coreScore, coreMatched := coreScores[recordKey]
+		if !raxCandidatePassesFilters(ctx, eng, record.Record, req, coreMatched) {
 			continue
 		}
 		if fact, ok := record.Record.(*yeoul.Fact); ok && fact.Status != "active" && !req.Temporal.IncludeInactive {
 			continue
 		}
-		coreScore, coreMatched := coreScores[recordKey]
-		if !coreMatched && !raxRecordMatchesCurrentQuery(record.Record, req.QueryText) {
+		if !coreMatched && !yeoul.RecordMatchesQuery(req.Mode, req.QueryText, record.Record) {
 			continue
 		}
 		score := 0.1 / float64(rank+1)
@@ -618,9 +659,6 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 	hits := make([]yeoul.SearchHit, 0, len(page))
 	for _, candidate := range page {
 		hits = append(hits, candidate.hit)
-		if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
-			addIncludedRecord(ctx, eng, &included, candidate.record, req)
-		}
 	}
 	now := time.Now().UTC()
 	spaceID := strings.TrimSpace(req.Meta.SpaceID)
@@ -628,11 +666,9 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		spaceID = "default"
 	}
 	resp := &yeoul.SearchResponse{
-		Meta: yeoul.QueryResponseMeta{SpaceID: spaceID, SnapshotAt: &now, NextCursor: nextCursor},
-		Hits: hits,
-	}
-	if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
-		resp.Included = included
+		Meta:     yeoul.QueryResponseMeta{SpaceID: spaceID, SnapshotAt: &now, NextCursor: nextCursor},
+		Hits:     hits,
+		Included: raxAssembleIncludedRecords(ctx, eng, req, hits),
 	}
 	return resp, nil
 }
@@ -646,6 +682,23 @@ type raxCursor struct {
 type raxCandidate struct {
 	hit    yeoul.SearchHit
 	record any
+}
+
+// raxCandidatePassesFilters applies the canonical search post-filter to a
+// hydrated candidate. Anchor IDs constrain seeds, matching core search: an
+// anchor must match a seed record, and core may then rank graph-adjacent facts
+// that only touch the anchor through that seed. A candidate core already
+// ranked is therefore accepted without requiring a direct anchor match, so a
+// two-hop fact that core reached through expansion is not dropped here. Every
+// other filter stays strict, and an anchor that matches no core seed still
+// filters every candidate.
+func raxCandidatePassesFilters(ctx context.Context, eng yeoul.Engine, record any, req yeoul.SearchRequest, coreMatched bool) bool {
+	if coreMatched && len(req.AnchorIDs) > 0 {
+		relaxed := req
+		relaxed.AnchorIDs = nil
+		return yeoul.RecordPassesSearchFilters(ctx, eng, record, relaxed)
+	}
+	return yeoul.RecordPassesSearchFilters(ctx, eng, record, req)
 }
 
 func decodeRaxCursor(cursor string) (raxCursor, error) {
@@ -702,9 +755,12 @@ func raxCoreRerankScores(ctx context.Context, eng yeoul.Engine, req yeoul.Search
 }
 
 func runManagedRaxSearch(ctx context.Context, eng yeoul.Engine, dbPath, query string, limit int, runtime raxRuntime) ([]string, error) {
-	storePath, err := ensureManagedRaxStore(ctx, eng, dbPath, runtime)
+	storePath, empty, err := ensureManagedRaxStore(ctx, eng, dbPath, runtime)
 	if err != nil {
 		return nil, err
+	}
+	if empty {
+		return nil, nil
 	}
 	topK := limit
 	if topK <= 0 {
@@ -717,13 +773,17 @@ func runManagedRaxSearch(ctx context.Context, eng yeoul.Engine, dbPath, query st
 	return parseRaxDocIDs(output)
 }
 
-func ensureManagedRaxStore(ctx context.Context, eng yeoul.Engine, dbPath string, runtime raxRuntime) (string, error) {
+// ensureManagedRaxStore returns the managed store path and whether the store is
+// the supported empty representation. An empty database has no projections to
+// ingest, and the pinned rax runtime rejects an empty document list, so an
+// empty store is marked rather than ingested and searches short-circuit.
+func ensureManagedRaxStore(ctx context.Context, eng yeoul.Engine, dbPath string, runtime raxRuntime) (string, bool, error) {
 	root, storePath, err := managedRaxIndexPaths(dbPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if ok, err := managedRaxStoreFresh(root, storePath, dbPath, runtime); err != nil {
-		return "", err
+		return "", false, err
 	} else if !ok {
 		var payload *exportFile
 		if eng == nil {
@@ -732,14 +792,21 @@ func ensureManagedRaxStore(ctx context.Context, eng yeoul.Engine, dbPath string,
 			payload, err = exportDatabaseFromEngine(ctx, eng)
 		}
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		projections, manifest := buildProjectionArtifacts(dbPath, payload)
 		if err := rebuildManagedRaxStore(ctx, root, storePath, runtime, projections, manifest); err != nil {
-			return "", err
+			return "", false, err
+		}
+		if len(projections) == 0 {
+			return storePath, true, nil
 		}
 	}
-	return storePath, nil
+	manifest, err := readProjectionManifest(root)
+	if err != nil {
+		return storePath, false, nil
+	}
+	return storePath, manifest.ProjectionCount == 0, nil
 }
 
 func raxPrimaryFetchLimit(limit int) int {
@@ -749,11 +816,45 @@ func raxPrimaryFetchLimit(limit int) int {
 	return limit + 1000
 }
 
-func raxPrimaryShouldFallbackToCore(req yeoul.SearchRequest, fetched, fetchLimit int) bool {
-	if fetched < fetchLimit || !raxPrimaryHasPostFilters(req) {
+// raxPrimaryShouldFallbackToCore decides when the native candidate window is
+// too small to answer a filtered query completely. The window is saturated when
+// the runtime returned exactly the fetch limit. A query is filtered either by an
+// explicit post-filter or by an implicit restriction the native store does not
+// apply, such as core's current-space constraint. When the window saturates and
+// the core-reranked response cannot fill the requested page, eligible records
+// may lie beyond the window, so the search falls back to core for a complete
+// result set.
+func raxPrimaryShouldFallbackToCore(req yeoul.SearchRequest, eligible, fetched, fetchLimit int) bool {
+	if fetched < fetchLimit {
 		return false
 	}
-	return true
+	if !raxPrimaryHasPostFilters(req) && !raxPrimaryHasImplicitRestrictions(req) {
+		return false
+	}
+	limit := req.Page.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	return eligible < limit
+}
+
+// raxPrimaryHasImplicitRestrictions reports whether core search would apply a
+// restriction that the native candidate window does not encode. Core always
+// restricts results to the request space, so a non-default space query cannot
+// be answered completely from a saturated native window.
+func raxPrimaryHasImplicitRestrictions(req yeoul.SearchRequest) bool {
+	spaceID := strings.TrimSpace(req.Meta.SpaceID)
+	return spaceID != "" && spaceID != "default"
+}
+
+// raxPrimaryEligibleCount counts the hydrated hits the response can serve after
+// every post-filter, which is how much of the requested page the window can
+// actually fill.
+func raxPrimaryEligibleCount(resp *yeoul.SearchResponse) int {
+	if resp == nil {
+		return 0
+	}
+	return len(resp.Hits)
 }
 
 func raxPrimaryHasPostFilters(req yeoul.SearchRequest) bool {
@@ -852,7 +953,14 @@ func rebuildManagedRaxStore(ctx context.Context, root, storePath string, runtime
 			os.Remove(tempStorePath)
 		}
 	}()
-	if runtime.Kind == "ffi" {
+	if len(projections) == 0 {
+		// The pinned rax runtime rejects an empty document list. Write the
+		// supported empty store marker instead so the managed cache stays valid
+		// and empty searches can short-circuit without opening the runtime.
+		if err := os.WriteFile(tempStorePath, []byte(emptyRaxStoreMarker), 0o644); err != nil {
+			return err
+		}
+	} else if runtime.Kind == "ffi" {
 		jsonl, err := raxRawDocumentsJSONL(projections)
 		if err != nil {
 			return err
@@ -1007,7 +1115,39 @@ func raxRecordKindID(docID string) (string, string, bool) {
 	if id == "" {
 		return "", "", false
 	}
-	return kind, id, true
+	return kind, raxUnescapeRecordID(id), true
+}
+
+// raxProjectionRecordID builds the rax document identity for a record. Caller
+// IDs may legitimately contain the "#chunk:" native chunk suffix, so the ID
+// portion is percent-escaped to keep kind/id decoding and chunk stripping
+// unambiguous. The ':' separator is not escaped: the kind/id split is on the
+// first colon, so colons inside the ID survive unchanged.
+func raxProjectionRecordID(kind, id string) string {
+	return kind + ":" + raxEscapeRecordID(id)
+}
+
+// raxEscapeRecordID escapes the characters that make the concatenated
+// projection identity ambiguous. '%' is escaped first so decoding is stable,
+// and '#' is escaped so it cannot be mistaken for a native chunk suffix.
+func raxEscapeRecordID(id string) string {
+	id = strings.ReplaceAll(id, "%", "%25")
+	id = strings.ReplaceAll(id, "#", "%23")
+	return id
+}
+
+// raxUnescapeRecordID reverses raxEscapeRecordID. IDs that were written before
+// the escaped format (no '%') pass through unchanged, so an old store still
+// resolves its records.
+func raxUnescapeRecordID(id string) string {
+	if !strings.Contains(id, "%") {
+		return id
+	}
+	decoded, err := url.PathUnescape(id)
+	if err != nil {
+		return id
+	}
+	return decoded
 }
 
 func raxMatchedText(record any) string {
@@ -1023,69 +1163,103 @@ func raxMatchedText(record any) string {
 	}
 }
 
-func raxRecordMatchesCurrentQuery(record any, query string) bool {
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
-		return true
+// raxAssembleIncludedRecords shapes the page-scoped IncludedRecords for a Rax
+// search using the shared shaper, so Rax matches the core engine's flag
+// implications and dedupes support shared by multiple hits. Support visibility
+// is intentionally limited to space, scope, and temporal rules: predicate and
+// anchor filters select hits and must not also suppress the provenance that
+// explains those hits.
+func raxAssembleIncludedRecords(ctx context.Context, eng yeoul.Engine, req yeoul.SearchRequest, page []yeoul.SearchHit) yeoul.IncludedRecords {
+	spaceID := strings.TrimSpace(req.Meta.SpaceID)
+	if spaceID == "" {
+		spaceID = "default"
 	}
-	text := strings.ToLower(raxMatchedText(record))
-	if strings.Contains(text, query) {
-		return true
-	}
-	for _, token := range strings.FieldsFunc(query, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
-	}) {
-		if token != "" && strings.Contains(text, token) {
-			return true
+	resolve := func(kind, id string) (any, bool) {
+		switch kind {
+		case "fact":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "fact", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			fact, ok := record.Record.(*yeoul.Fact)
+			if !ok || fact == nil || fact.SpaceID != spaceID {
+				return nil, false
+			}
+			return fact, true
+		case "episode":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "episode", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			episode, ok := record.Record.(*yeoul.Episode)
+			if !ok || episode == nil || episode.SpaceID != spaceID || !raxEpisodeMatchesScope(ctx, eng, episode, req) {
+				return nil, false
+			}
+			return episode, true
+		case "entity":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "entity", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			entity, ok := record.Record.(*yeoul.Entity)
+			if !ok || entity == nil || entity.SpaceID != spaceID || raxEntityMarkedDuplicate(entity) || !raxEntityMatchesScope(entity, req) {
+				return nil, false
+			}
+			return entity, true
+		case "source":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			source, ok := record.Record.(*yeoul.Source)
+			if !ok || source == nil || source.SpaceID != spaceID {
+				return nil, false
+			}
+			return source, true
+		default:
+			return nil, false
 		}
 	}
-	return false
+	return yeoul.AssembleIncludedRecords(req.Include, page, resolve)
 }
 
-func addIncludedRecord(ctx context.Context, eng yeoul.Engine, included *yeoul.IncludedRecords, record any, req yeoul.SearchRequest) {
-	switch value := record.(type) {
-	case *yeoul.Fact:
-		included.Facts = append(included.Facts, *value)
-		if record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "entity", ID: value.SubjectID, Temporal: req.Temporal}); err == nil {
-			if entity, ok := record.Record.(*yeoul.Entity); ok && yeoul.RecordPassesSearchFilters(ctx, eng, entity, req) {
-				included.Entities = append(included.Entities, *entity)
-			}
-		}
-		if value.ObjectID != "" {
-			if record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "entity", ID: value.ObjectID, Temporal: req.Temporal}); err == nil {
-				if entity, ok := record.Record.(*yeoul.Entity); ok && yeoul.RecordPassesSearchFilters(ctx, eng, entity, req) {
-					included.Entities = append(included.Entities, *entity)
-				}
-			}
-		}
-		for _, episodeID := range value.SupportingEpisodeIDs {
-			episode, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "episode", ID: episodeID, Temporal: req.Temporal})
-			if err != nil || !yeoul.RecordPassesSearchFilters(ctx, eng, episode.Record, req) {
-				continue
-			}
-			episodeRecord, _ := episode.Record.(*yeoul.Episode)
-			if episodeRecord == nil {
-				continue
-			}
-			included.Episodes = append(included.Episodes, *episodeRecord)
-			if source, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: episodeRecord.SourceID, Temporal: req.Temporal}); err == nil {
-				sourceRecord, _ := source.Record.(*yeoul.Source)
-				if sourceRecord == nil {
-					continue
-				}
-				included.Sources = append(included.Sources, *sourceRecord)
-			}
-		}
-	case *yeoul.Episode:
-		included.Episodes = append(included.Episodes, *value)
-		if source, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: value.SourceID, Temporal: req.Temporal}); err == nil {
-			if sourceRecord, ok := source.Record.(*yeoul.Source); ok {
-				included.Sources = append(included.Sources, *sourceRecord)
-			}
-		}
-	case *yeoul.Entity:
-		included.Entities = append(included.Entities, *value)
+// raxEpisodeMatchesScope keeps the group/source restrictions that legitimately
+// scope support visibility, without reusing predicate or anchor hit filters.
+func raxEpisodeMatchesScope(ctx context.Context, eng yeoul.Engine, episode *yeoul.Episode, req yeoul.SearchRequest) bool {
+	if len(req.Scope.GroupIDs) > 0 && !slices.Contains(req.Scope.GroupIDs, episode.GroupID) {
+		return false
 	}
+	if len(req.Scope.SourceIDs) > 0 && !slices.Contains(req.Scope.SourceIDs, episode.SourceID) {
+		return false
+	}
+	if len(req.Scope.SourceKinds) > 0 {
+		record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: episode.SourceID, Temporal: req.Temporal})
+		if err != nil {
+			return false
+		}
+		source, ok := record.Record.(*yeoul.Source)
+		if !ok || source == nil || source.SpaceID != episode.SpaceID || !slices.Contains(req.Scope.SourceKinds, source.Kind) {
+			return false
+		}
+	}
+	return true
+}
+
+func raxEntityMarkedDuplicate(entity *yeoul.Entity) bool {
+	if len(entity.Metadata) == 0 {
+		return false
+	}
+	value, ok := entity.Metadata["duplicate_of"]
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(fmt.Sprint(value)) != ""
+}
+
+// raxEntityMatchesScope keeps the entity-type restriction that core applies to
+// included entities, so both backends return the same related entities.
+func raxEntityMatchesScope(entity *yeoul.Entity, req yeoul.SearchRequest) bool {
+	return len(req.Scope.EntityTypes) == 0 || slices.Contains(req.Scope.EntityTypes, entity.Type)
 }
 
 func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionDocument, projectionManifest) {
@@ -1128,7 +1302,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			meta["record_metadata"] = episode.Metadata
 		}
 		doc := projectionDocument{
-			ProjectionID: "episode:" + episode.ID,
+			ProjectionID: raxProjectionRecordID("episode", episode.ID),
 			SearchText:   strings.TrimSpace(episode.Content),
 			Metadata:     meta,
 		}
@@ -1157,7 +1331,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			entityRevisionText[entity.ID],
 		)
 		projections = append(projections, projectionDocument{
-			ProjectionID: "entity:" + entity.ID,
+			ProjectionID: raxProjectionRecordID("entity", entity.ID),
 			SearchText:   text,
 			Metadata:     meta,
 		})
@@ -1191,7 +1365,7 @@ func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionD
 			factRevisionText[fact.ID],
 		)
 		doc := projectionDocument{
-			ProjectionID: "fact:" + fact.ID,
+			ProjectionID: raxProjectionRecordID("fact", fact.ID),
 			SearchText:   text,
 			Metadata:     meta,
 		}

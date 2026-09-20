@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -183,15 +184,53 @@ Usage:
 }
 
 func shouldDropEpisode(pack *policy.Pack, content string) bool {
-	content = strings.ToLower(content)
 	for _, rule := range pack.EpisodeRules.Drop {
-		for _, token := range rule.When.ContainsAny {
-			if strings.Contains(content, strings.ToLower(strings.TrimSpace(token))) {
-				return true
-			}
+		if episodeRuleMatches(rule, content) {
+			return true
 		}
 	}
 	return false
+}
+
+// episodeRuleMatches reports whether an incoming episode satisfies a rule's
+// "when" clause.
+//
+// contains_any tokens match the whole message after lowercasing and trimming
+// surrounding whitespace and punctuation, so an acknowledgement token such as
+// "ok" matches "OK" or "ok." but never "broken" or "book". Whole-message
+// matching keeps substantive messages that merely embed an acknowledgement
+// token, because retaining a low-signal message is preferable to dropping a
+// decision.
+//
+// contains_substring tokens keep explicit substring matching for rules that
+// intentionally look for a phrase inside a longer message.
+func episodeRuleMatches(rule policy.EpisodeRule, content string) bool {
+	normalized := normalizeEpisodeMessage(content)
+	for _, token := range rule.When.ContainsAny {
+		if token = normalizeEpisodeMessage(token); token == "" {
+			continue
+		}
+		if normalized == token {
+			return true
+		}
+	}
+	lowered := strings.ToLower(content)
+	for _, token := range rule.When.ContainsSubstring {
+		if token = strings.ToLower(strings.TrimSpace(token)); token == "" {
+			continue
+		}
+		if strings.Contains(lowered, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeEpisodeMessage(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.TrimFunc(value, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r)
+	})
 }
 
 func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchRequest) (yeoul.SearchRequest, error) {
@@ -204,29 +243,22 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	}
 	// Scope must be populated before the strategy switch: the
 	// predicate_subject_lookup strategy narrows the hit types below.
-	//
-	// Each recognized control is extracted through the same shape helpers the
-	// validator uses. A key that is present but malformed is an error here, so
-	// a control can never be accepted and then silently skipped.
-	statuses, hasStatus, err := policy.RecipeFactStatuses(recipe)
-	if err != nil {
-		return req, fmt.Errorf("search recipe %q filter fact_status is not executable: %w", recipeName, err)
-	}
-	if hasStatus {
+	// Execution must consume the same coercion the validator used. Re-parsing
+	// the raw recipe value here would let a value that validates as a list be
+	// applied as a single scalar (a YAML list would become "[a b]").
+	if statuses, declared, err := policy.RecipeFactStatuses(recipe); err != nil {
+		return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+	} else if declared {
 		req.Scope.FactStatus = mergeStringSlices(req.Scope.FactStatus, statuses)
 	}
-	predicates, hasPredicates, err := policy.RecipePredicates(recipe)
-	if err != nil {
-		return req, fmt.Errorf("search recipe %q filter predicate is not executable: %w", recipeName, err)
-	}
-	if hasPredicates {
+	if predicates, declared, err := policy.RecipePredicates(recipe); err != nil {
+		return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+	} else if declared {
 		req.Predicates = mergeStringSlices(req.Predicates, predicates)
 	}
-	windowDays, hasWindow, err := policy.RecipeWindowDays(recipe)
-	if err != nil {
-		return req, fmt.Errorf("search recipe %q filter window_days is not executable: %w", recipeName, err)
-	}
-	if hasWindow {
+	if windowDays, declared, err := policy.RecipeWindowDays(recipe); err != nil {
+		return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+	} else if declared {
 		from := time.Now().UTC().Add(-time.Duration(windowDays) * 24 * time.Hour)
 		if req.Temporal.ObservedFrom == nil || req.Temporal.ObservedFrom.Before(from) {
 			req.Temporal.ObservedFrom = &from
@@ -239,12 +271,10 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	case "neighborhood":
 		req.Include.RelatedEntities = true
 		req.Include.Provenance = true
-		entityTypes, hasEntityTypes, err := policy.RecipeEntityTypes(recipe)
-		if err != nil {
-			return req, fmt.Errorf("search recipe %q expand entity_types is not executable: %w", recipeName, err)
-		}
-		if hasEntityTypes {
-			req.Scope.EntityTypes = mergeStringSlices(req.Scope.EntityTypes, entityTypes)
+		if types, declared, err := policy.RecipeEntityTypes(recipe); err != nil {
+			return req, fmt.Errorf("search recipe %q is not executable: %w", recipeName, err)
+		} else if declared {
+			req.Scope.EntityTypes = mergeStringSlices(req.Scope.EntityTypes, types)
 		}
 	case "predicate_subject_lookup":
 		req.Types = []string{"fact"}

@@ -38,24 +38,58 @@ static void* yeoul_dlsym(void* handle, const char* name, char** err) {
 	return symbol;
 }
 
-static int yeoul_rax_ingest_docs(void* fn, const char* store, const unsigned char* jsonl, size_t jsonl_len, char** out_json) {
-	return ((rax_ingest_docs_fn)fn)(store, jsonl, jsonl_len, out_json);
+// yeoul_copy_last_error copies the native error while the calling OS thread is
+// still the one that observed the failure. Rax stores errors thread-locally, so
+// reading them from a later cgo call can observe another thread's state.
+static char* yeoul_copy_last_error(void* last_error_fn) {
+	if (last_error_fn == NULL) {
+		return NULL;
+	}
+	const char* msg = ((rax_last_error_fn)last_error_fn)();
+	if (msg == NULL) {
+		return NULL;
+	}
+	return strdup(msg);
 }
 
-static int yeoul_rax_search_text(void* fn, const char* store, const char* text, int top_k, char** out_json) {
-	return ((rax_search_fn)fn)(store, "text", text, NULL, top_k, false, out_json);
+static int yeoul_rax_ingest_docs(void* fn, void* last_error_fn, const char* store, const unsigned char* jsonl, size_t jsonl_len, char** out_json, char** out_error) {
+	int status = ((rax_ingest_docs_fn)fn)(store, jsonl, jsonl_len, out_json);
+	if (status != 0) {
+		*out_error = yeoul_copy_last_error(last_error_fn);
+	}
+	return status;
 }
 
-static int yeoul_rax_search_doc_ids_text(void* fn, const char* store, const char* text, int top_k, char** out_json) {
-	return ((rax_search_doc_ids_fn)fn)(store, "text", text, NULL, top_k, out_json);
+static int yeoul_rax_search_text(void* fn, void* last_error_fn, const char* store, const char* text, int top_k, char** out_json, char** out_error) {
+	int status = ((rax_search_fn)fn)(store, "text", text, NULL, top_k, false, out_json);
+	if (status != 0) {
+		*out_error = yeoul_copy_last_error(last_error_fn);
+	}
+	return status;
 }
 
-static int yeoul_rax_open_read_only(void* fn, const char* store, void** out_handle) {
-	return ((rax_open_read_only_fn)fn)(store, out_handle);
+static int yeoul_rax_search_doc_ids_text(void* fn, void* last_error_fn, const char* store, const char* text, int top_k, char** out_json, char** out_error) {
+	int status = ((rax_search_doc_ids_fn)fn)(store, "text", text, NULL, top_k, out_json);
+	if (status != 0) {
+		*out_error = yeoul_copy_last_error(last_error_fn);
+	}
+	return status;
 }
 
-static int yeoul_rax_handle_search_doc_ids_text(void* fn, void* handle, const char* text, int top_k, char** out_json) {
-	return ((rax_handle_search_doc_ids_fn)fn)(handle, "text", text, NULL, top_k, out_json);
+static int yeoul_rax_open_read_only(void* fn, void* last_error_fn, const char* store, void** out_handle, char** out_error) {
+	int status = ((rax_open_read_only_fn)fn)(store, out_handle);
+	if (status != 0) {
+		*out_error = yeoul_copy_last_error(last_error_fn);
+	}
+	return status;
+}
+
+static int yeoul_rax_handle_search_doc_ids_text(void* fn, void* last_error_fn, void* handle, const char* text, int top_k, char** out_json, char** out_error) {
+	int status = ((rax_handle_search_doc_ids_fn)fn)(handle, "text", text, NULL, top_k, out_json);
+	if (status != 0) {
+		*out_error = yeoul_copy_last_error(last_error_fn);
+	}
+	return status;
 }
 
 static void yeoul_rax_handle_close(void* fn, void* handle) {
@@ -66,9 +100,6 @@ static void yeoul_rax_string_free(void* fn, char* value) {
 	((rax_string_free_fn)fn)(value);
 }
 
-static const char* yeoul_rax_last_error(void* fn) {
-	return ((rax_last_error_fn)fn)();
-}
 */
 import "C"
 
@@ -155,8 +186,9 @@ func raxFFIIngestDocs(libPath, storePath string, jsonl []byte) ([]byte, error) {
 	cJSONL := C.CBytes(jsonl)
 	defer C.free(cJSONL)
 	var out *C.char
-	status := C.yeoul_rax_ingest_docs(api.ingestDocsBytes, cStore, (*C.uchar)(cJSONL), C.size_t(len(jsonl)), &out)
-	return api.output(status, out)
+	var cErr *C.char
+	status := C.yeoul_rax_ingest_docs(api.ingestDocsBytes, api.lastError, cStore, (*C.uchar)(cJSONL), C.size_t(len(jsonl)), &out, &cErr)
+	return api.output(status, out, cErr)
 }
 
 func raxFFISearchText(libPath, storePath, query string, topK int) ([]byte, error) {
@@ -183,11 +215,12 @@ func openRaxFFISearcher(libPath, storePath string) (*raxFFISearcher, error) {
 		cStore := C.CString(storePath)
 		defer C.free(unsafe.Pointer(cStore))
 		var handle unsafe.Pointer
-		status := C.yeoul_rax_open_read_only(api.openReadOnly, cStore, &handle)
+		var cErr *C.char
+		status := C.yeoul_rax_open_read_only(api.openReadOnly, api.lastError, cStore, &handle, &cErr)
 		if status != 0 {
-			errMsg := C.GoString(C.yeoul_rax_last_error(api.lastError))
+			err := nativeError(cErr)
 			api.close()
-			return nil, errors.New(errMsg)
+			return nil, err
 		}
 		searcher.handle = handle
 	}
@@ -213,8 +246,9 @@ func (s *raxFFISearcher) searchText(storePath, query string, topK int) ([]byte, 
 		cQuery := C.CString(query)
 		defer C.free(unsafe.Pointer(cQuery))
 		var out *C.char
-		status := C.yeoul_rax_handle_search_doc_ids_text(s.api.handleSearchDocIDs, s.handle, cQuery, C.int(topK), &out)
-		return s.api.output(status, out)
+		var cErr *C.char
+		status := C.yeoul_rax_handle_search_doc_ids_text(s.api.handleSearchDocIDs, s.api.lastError, s.handle, cQuery, C.int(topK), &out, &cErr)
+		return s.api.output(status, out, cErr)
 	}
 	return s.api.searchText(storePath, query, topK)
 }
@@ -225,23 +259,35 @@ func (api *raxFFIHandle) searchText(storePath, query string, topK int) ([]byte, 
 	cQuery := C.CString(query)
 	defer C.free(unsafe.Pointer(cQuery))
 	var out *C.char
+	var cErr *C.char
 	if api.searchDocIDs != nil {
-		status := C.yeoul_rax_search_doc_ids_text(api.searchDocIDs, cStore, cQuery, C.int(topK), &out)
-		return api.output(status, out)
+		status := C.yeoul_rax_search_doc_ids_text(api.searchDocIDs, api.lastError, cStore, cQuery, C.int(topK), &out, &cErr)
+		return api.output(status, out, cErr)
 	}
-	status := C.yeoul_rax_search_text(api.search, cStore, cQuery, C.int(topK), &out)
-	return api.output(status, out)
+	status := C.yeoul_rax_search_text(api.search, api.lastError, cStore, cQuery, C.int(topK), &out, &cErr)
+	return api.output(status, out, cErr)
 }
 
-func (api *raxFFIHandle) output(status C.int, out *C.char) ([]byte, error) {
+func (api *raxFFIHandle) output(status C.int, out *C.char, cErr *C.char) ([]byte, error) {
 	if status != 0 {
-		return nil, errors.New(C.GoString(C.yeoul_rax_last_error(api.lastError)))
+		return nil, nativeError(cErr)
 	}
 	if out == nil {
 		return nil, nil
 	}
 	defer C.yeoul_rax_string_free(api.stringFree, out)
 	return []byte(C.GoString(out)), nil
+}
+
+// nativeError converts a native error copy produced inside the same native
+// wrapper as the failing operation. The copy is owned by Go and must be freed
+// here rather than by the library's string free function.
+func nativeError(cErr *C.char) error {
+	if cErr == nil {
+		return errors.New("rax operation failed")
+	}
+	defer C.free(unsafe.Pointer(cErr))
+	return errors.New(C.GoString(cErr))
 }
 
 func cStringError(cErr *C.char) error {
