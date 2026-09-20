@@ -360,15 +360,39 @@ func restoreLegacyDatabaseFileSet(databasePath, backupPath string) error {
 // the complete set is back in place.
 func restoreLegacyDatabaseSet(marker databaseMigrationMarker, markerPath string) error {
 	marker.Phase = migrationPhaseRestoring
-	markerErr := writeDatabaseMigrationMarker(marker)
-	restoreErr := restoreLegacyDatabaseFileSet(marker.DatabasePath, marker.BackupPath)
-	if restoreErr != nil {
-		return errors.Join(markerErr, restoreErr)
+	if err := writeDatabaseMigrationMarker(marker); err != nil {
+		// Restoration must not start before its intent is durable: a partial
+		// restore under an old phase would be mistaken for a complete set.
+		return err
 	}
-	if markerErr != nil {
-		return markerErr
+	if err := restoreLegacyDatabaseFileSet(marker.DatabasePath, marker.BackupPath); err != nil {
+		return err
 	}
 	return os.Remove(markerPath)
+}
+
+// legacyDatabasePartiallyBackedUp reports whether some native members already
+// moved into the backup namespace while the original main database is still in
+// place: the crash window between the sidecar-first moves and the main move.
+func legacyDatabasePartiallyBackedUp(marker databaseMigrationMarker) (bool, error) {
+	// A complete backup always contains the main database. When it is present
+	// the set moved in full, so the existing main path belongs to the installed
+	// target rather than to a partial move.
+	if _, err := os.Stat(marker.BackupPath); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	parent := filepath.Dir(marker.DatabasePath)
+	backupBase := filepath.Base(marker.BackupPath)
+	for _, suffix := range legacyMigrationSidecarSuffixes {
+		if _, err := os.Stat(filepath.Join(parent, backupBase+suffix)); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func persistedStatesEqual(left, right persistedState) (bool, error) {
@@ -406,9 +430,19 @@ func recoverDatabaseMigration(databasePath string) error {
 	switch marker.Phase {
 	case migrationPhasePrepared:
 		if _, err := os.Stat(databasePath); err == nil {
-			// The original database is still in place (or an installation
-			// already completed), so nothing was moved into the backup
-			// namespace. Remove only our staging directory and the marker.
+			// A crash between the sidecar-first moves and the main move leaves
+			// the original main database in place with its sidecars already in
+			// the backup namespace; those members must come back before the
+			// recovery state is cleared.
+			partial, err := legacyDatabasePartiallyBackedUp(marker)
+			if err != nil {
+				return err
+			}
+			if partial {
+				return restoreLegacyDatabaseSet(marker, markerPath)
+			}
+			// Nothing was moved: remove only our staging directory and the
+			// marker.
 			if err := os.RemoveAll(marker.StagingPath); err != nil {
 				return fmt.Errorf("remove abandoned migration staging database: %w", err)
 			}

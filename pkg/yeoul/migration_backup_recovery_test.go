@@ -173,3 +173,83 @@ func TestMigrateDatabaseKeepsIndependentSiblings(t *testing.T) {
 		t.Fatalf("expected no independent config in the backup namespace, got %v", err)
 	}
 }
+
+func TestRecoverDatabaseMigrationRestoresPartiallyBackedUpSidecars(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "partial.ltdb")
+	backupPath := dbPath + ".ladybug-backup-0004"
+	stagingPath := dbPath + ".lattice-migrate-0004"
+
+	if err := os.WriteFile(dbPath, []byte("original main"), 0o600); err != nil {
+		t.Fatalf("write original main: %v", err)
+	}
+	if err := os.WriteFile(backupPath+".wal", []byte("committed wal"), 0o600); err != nil {
+		t.Fatalf("write backed-up wal: %v", err)
+	}
+	if err := os.MkdirAll(stagingPath, 0o700); err != nil {
+		t.Fatalf("create staging directory: %v", err)
+	}
+	if err := writeDatabaseMigrationMarker(databaseMigrationMarker{
+		Phase:        migrationPhasePrepared,
+		DatabasePath: dbPath,
+		BackupPath:   backupPath,
+		StagingPath:  stagingPath,
+	}); err != nil {
+		t.Fatalf("write prepared marker: %v", err)
+	}
+
+	if err := recoverDatabaseMigration(dbPath); err != nil {
+		t.Fatalf("recover partial backup: %v", err)
+	}
+
+	data, err := os.ReadFile(dbPath + ".wal")
+	if err != nil {
+		t.Fatalf("expected the WAL to be restored: %v", err)
+	}
+	if string(data) != "committed wal" {
+		t.Fatalf("unexpected restored WAL bytes %q", string(data))
+	}
+	if _, err := os.Stat(backupPath + ".wal"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no WAL left in the backup namespace, got %v", err)
+	}
+	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the marker to be cleared, got %v", err)
+	}
+}
+
+func TestRestoreLegacyDatabaseSetStopsWhenMarkerWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "blocked.ltdb")
+	backupPath := dbPath + ".ladybug-backup-0005"
+	stagingPath := dbPath + ".lattice-migrate-0005"
+
+	if err := os.WriteFile(dbPath, []byte("original main"), 0o600); err != nil {
+		t.Fatalf("write original main: %v", err)
+	}
+	if err := os.WriteFile(backupPath+".wal", []byte("committed wal"), 0o600); err != nil {
+		t.Fatalf("write backed-up wal: %v", err)
+	}
+
+	// Block the marker path with a non-empty directory so the atomic marker
+	// rename must fail.
+	markerPath := databaseMigrationMarkerPath(dbPath)
+	if err := os.MkdirAll(filepath.Join(markerPath, "block"), 0o700); err != nil {
+		t.Fatalf("block marker path: %v", err)
+	}
+
+	marker := databaseMigrationMarker{
+		Phase:        migrationPhaseRestoring,
+		DatabasePath: dbPath,
+		BackupPath:   backupPath,
+		StagingPath:  stagingPath,
+	}
+	if err := restoreLegacyDatabaseSet(marker, markerPath); err == nil {
+		t.Fatal("expected the marker write failure to surface")
+	}
+	if _, err := os.Stat(backupPath + ".wal"); err != nil {
+		t.Fatalf("expected the backup member to stay in place when the marker cannot be written: %v", err)
+	}
+	if _, err := os.Stat(dbPath + ".wal"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no restoration attempt before the marker write succeeds, got %v", err)
+	}
+}
