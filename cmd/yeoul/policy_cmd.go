@@ -199,8 +199,20 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	if !ok {
 		return req, fmt.Errorf("search recipe %q not found", recipeName)
 	}
+	if issues := policy.ValidateSearchRecipe(recipeName, recipe); len(issues) > 0 {
+		return req, fmt.Errorf("search recipe %q is not executable: %s", recipeName, strings.Join(issues, "; "))
+	}
+	// Scope must be populated before the strategy switch: the
+	// predicate_subject_lookup strategy narrows the hit types below.
 	if status, ok := recipe.Filters["fact_status"]; ok {
 		req.Scope.FactStatus = mergeStringSlices(req.Scope.FactStatus, splitCSV(fmt.Sprint(status)))
+	}
+	if predicates, ok := recipe.Filters["predicate"]; ok {
+		values, isList := stringSliceFromAny(predicates)
+		if !isList {
+			values = splitCSV(fmt.Sprint(predicates))
+		}
+		req.Predicates = mergeStringSlices(req.Predicates, values)
 	}
 	if windowDays, ok := intFromAny(recipe.Filters["window_days"]); ok {
 		from := time.Now().UTC().Add(-time.Duration(windowDays) * 24 * time.Hour)
