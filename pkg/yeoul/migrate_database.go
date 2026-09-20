@@ -241,9 +241,17 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 	// The caller already holds the exclusive ownership lock for the whole
 	// migration, so a concurrent writer or migrator cannot change the source
 	// after this snapshot or replace the shared marker.
+	//
+	// The reader is strict: malformed or missing mandatory source data has to
+	// fail here, before the staging database, marker, or backup exist, because
+	// the verification below can only compare the state this reader produced.
+	legacy, err := newLadybugStore(Config{
+		Driver:           StorageDriverLadybug,
+		DatabasePath:     databasePath,
+		ReadOnly:         true,
+		legacyStrictRead: true,
+	})
 	markerPath := databaseMigrationMarkerPath(databasePath)
-
-	legacy, err := newLadybugStore(Config{Driver: StorageDriverLadybug, DatabasePath: databasePath, ReadOnly: true})
 	if err != nil {
 		return nil, errorf(ErrStorageFailed, "open legacy ladybug database for migration", map[string]any{
 			"database_path": databasePath,
