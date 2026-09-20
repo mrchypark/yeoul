@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -330,5 +331,66 @@ func TestLatticeLoadRejectsCorruptRecordIdentity(t *testing.T) {
 				t.Fatal("expected corrupt lattice record identity to be rejected")
 			}
 		})
+	}
+}
+
+// TestLatticeOpenRejectsCrossKindRecordIDCollision covers the databases an
+// affected release could already contain: the same raw id stored under two
+// different kinds. The lattice loader keys duplicates by label plus id, so this
+// shape loads without complaint, and Neighborhood indexes nodes by raw id, so
+// the collision would silently mistype nodes. Open must fail closed and name
+// both the id and the kinds that claim it. The database is written directly to
+// bypass the write-time uniqueness checks that guard new data.
+func TestLatticeOpenRejectsCrossKindRecordIDCollision(t *testing.T) {
+	const sharedID = "shared-cross-kind-id"
+	dbPath := filepath.Join(t.TempDir(), "collision.db")
+	db, err := latticedb.Open(dbPath, latticedb.OpenOptions{Create: true})
+	if err != nil {
+		t.Fatalf("create lattice database: %v", err)
+	}
+	if err := db.Update(func(tx *latticedb.Tx) error {
+		if err := tx.PutAppMetadata([]byte(latticeMetaVersion), []byte(strconv.Itoa(currentStateVersion))); err != nil {
+			return err
+		}
+		if _, err := tx.CreateNode(latticedb.CreateNodeOptions{Labels: []string{"Entity"}, Properties: map[string]any{
+			"id": sharedID, "payload": `{"id":"shared-cross-kind-id","type":"Thing","canonical_name":"Shared"}`,
+		}}); err != nil {
+			return err
+		}
+		if _, err := tx.CreateNode(latticedb.CreateNodeOptions{Labels: []string{"Episode"}, Properties: map[string]any{
+			"id": sharedID, "payload": `{"id":"shared-cross-kind-id","kind":"note","content":"shared"}`,
+		}}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("write colliding lattice database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close colliding lattice database: %v", err)
+	}
+
+	_, err = Open(context.Background(), Config{Driver: StorageDriverLattice, DatabasePath: dbPath, ReadOnly: true})
+	if err == nil {
+		t.Fatal("expected a cross-kind record id collision to be rejected at open")
+	}
+	structured := unwrapYeoulError(err)
+	if structured == nil {
+		t.Fatalf("expected a structured error, got %v", err)
+	}
+	if structured.Code != ErrStorageFailed {
+		t.Fatalf("expected %s, got %s (%v)", ErrStorageFailed, structured.Code, err)
+	}
+	if got := structured.Details["id"]; got != sharedID {
+		t.Fatalf("expected the error to name colliding id %q, got %#v", sharedID, got)
+	}
+	kinds, ok := structured.Details["kinds"].([]string)
+	if !ok {
+		t.Fatalf("expected kinds in error details, got %#v", structured.Details)
+	}
+	for _, want := range []string{kindEntity, kindEpisode} {
+		if !slices.Contains(kinds, want) {
+			t.Fatalf("expected kind %q in error details, got %#v", want, kinds)
+		}
 	}
 }
