@@ -134,7 +134,6 @@ func (e *engine) ensureWritableLocked() error {
 }
 
 func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*EpisodeResult, error) {
-	_ = ctx
 	if strings.TrimSpace(input.Kind) == "" {
 		return nil, errorf(ErrInputInvalid, "episode kind is required", map[string]any{"field": "kind"}, nil)
 	}
@@ -146,7 +145,7 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 	spaceID := normalizeSpaceID(input.SpaceID)
 
 	var result *EpisodeResult
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		source, err := e.resolveSource(spaceID, input.SourceID, input.Source, now)
 		if err != nil {
 			return err
@@ -161,10 +160,12 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 }
 
 func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResult, error) {
-	_ = ctx
 	result := &BatchResult{}
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		for _, episode := range input.Episodes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if strings.TrimSpace(episode.Kind) == "" || strings.TrimSpace(episode.Content) == "" {
 				return errorf(ErrInputInvalid, "episode kind and content are required", map[string]any{"kind": episode.Kind, "id": episode.ID}, nil)
 			}
@@ -182,6 +183,9 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 		}
 		referenceRewrites := make(map[string]string)
 		for _, entity := range input.Entities {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if strings.TrimSpace(entity.Type) == "" || strings.TrimSpace(entity.CanonicalName) == "" {
 				return errorf(ErrInputInvalid, "entity type and canonical_name are required", map[string]any{"id": entity.ID}, nil)
 			}
@@ -206,6 +210,9 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 			referenceRewrites[reference] = item.ID
 		}
 		for _, fact := range input.Facts {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if strings.TrimSpace(fact.Predicate) == "" || strings.TrimSpace(fact.SubjectID) == "" || len(fact.SupportingEpisodeIDs) == 0 {
 				return errorf(ErrInputInvalid, "fact predicate, subject_id, and supporting_episode_ids are required", map[string]any{"id": fact.ID}, nil)
 			}
@@ -233,7 +240,6 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 }
 
 func (e *engine) UpsertEntity(ctx context.Context, input EntityInput) (*Entity, error) {
-	_ = ctx
 	if strings.TrimSpace(input.Type) == "" {
 		return nil, errorf(ErrInputInvalid, "entity type is required", map[string]any{"field": "type"}, nil)
 	}
@@ -242,7 +248,7 @@ func (e *engine) UpsertEntity(ctx context.Context, input EntityInput) (*Entity, 
 	}
 
 	var entity *Entity
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		var err error
 		entity, err = e.upsertEntityLocked(input)
 		return err
@@ -372,7 +378,6 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 }
 
 func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error) {
-	_ = ctx
 	if strings.TrimSpace(input.Predicate) == "" {
 		return nil, errorf(ErrInputInvalid, "fact predicate is required", map[string]any{"field": "predicate"}, nil)
 	}
@@ -386,7 +391,7 @@ func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error)
 
 	spaceID := normalizeSpaceID(input.SpaceID)
 	var fact *Fact
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		var err error
 		fact, err = e.assertFactLocked(spaceID, input, false)
 		return err
@@ -535,9 +540,8 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 }
 
 func (e *engine) SupersedeFact(ctx context.Context, factID string, input FactInput, reason string) (*SupersedeFactResult, error) {
-	_ = ctx
 	var result *SupersedeFactResult
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		var err error
 		result, err = e.supersedeFactLocked(factID, input, reason)
 		return err
@@ -605,9 +609,8 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 }
 
 func (e *engine) RetractFact(ctx context.Context, factID string, reason string) (*RetractFactResult, error) {
-	_ = ctx
 	var result *RetractFactResult
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		fact, ok := e.facts[factID]
 		if !ok {
 			return errorf(ErrFactNotFound, "fact not found", map[string]any{"fact_id": factID}, nil)
@@ -831,9 +834,18 @@ func (e *engine) saveLocked() error {
 // mutateLocked runs fn under the engine lock and persists the mutated
 // state. When fn or the save fails, in-memory state is rolled back to the
 // pre-mutation snapshot so a failed write never leaks partial mutations.
-func (e *engine) mutateLocked(fn func() error) error {
+func (e *engine) mutateLocked(ctx context.Context, fn func() error) error {
+	// The caller's context governs the mutation. A canceled request is refused
+	// before any work, and refused again once the write lock is acquired, because
+	// a request can be abandoned while it waits for a concurrent writer.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := e.ensureWritableLocked(); err != nil {
 		return err
 	}
@@ -846,6 +858,8 @@ func (e *engine) mutateLocked(fn func() error) error {
 		e.restoreLocked(snapshot)
 		return err
 	}
+	// The save is the commit point: the context is not consulted again, so
+	// cancellation racing the commit cannot mislabel durable work as skipped.
 	return nil
 }
 

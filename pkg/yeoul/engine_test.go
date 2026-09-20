@@ -1869,6 +1869,126 @@ func TestExplicitSupersessionKeepsAutoSupersededIDs(t *testing.T) {
 		t.Fatalf("expected provenance edges to both superseded facts, got %#v", prov.Edges)
 	}
 }
+func TestCanceledContextCreatesNoRecordsOrSaves(t *testing.T) {
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "canceled episode", Source: SourceInput{Kind: "note"}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled ingest to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.IngestBatch(ctx, BatchInput{Episodes: []EpisodeInput{{Kind: "note", Content: "canceled batch", Source: SourceInput{Kind: "note"}}}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled batch to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "canceled"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled upsert to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{Predicate: "HAS_STATE", SubjectID: "entity:missing", SupportingEpisodeIDs: []string{"ep:missing"}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled assert to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.SupersedeFact(ctx, "fact:missing", FactInput{}, "canceled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled supersede to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.RetractFact(ctx, "fact:missing", "canceled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled retract to fail with context.Canceled, got %v", err)
+	}
+
+	if store.saveCount != 0 {
+		t.Fatalf("expected canceled mutations to skip the durable save, got %d saves", store.saveCount)
+	}
+	rawEng := eng
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.sources) != 0 || len(rawEng.episodes) != 0 || len(rawEng.entities) != 0 || len(rawEng.facts) != 0 {
+		t.Fatalf("expected no records, got sources=%d episodes=%d entities=%d facts=%d", len(rawEng.sources), len(rawEng.episodes), len(rawEng.entities), len(rawEng.facts))
+	}
+	if len(rawEng.factRevisions) != 0 || len(rawEng.entityRevisions) != 0 {
+		t.Fatalf("expected no revisions, got fact=%d entity=%d", len(rawEng.factRevisions), len(rawEng.entityRevisions))
+	}
+	if rawEng.sequence != 0 {
+		t.Fatalf("expected no ID sequence consumption, got %d", rawEng.sequence)
+	}
+}
+
+func TestCanceledWhileWaitingForWriteLockCreatesNoRecords(t *testing.T) {
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	rawEng := eng
+
+	// Hold the write lock so the mutation below is queued behind it.
+	rawEng.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	errs := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "queued behind the lock", Source: SourceInput{Kind: "note"}})
+		errs <- err
+	}()
+	<-started
+	// The queued mutation waits on the lock rather than on cancellation, so give
+	// it a moment to reach the lock before abandoning the request.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	rawEng.mu.Unlock()
+
+	if err := <-errs; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the queued mutation to report cancellation, got %v", err)
+	}
+	if store.saveCount != 0 {
+		t.Fatalf("expected the abandoned mutation to skip the durable save, got %d saves", store.saveCount)
+	}
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.episodes) != 0 || len(rawEng.sources) != 0 {
+		t.Fatalf("expected no records, got episodes=%d sources=%d", len(rawEng.episodes), len(rawEng.sources))
+	}
+}
+
+// blockingSaveStore blocks inside Save so a test can cancel a mutation while its
+// commit is in flight.
+type blockingSaveStore struct {
+	countingStore
+	saveStarted chan struct{}
+	release     chan struct{}
+}
+
+func (s *blockingSaveStore) Save(state persistedState) error {
+	select {
+	case s.saveStarted <- struct{}{}:
+	default:
+	}
+	<-s.release
+	return s.countingStore.Save(state)
+}
+
+func TestCommittedMutationIsNotReportedAsCanceled(t *testing.T) {
+	store := &blockingSaveStore{saveStarted: make(chan struct{}, 1), release: make(chan struct{})}
+	eng := newEngine(Config{}, store)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "committed while canceled", Source: SourceInput{Kind: "note"}})
+		errs <- err
+	}()
+	<-store.saveStarted
+	cancel()
+	close(store.release)
+
+	// The commit already happened when the context was canceled: reporting
+	// cancellation would mislabel durable work as skipped.
+	if err := <-errs; err != nil {
+		t.Fatalf("expected the committed mutation to succeed, got %v", err)
+	}
+	if store.saveCount != 1 {
+		t.Fatalf("expected exactly one durable save, got %d", store.saveCount)
+	}
+	if len(store.state.Episodes) != 1 {
+		t.Fatalf("expected the committed episode to be persisted, got %#v", store.state.Episodes)
+	}
+}
 func TestFactSupportRejectsCrossSpaceEpisodeSource(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
