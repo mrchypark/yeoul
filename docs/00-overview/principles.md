@@ -30,4 +30,4 @@ The database should be durable on disk, but the graph model and policy files sho
 
 ## 8. Concurrency by explicit ownership
 
-Embedded mode assumes one process owns one READ_WRITE Ladybug database object and fans out work through multiple connections.
+Embedded mode assumes one process owns one READ_WRITE LatticeDB database object and fans out work through multiple connections.

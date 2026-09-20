@@ -27,12 +27,13 @@ Requirements:
 Scope:
 - open/close database
 - schema migrations
-- create/query node and relationship tables
+- create/query nodes and relationships
 - transaction rollback behavior
 - persistence across restart
 
 Requirements:
-- use real Ladybug
+- use the real default engine (LatticeDB)
+- cover the legacy Ladybug adapter through the migration compatibility tests
 - run on CI where supported
 - use isolated temp database paths
 
