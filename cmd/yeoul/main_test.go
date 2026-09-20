@@ -1621,6 +1621,116 @@ func TestCLIEntityMergePreviewAndCompact(t *testing.T) {
 	}
 }
 
+func TestCLIAdminCompactPreservesActiveAndDistinctFacts(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "compact-safety.ltdb")
+	ingestPath := filepath.Join(tmpDir, "compact-safety.json")
+
+	payload := `{
+  "episodes": [
+    {"id":"ep-1","kind":"note","content":"compact safety one","source":{"kind":"note","external_ref":"thread-safety-1"}},
+    {"id":"ep-2","kind":"note","content":"compact safety two","source":{"kind":"note","external_ref":"thread-safety-2"}},
+    {"id":"ep-1,ep-2","kind":"note","content":"comma id","source":{"kind":"note","external_ref":"thread-safety-3"}}
+  ],
+  "entities": [
+    {"id":"project:yeoul","type":"Project","canonical_name":"Yeoul"},
+    {"id":"project:Yeoul","type":"Project","canonical_name":"Yeoul Upper"},
+    {"id":"project:space","type":"Project","canonical_name":"Space"},
+    {"id":"project:space ","type":"Project","canonical_name":"Space Padded"},
+    {"id":"database:ladybug","type":"Database","canonical_name":"Ladybug"}
+  ],
+  "facts": [
+    {"id":"fact-old","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"supersede me","supporting_episode_ids":["ep-1"]},
+    {"id":"fact-conf-low","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"confidence twin","confidence":0.3,"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-conf-high","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"confidence twin","confidence":0.9,"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-delim-many","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"delimiter twin","supporting_episode_ids":["ep-1","ep-2"]},
+    {"id":"fact-delim-one","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"delimiter twin","supporting_episode_ids":["ep-1,ep-2"]},
+    {"id":"fact-case-lower","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"case twin","supporting_episode_ids":["ep-2"]},
+    {"id":"fact-case-upper","predicate":"USES_STORAGE_ENGINE","subject_id":"project:Yeoul","object_id":"database:ladybug","value_text":"case twin","supporting_episode_ids":["ep-2"]},
+    {"id":"fact-meta-string","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata twin","metadata":{"x":"1"},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-meta-number","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata twin","metadata":{"x":1},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-meta-boundary","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata boundary","metadata":{"a":"b c:d"},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-meta-split","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata boundary","metadata":{"a":"b","c":"d"},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-space-plain","predicate":"USES_STORAGE_ENGINE","subject_id":"project:space","object_id":"database:ladybug","value_text":"space twin","supporting_episode_ids":["ep-1"]},
+    {"id":"fact-space-padded","predicate":"USES_STORAGE_ENGINE","subject_id":"project:space ","object_id":"database:ladybug","value_text":"space twin","supporting_episode_ids":["ep-1"]}
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+	supersedeOut := runCLI(
+		"fact", "supersede",
+		"--confirm",
+		"--db", dbPath,
+		"--id", "fact-old",
+		"--predicate", "USES_STORAGE_ENGINE",
+		"--subject-id", "project:yeoul",
+		"--object-id", "database:ladybug",
+		"--value-text", "supersede me",
+		"--supporting-episodes", "ep-1",
+		"--reason", "compact safety",
+	)
+	fields := strings.Fields(supersedeOut)
+	if len(fields) < 5 {
+		t.Fatalf("unexpected supersede output %q", supersedeOut)
+	}
+	activeFactID := fields[len(fields)-1]
+
+	dryRun := runCLI("admin", "compact", "--db", dbPath, "--json")
+	if !strings.Contains(dryRun, `"fact_duplicate_candidates": 1`) {
+		t.Fatalf("expected exactly one duplicate candidate, got %q", dryRun)
+	}
+	runCLI("admin", "compact", "--confirm", "--apply", "--db", dbPath)
+
+	low := runCLI("fact", "get", "--db", dbPath, "--id", "fact-conf-low")
+	if !strings.Contains(low, `"status": "retracted"`) || !strings.Contains(low, "duplicate_of:fact-conf-high") {
+		t.Fatalf("expected the lower-confidence twin to retract against the higher-confidence fact, got %q", low)
+	}
+	high := runCLI("fact", "get", "--db", dbPath, "--id", "fact-conf-high")
+	if !strings.Contains(high, `"status": "active"`) {
+		t.Fatalf("expected the higher-confidence fact to stay active, got %q", high)
+	}
+	active := runCLI("fact", "get", "--db", dbPath, "--id", activeFactID)
+	if !strings.Contains(active, `"status": "active"`) {
+		t.Fatalf("expected the active successor to stay active, got %q", active)
+	}
+	superseded := runCLI("fact", "get", "--db", dbPath, "--id", "fact-old")
+	if !strings.Contains(superseded, `"status": "superseded"`) {
+		t.Fatalf("expected the superseded predecessor to stay superseded, got %q", superseded)
+	}
+	for _, id := range []string{
+		"fact-delim-many",
+		"fact-delim-one",
+		"fact-case-lower",
+		"fact-case-upper",
+		"fact-meta-string",
+		"fact-meta-number",
+		"fact-meta-boundary",
+		"fact-meta-split",
+		"fact-space-plain",
+		"fact-space-padded",
+	} {
+		record := runCLI("fact", "get", "--db", dbPath, "--id", id)
+		if !strings.Contains(record, `"status": "active"`) {
+			t.Fatalf("expected %s to stay active, got %q", id, record)
+		}
+	}
+}
+
 func TestCLIBenchQueryAndLifecycle(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

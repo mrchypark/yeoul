@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,22 +47,132 @@ func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
 	return candidates
 }
 
+// factIdentityKey is a comparable identity for duplicate-fact detection.
+// Fields are compared exactly (no case folding), and supporting episode IDs are
+// length-prefixed so values containing separators cannot collide.
+type factIdentityKey struct {
+	SpaceID    string
+	Predicate  string
+	SubjectID  string
+	ObjectID   string
+	ValueText  string
+	Supporting string
+	ValidFrom  string
+	ValidTo    string
+	Metadata   string
+}
+
+func factIdentityOf(fact yeoul.FactInput) factIdentityKey {
+	return factIdentityKey{
+		SpaceID:    fact.SpaceID,
+		Predicate:  fact.Predicate,
+		SubjectID:  fact.SubjectID,
+		ObjectID:   fact.ObjectID,
+		ValueText:  fact.ValueText,
+		Supporting: encodeIdentityParts(sortedStrings(fact.SupportingEpisodeIDs)),
+		ValidFrom:  fact.ValidFrom.UTC().Format(time.RFC3339Nano),
+		ValidTo:    fact.ValidTo.UTC().Format(time.RFC3339Nano),
+		Metadata:   canonicalMetadata(fact.Metadata),
+	}
+}
+
+// canonicalMetadata renders metadata structurally so that values which differ
+// in type or in key/value boundaries cannot share an identity. Plain map
+// formatting collapses {"x":"1"} with {"x":1} and {"a":"b c:d"} with
+// {"a":"b","c":"d"}.
+func canonicalMetadata(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		parts = append(parts, key, canonicalValue(metadata[key]))
+	}
+	return "map[" + encodeIdentityParts(parts) + "]"
+}
+
+func canonicalValue(value any) string {
+	if value == nil {
+		return "nil"
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Map:
+		keys := make([]string, 0, rv.Len())
+		byKey := make(map[string]string, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			key := fmt.Sprintf("%v", iter.Key().Interface())
+			keys = append(keys, key)
+			byKey[key] = canonicalValue(iter.Value().Interface())
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys)*2)
+		for _, key := range keys {
+			parts = append(parts, key, byKey[key])
+		}
+		return "map[" + encodeIdentityParts(parts) + "]"
+	case reflect.Slice, reflect.Array:
+		parts := make([]string, 0, rv.Len())
+		for index := 0; index < rv.Len(); index++ {
+			parts = append(parts, canonicalValue(rv.Index(index).Interface()))
+		}
+		return "list[" + encodeIdentityParts(parts) + "]"
+	case reflect.Pointer, reflect.Interface:
+		if rv.IsNil() {
+			return "nil"
+		}
+		return canonicalValue(rv.Elem().Interface())
+	default:
+		return fmt.Sprintf("%T:%v", value, value)
+	}
+}
+
+func encodeIdentityParts(parts []string) string {
+	var builder strings.Builder
+	for _, part := range parts {
+		fmt.Fprintf(&builder, "%d:%s|", len(part), part)
+	}
+	return builder.String()
+}
+
+// preferFactSurvivor returns the index of the duplicate that should survive
+// compaction: the highest confidence, then the most recent observation, then
+// the lowest ID. Only active facts reach this point, so a superseded or
+// retracted fact can never displace the active successor.
+func preferFactSurvivor(facts []yeoul.FactInput) int {
+	best := 0
+	for index := 1; index < len(facts); index++ {
+		if factSurvivorBefore(facts[index], facts[best]) {
+			best = index
+		}
+	}
+	return best
+}
+
+func factSurvivorBefore(left, right yeoul.FactInput) bool {
+	if left.Confidence != right.Confidence {
+		return left.Confidence > right.Confidence
+	}
+	if !left.ObservedAt.Equal(right.ObservedAt) {
+		return left.ObservedAt.After(right.ObservedAt)
+	}
+	return left.ID < right.ID
+}
+
 func buildFactDuplicateCandidates(payload *exportFile) []factDuplicateCandidate {
-	groups := make(map[string][]yeoul.FactInput)
+	groups := make(map[factIdentityKey][]yeoul.FactInput)
 	for _, fact := range payload.Facts {
-		if strings.EqualFold(fact.Status, "retracted") {
+		status := strings.TrimSpace(fact.Status)
+		if status != "" && !strings.EqualFold(status, "active") {
 			continue
 		}
-		key := strings.Join([]string{
-			normalizeKey(fact.SpaceID),
-			normalizeKey(fact.Predicate),
-			normalizeKey(fact.SubjectID),
-			normalizeKey(fact.ObjectID),
-			normalizeKey(fact.ValueText),
-			strings.Join(sortedStrings(fact.SupportingEpisodeIDs), ","),
-			fact.ValidFrom.UTC().Format(time.RFC3339Nano),
-			fact.ValidTo.UTC().Format(time.RFC3339Nano),
-		}, "|")
+		key := factIdentityOf(fact)
 		groups[key] = append(groups[key], fact)
 	}
 	candidates := make([]factDuplicateCandidate, 0)
@@ -70,17 +181,22 @@ func buildFactDuplicateCandidates(payload *exportFile) []factDuplicateCandidate 
 			continue
 		}
 		sort.Slice(facts, func(i, j int) bool { return facts[i].ID < facts[j].ID })
+		targetIndex := preferFactSurvivor(facts)
+		target := facts[targetIndex]
 		sourceIDs := make([]string, 0, len(facts)-1)
-		for _, fact := range facts[1:] {
+		for index, fact := range facts {
+			if index == targetIndex {
+				continue
+			}
 			sourceIDs = append(sourceIDs, fact.ID)
 		}
 		candidates = append(candidates, factDuplicateCandidate{
-			TargetID:  facts[0].ID,
+			TargetID:  target.ID,
 			SourceIDs: sourceIDs,
-			Predicate: facts[0].Predicate,
-			SubjectID: facts[0].SubjectID,
-			ObjectID:  facts[0].ObjectID,
-			ValueText: facts[0].ValueText,
+			Predicate: target.Predicate,
+			SubjectID: target.SubjectID,
+			ObjectID:  target.ObjectID,
+			ValueText: target.ValueText,
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].TargetID < candidates[j].TargetID })
