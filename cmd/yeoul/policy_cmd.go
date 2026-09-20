@@ -62,19 +62,34 @@ Usage:
 		return err
 	}
 	if jsonOut {
-		return writeJSON(c.stdout, result)
-	}
-	if _, err := fmt.Fprintf(c.stdout, "valid: %t\n", result.Valid); err != nil {
-		return err
-	}
-	for _, issue := range result.Issues {
-		if _, err := fmt.Fprintf(c.stdout, "issue: %s\n", issue); err != nil {
+		if err := writeJSON(c.stdout, result); err != nil {
 			return err
 		}
-	}
-	for _, warning := range result.Warnings {
-		if _, err := fmt.Fprintf(c.stdout, "warning: %s\n", warning); err != nil {
+	} else {
+		if _, err := fmt.Fprintf(c.stdout, "valid: %t\n", result.Valid); err != nil {
 			return err
+		}
+		for _, issue := range result.Issues {
+			if _, err := fmt.Fprintf(c.stdout, "issue: %s\n", issue); err != nil {
+				return err
+			}
+		}
+		for _, warning := range result.Warnings {
+			if _, err := fmt.Fprintf(c.stdout, "warning: %s\n", warning); err != nil {
+				return err
+			}
+		}
+	}
+	// The result is reported first so callers keep the diagnostics, then an
+	// invalid pack fails the command instead of exiting successfully.
+	if !result.Valid {
+		return &yeoul.Error{
+			Code:    yeoul.ErrInputInvalid,
+			Message: fmt.Sprintf("policy pack %s is invalid", path),
+			Details: map[string]any{
+				"path":   path,
+				"issues": result.Issues,
+			},
 		}
 	}
 	return nil
