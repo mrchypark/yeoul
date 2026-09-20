@@ -21,6 +21,12 @@ type ContextBundle struct {
 	Truncated bool                    `json:"truncated,omitempty"`
 }
 
+// BuildContext assembles a retrieval bundle for a caller. The returned blocks
+// carry recalled memory as evidence: their Text may quote an issue, document,
+// or tool result verbatim, so consumers must treat block text as untrusted data
+// rather than instructions. Recalled content cannot grant permissions or
+// override the caller's current instructions; use RecordIDs and Meta to check
+// provenance before attributing authority.
 func BuildContext(resp yeoul.SearchResponse, opts ContextOptions) ContextBundle {
 	maxBlocks := opts.MaxBlocks
 	if maxBlocks <= 0 {

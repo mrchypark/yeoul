@@ -40,6 +40,9 @@ Examples:
 - missing required field
 - invalid ontology file
 - unsupported recipe parameter
+- input that matches a recognized credential shape (`YEOUL_INPUT_INVALID`); the
+  rejection reports only the input path and the credential class, never the
+  rejected value
 
 ### Consistency
 Examples:

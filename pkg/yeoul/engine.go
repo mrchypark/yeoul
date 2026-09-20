@@ -148,6 +148,9 @@ func (e *engine) ensureWritableLocked() error {
 
 func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*EpisodeResult, error) {
 	_ = ctx
+	if err := rejectSecretFields(episodeSecretFields(input)); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(input.Kind) == "" {
 		return nil, errorf(ErrInputInvalid, "episode kind is required", map[string]any{"field": "kind"}, nil)
 	}
@@ -175,6 +178,22 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 
 func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResult, error) {
 	_ = ctx
+	for _, episode := range input.Episodes {
+		if err := rejectSecretFields(episodeSecretFields(episode)); err != nil {
+			return nil, err
+		}
+	}
+	for _, entity := range input.Entities {
+		if err := rejectSecretFields(entitySecretFields(entity)); err != nil {
+			return nil, err
+		}
+	}
+	for _, fact := range input.Facts {
+		fields := append(factSecretFields(fact), textSecretFields("fact.supporting_episode_ids", fact.SupportingEpisodeIDs)...)
+		if err := rejectSecretFields(fields); err != nil {
+			return nil, err
+		}
+	}
 	result := &BatchResult{}
 	err := e.mutateLocked(func() error {
 		for _, episode := range input.Episodes {
@@ -244,6 +263,9 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 
 func (e *engine) UpsertEntity(ctx context.Context, input EntityInput) (*Entity, error) {
 	_ = ctx
+	if err := rejectSecretFields(entitySecretFields(input)); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(input.Type) == "" {
 		return nil, errorf(ErrInputInvalid, "entity type is required", map[string]any{"field": "type"}, nil)
 	}
@@ -395,6 +417,9 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 
 func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error) {
 	_ = ctx
+	if err := rejectSecretFields(append(factSecretFields(input), textSecretFields("fact.supporting_episode_ids", input.SupportingEpisodeIDs)...)); err != nil {
+		return nil, err
+	}
 	if err := validateFactInput(input); err != nil {
 		return nil, err
 	}
@@ -571,6 +596,11 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 
 func (e *engine) SupersedeFact(ctx context.Context, factID string, input FactInput, reason string) (*SupersedeFactResult, error) {
 	_ = ctx
+	fields := append(factSecretFields(input), textSecretFields("fact.supporting_episode_ids", input.SupportingEpisodeIDs)...)
+	fields = append(fields, reasonSecretField("supersede.reason", reason)...)
+	if err := rejectSecretFields(fields); err != nil {
+		return nil, err
+	}
 	var result *SupersedeFactResult
 	err := e.mutateLocked(func() error {
 		var err error
@@ -633,6 +663,9 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 
 func (e *engine) RetractFact(ctx context.Context, factID string, reason string) (*RetractFactResult, error) {
 	_ = ctx
+	if err := rejectSecretFields(reasonSecretField("retract.reason", reason)); err != nil {
+		return nil, err
+	}
 	var result *RetractFactResult
 	err := e.mutateLocked(func() error {
 		fact, ok := e.facts[factID]

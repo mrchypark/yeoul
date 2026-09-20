@@ -2304,3 +2304,133 @@ func TestCLIAdminExportRefusesUnsupportedPlatform(t *testing.T) {
 		t.Fatal("expected the refused export to create no file")
 	}
 }
+
+// TestCLIIndexPublishRaxAppendsToExistingStore pins the documented
+// publication semantics: publish-rax appends or updates documents by ID in an
+// existing store instead of replacing it, and the reported count describes the
+// incoming projection only. Publishing two disjoint corpora into one target
+// must therefore leave both corpora present.
+func TestCLIIndexPublishRaxAppendsToExistingStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	fakeRaxPath := os.Args[0]
+	argsPath := filepath.Join(tmpDir, "rax-args.txt")
+	projectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	storePath := filepath.Join(tmpDir, "shared.rax")
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", argsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", projectionPath)
+	t.Setenv("YEOUL_FAKE_RAX_MERGE_DOCIDS", "1")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	// Each corpus lives in its own database and index root so the two
+	// projections are disjoint, exactly like publishing two different sources
+	// into one reused store.
+	buildCorpus := func(name, episodeID, factID string) string {
+		t.Helper()
+		dbPath := filepath.Join(tmpDir, name+".ltdb")
+		ingestPath := filepath.Join(tmpDir, name+"-ingest.json")
+		root := filepath.Join(tmpDir, name+"-index")
+		payload := `{
+  "episodes": [{"id":"` + episodeID + `","kind":"note","content":"` + name + ` corpus note","source":{"kind":"note","external_ref":"` + name + `"}}],
+  "entities": [{"id":"project:` + name + `","type":"Project","canonical_name":"` + name + `"}],
+  "facts": [{"id":"` + factID + `","predicate":"DESCRIBES","subject_id":"project:` + name + `","value_text":"` + name + ` corpus fact","supporting_episode_ids":["` + episodeID + `"]}]
+}`
+		if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+			t.Fatalf("write ingest payload: %v", err)
+		}
+		runCLI("init", "--db", dbPath)
+		runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+		runCLI("index", "build", "--db", dbPath, "--root", root, "--json")
+		return root
+	}
+
+	firstRoot := buildCorpus("alpha", "ep-alpha", "fact-alpha")
+	secondRoot := buildCorpus("beta", "ep-beta", "fact-beta")
+
+	first := runCLI("index", "publish-rax", "--root", firstRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(first, `"published_document_count": 3`) {
+		t.Fatalf("expected first publish to report its own 3 documents, got %q", first)
+	}
+	if strings.Contains(first, "rax_document_count") {
+		t.Fatalf("expected the ambiguous rax_document_count field to be gone, got %q", first)
+	}
+	second := runCLI("index", "publish-rax", "--root", secondRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(second, `"published_document_count": 3`) {
+		t.Fatalf("expected second publish to report its own 3 documents, got %q", second)
+	}
+
+	storeData, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	for _, docID := range []string{"fact:fact-alpha", "fact:fact-beta"} {
+		if !strings.Contains(string(storeData), docID) {
+			t.Fatalf("expected publication to append %s into the reused store, got %q", docID, string(storeData))
+		}
+	}
+}
+
+// TestCLIIngestRejectsSecretCanaries exercises the pre-ingest boundary through
+// the CLI entry points that persist caller text: a single episode, a bulk JSON
+// payload (including metadata), and a lifecycle reason. Synthetic canaries are
+// used so no real credential is involved.
+func TestCLIIngestRejectsSecretCanaries(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "secrets.ltdb")
+	const canary = "AKIAIOSFODNN7EXAMPLE"
+
+	runCLI := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
+	}
+
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Single-episode ingest with the canary in --content.
+	_, err := runCLI("ingest", "episode", "--db", dbPath, "--kind", "note", "--content", "token is "+canary, "--source-kind", "note")
+	if err == nil {
+		t.Fatal("expected ingest episode to reject the secret canary")
+	}
+	if !strings.Contains(err.Error(), string(yeoul.ErrInputInvalid)) {
+		t.Fatalf("expected %s, got %v", yeoul.ErrInputInvalid, err)
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("CLI error echoed the rejected canary: %v", err)
+	}
+	if code := exitCode(err); code != 2 {
+		t.Fatalf("expected exit code 2 for a rejected secret, got %d", code)
+	}
+
+	// Bulk JSON ingest with the canary hidden in entity metadata.
+	payloadPath := filepath.Join(tmpDir, "secret-ingest.json")
+	payload := `{"entities":[{"id":"thing:x","type":"Thing","canonical_name":"x","metadata":{"token":"` + canary + `"}}]}`
+	if writeErr := os.WriteFile(payloadPath, []byte(payload), 0o644); writeErr != nil {
+		t.Fatalf("write payload: %v", writeErr)
+	}
+	_, err = runCLI("ingest", "json", "--db", dbPath, "--file", payloadPath)
+	if err == nil {
+		t.Fatal("expected ingest json to reject the secret canary")
+	}
+	if !strings.Contains(err.Error(), string(yeoul.ErrInputInvalid)) {
+		t.Fatalf("expected %s, got %v", yeoul.ErrInputInvalid, err)
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("CLI error echoed the rejected canary: %v", err)
+	}
+}
