@@ -368,6 +368,11 @@ func restoreLegacyDatabaseSet(marker databaseMigrationMarker, markerPath string)
 	if err := restoreLegacyDatabaseFileSet(marker.DatabasePath, marker.BackupPath); err != nil {
 		return err
 	}
+	// The verified staging database is no longer needed once the legacy set is
+	// back in place; keep the marker when cleanup fails so recovery can retry.
+	if err := os.RemoveAll(marker.StagingPath); err != nil {
+		return fmt.Errorf("remove abandoned migration staging database: %w", err)
+	}
 	return os.Remove(markerPath)
 }
 
@@ -489,10 +494,7 @@ func recoverDatabaseMigration(databasePath string) error {
 		}
 		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseRestoring:
-		if err := restoreLegacyDatabaseFileSet(marker.DatabasePath, marker.BackupPath); err != nil {
-			return err
-		}
-		return os.Remove(markerPath)
+		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseInstalled:
 		return os.Remove(markerPath)
 	default:

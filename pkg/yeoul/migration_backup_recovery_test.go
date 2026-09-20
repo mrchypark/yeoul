@@ -48,6 +48,9 @@ func TestRecoverDatabaseMigrationResumesRestoringPhase(t *testing.T) {
 	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected the marker to be cleared, got %v", err)
 	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the staging database to be cleaned up, got %v", err)
+	}
 }
 
 func TestRecoverDatabaseMigrationPreservesInstalledDatabaseOnPreparedRetry(t *testing.T) {
@@ -214,6 +217,9 @@ func TestRecoverDatabaseMigrationRestoresPartiallyBackedUpSidecars(t *testing.T)
 	}
 	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected the marker to be cleared, got %v", err)
+	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the staging database to be cleaned up after restoration, got %v", err)
 	}
 }
 
