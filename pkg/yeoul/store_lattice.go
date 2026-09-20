@@ -24,6 +24,18 @@ const (
 // the legacy migration fallback, which would replace it.
 var errUnsupportedStateVersion = errors.New("unsupported application-state version")
 
+// errLatticeStateVersionUnestablished marks a refusal to hand a database to a
+// writable open when the read-only inspection could not establish which
+// application-state version it holds. A contended database is not evidence of a
+// legacy database, so the open reports the refusal instead of converting it.
+var errLatticeStateVersionUnestablished = errors.New("application-state version could not be established")
+
+// writableOpenBarrier runs between a read-only version inspection that found no
+// persisted version and the writable open that follows it. Tests use it to
+// interleave a competing writer into the window the protocol has to survive;
+// production leaves it nil.
+var writableOpenBarrier func()
+
 var latticeLabels = []string{
 	"Source",
 	"Episode",
@@ -48,7 +60,7 @@ func newLatticeStore(cfg Config) (stateStore, error) {
 	// read-only inspection first, so a database this build cannot read is
 	// rejected before any writable handle exists.
 	if !cfg.ReadOnly {
-		if err := validateStateVersionReadOnly(cfg.DatabasePath, cfg.CreateIfMissing); err != nil {
+		if err := inspectStateVersionBeforeWritableOpen(cfg.DatabasePath); err != nil {
 			return nil, err
 		}
 	}
@@ -60,7 +72,8 @@ func newLatticeStore(cfg Config) (stateStore, error) {
 	}
 	state := &latticeStore{cfg: cfg, store: store, lastState: emptyPersistedState()}
 	// Re-check through the handle that will actually serve reads: the inspection
-	// above cannot observe a database that only exists after CreateIfMissing.
+	// above cannot observe a database that only exists after CreateIfMissing,
+	// and it cannot speak for a database that changed after it ran.
 	if err := state.validateStateVersion(); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -224,33 +237,69 @@ func (s *latticeStore) Load() (*persistedState, error) {
 	return &state, nil
 }
 
-// validateStateVersionReadOnly resolves the persisted application-state version
-// through a read-only handle, so a writable open never performs native recovery
-// on a database this build cannot read. A database that does not exist yet has
-// no persisted version to reject, and a database the native engine cannot open
-// at all is left for the real open to report.
-func validateStateVersionReadOnly(databasePath string, createIfMissing bool) error {
+// inspectStateVersionBeforeWritableOpen resolves the persisted application-state
+// version through a read-only handle before any writable handle exists, so a
+// writable open never performs native recovery on a database this build cannot
+// read.
+//
+// An inspection that cannot establish the version is reported rather than
+// discarded: a database whose compatibility is unknown must not be handed to a
+// writable open, and the caller decides whether the failure still leaves room
+// for the legacy conversion. Only a database that does not exist yet, or that
+// holds no application records and no version, is allowed through, because the
+// writable open is what creates or initializes it. That creation case is
+// inspected a second time, so a database that appeared in the window is
+// inspected instead of being handed to the writable open.
+func inspectStateVersionBeforeWritableOpen(databasePath string) error {
+	if err := inspectStateVersionOnce(databasePath); err != nil {
+		return err
+	}
+	// The first inspection can only speak for the database as it was. The
+	// writable open that follows it runs native recovery, which rewrites files
+	// before this build can read the version again, so the version is resolved
+	// once more immediately before that open: a database that appeared or was
+	// filled in this window is inspected instead of being recovered.
+	if writableOpenBarrier != nil {
+		writableOpenBarrier()
+	}
+	return inspectStateVersionOnce(databasePath)
+}
+
+// inspectStateVersionOnce returns the error that has to stop a writable open
+// when the database holds a persisted application-state version this build
+// cannot read, or when that version could not be established at all. A database
+// that does not exist yet, or that holds no records and no version, passes.
+func inspectStateVersionOnce(databasePath string) error {
 	if _, err := os.Stat(databasePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// A database that does not exist yet has no persisted version to
-			// reject. The real open reports a missing database when creation is
-			// not allowed, with the error that belongs to that decision.
+			// reject, and the writable open is the one that creates it.
 			return nil
 		}
 		return errorf(ErrStorageFailed, "inspect lattice database for state version", map[string]any{
 			"database_path": databasePath,
 		}, err)
 	}
-	if err := readStateVersionReadOnly(databasePath); err != nil {
-		if errors.Is(err, errUnsupportedStateVersion) {
-			return err
-		}
-		// The native engine cannot read the file at all; the caller's real open
-		// reports that failure with its own error, so the version check stays out
-		// of the way here.
+	err := readStateVersionReadOnly(databasePath)
+	switch {
+	case err == nil:
 		return nil
+	case errors.Is(err, errUnsupportedStateVersion):
+		return err
+	case errors.Is(err, latticedb.ErrDatabaseLocked):
+		// Another writer holds the database right now, so its persisted version
+		// cannot be read. Proceeding would let a writable open run native
+		// recovery on state this build may not be able to read, and waiting for
+		// the writer to exit would only widen that window, so the open refuses.
+		return errorf(ErrStorageFailed, "lattice database is held by another writer", map[string]any{
+			"database_path": databasePath,
+			"reason":        "the application-state version could not be established before a writable open",
+		}, errors.Join(errLatticeStateVersionUnestablished, err))
 	}
-	return nil
+	// The native engine could not open the file as a lattice database. The
+	// failure is reported as it stands so it cannot be discarded, while the
+	// caller may still convert a legacy database through the same failure.
+	return err
 }
 
 // readStateVersionReadOnly resolves the application-state version of an

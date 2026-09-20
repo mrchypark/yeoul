@@ -27,7 +27,8 @@ var errDatabaseOwnershipBusy = errors.New("database ownership is held by another
 // lock that later opens must reclaim, and no caller ever removes the lock file
 // on behalf of another owner.
 type databaseOwnershipLock struct {
-	file *os.File
+	file      *os.File
+	exclusive bool
 }
 
 func databaseOwnershipPath(databasePath string) string {
@@ -51,7 +52,7 @@ func acquireDatabaseOwnership(databasePath string, exclusive bool) (*databaseOwn
 		_ = file.Close()
 		return nil, err
 	}
-	return &databaseOwnershipLock{file: file}, nil
+	return &databaseOwnershipLock{file: file, exclusive: exclusive}, nil
 }
 
 // ensureDatabaseOwnershipDirectory creates the directory that will hold a new
