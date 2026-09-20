@@ -61,6 +61,7 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 	if err != nil {
 		return nil, fmt.Errorf("resolve migration database path: %w", err)
 	}
+	markerPath := databaseMigrationMarkerPath(databasePath)
 	if err := recoverDatabaseMigration(databasePath); err != nil {
 		return nil, err
 	}
@@ -83,7 +84,7 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 		return migrateDatabaseWithLegacyHelper(ctx, databasePath)
 	}
 
-	return migrateLegacyDatabaseInProcess(databasePath)
+	return migrateLegacyDatabaseInProcess(databasePath, markerPath)
 }
 
 func migrateDatabaseWithLegacyHelper(ctx context.Context, databasePath string) (*DatabaseMigrationResult, error) {
@@ -162,7 +163,7 @@ func legacyMigrationHelperPath() (string, error) {
 	return filepath.Clean(filepath.Join(filepath.Dir(executable), "..", "libexec", "ladybug-v0131", helperName)), nil
 }
 
-func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResult, error) {
+func migrateLegacyDatabaseInProcess(databasePath, markerPath string) (*DatabaseMigrationResult, error) {
 
 	legacy, err := newLadybugStore(Config{Driver: StorageDriverLadybug, DatabasePath: databasePath, ReadOnly: true})
 	if err != nil {
@@ -188,8 +189,13 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 		BackupPath:   backupPath,
 		StagingPath:  stagingPath,
 	}
+	// The staging database is the only verified copy of the converted data
+	// until the legacy set is back in place, so it is never deleted here: a
+	// cleanup that runs after a failed rollback would destroy the input
+	// recovery needs. Every removal below happens only once the protocol no
+	// longer depends on it.
 	defer func() {
-		_ = os.RemoveAll(stagingPath)
+		cleanupAbandonedMigrationStaging(marker, markerPath)
 	}()
 
 	target, err := newLatticeStore(Config{Driver: StorageDriverLattice, DatabasePath: stagingPath, CreateIfMissing: true})
@@ -234,28 +240,27 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 	}
 	marker.Phase = migrationPhaseBackedUp
 	if err := writeDatabaseMigrationMarker(marker); err != nil {
-		if restoreErr := restoreLegacyDatabaseSet(marker, databaseMigrationMarkerPath(databasePath)); restoreErr != nil {
+		if restoreErr := restoreLegacyDatabaseSet(marker, markerPath); restoreErr != nil {
 			return nil, errors.Join(err, fmt.Errorf("restore legacy database backup: %w", restoreErr))
 		}
 		return nil, err
 	}
-	if err := os.Rename(stagingPath, databasePath); err != nil {
-		rollbackErr := restoreLegacyDatabaseSet(marker, databaseMigrationMarkerPath(databasePath))
-		if rollbackErr != nil {
-			return nil, errors.Join(fmt.Errorf("install lattice database: %w", err), fmt.Errorf("restore legacy database backup: %w", rollbackErr))
+	if published, err := installStagingDatabase(marker, markerPath); err != nil {
+		// Once the rename is durable the converted database is the live
+		// database; recovery finishes that installation instead of rolling it
+		// back. Before that point the legacy set is still the source of truth
+		// and is restored, and the staging database survives a failed restore
+		// because it is the only verified copy of the converted data.
+		if published {
+			return nil, err
 		}
-		return nil, fmt.Errorf("install lattice database: %w", err)
-	}
-	if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
-		return nil, fmt.Errorf("sync installed lattice database directory: %w", err)
+		rollbackErr := restoreLegacyDatabaseSet(marker, markerPath)
+		if rollbackErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("restore legacy database backup: %w", rollbackErr))
+		}
+		return nil, err
 	}
 	marker.Phase = migrationPhaseInstalled
-	if err := writeDatabaseMigrationMarker(marker); err != nil {
-		return nil, err
-	}
-	if err := removeDatabaseMigrationMarker(databaseMigrationMarkerPath(databasePath)); err != nil {
-		return nil, err
-	}
 	return &DatabaseMigrationResult{
 		DatabasePath: databasePath,
 		BackupPath:   backupPath,
@@ -268,6 +273,99 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 type migrationFileMove struct {
 	source string
 	target string
+}
+
+// migrationRename is the rename hook for every protocol namespace move. Tests
+// replace it to inject move failures; production always runs os.Rename.
+var migrationRename = os.Rename
+
+// installStagingDatabase publishes the verified staging database as the live
+// database and finalizes the protocol: the installation intent is durable
+// before the rename, the rename is durable before the installation is
+// recorded, and the marker is cleared only after that record is durable. The
+// returned flag reports whether the rename completed, which is the point where
+// the converted database becomes the live database and a rollback would
+// destroy the only usable copy. A failure leaves the marker in place so
+// recovery resumes the installation instead of discarding the converted data.
+func installStagingDatabase(marker databaseMigrationMarker, markerPath string) (bool, error) {
+	marker.Phase = migrationPhaseBackedUp
+	if !migrationMarkerRecordsPhase(markerPath, migrationPhaseBackedUp) {
+		if err := writeDatabaseMigrationMarker(marker); err != nil {
+			return false, err
+		}
+	}
+	if err := migrationRename(marker.StagingPath, marker.DatabasePath); err != nil {
+		return false, fmt.Errorf("install lattice database: %w", err)
+	}
+	if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
+		return true, fmt.Errorf("sync installed lattice database directory: %w", err)
+	}
+	marker.Phase = migrationPhaseInstalled
+	if err := writeDatabaseMigrationMarker(marker); err != nil {
+		return true, err
+	}
+	return true, clearDatabaseMigrationState(marker, markerPath)
+}
+
+// clearDatabaseMigrationState removes the migration marker after discarding
+// the staging database. The marker is removed before the staging cleanup is
+// attempted, so a crash can never leave a marker that points at deleted
+// staging data; a staging copy left behind by an interrupted cleanup is an
+// orphan with no marker, which is inert.
+func clearDatabaseMigrationState(marker databaseMigrationMarker, markerPath string) error {
+	if err := removeDatabaseMigrationMarker(markerPath); err != nil {
+		return err
+	}
+	if marker.StagingPath != "" {
+		// Best effort: an orphan staging copy left by an interrupted cleanup is
+		// inert because its marker is already gone, so it must not fail an
+		// otherwise complete migration.
+		if err := os.RemoveAll(marker.StagingPath); err != nil {
+			return nil
+		}
+		_ = syncMigrationDirectory(filepath.Dir(marker.DatabasePath))
+	}
+	return nil
+}
+
+// cleanupAbandonedMigrationStaging removes the staging database only when the
+// protocol has no further use for it: the on-disk marker must still record the
+// prepared phase (so no installation was published) and the legacy set must be
+// back in place. The marker is removed before the staging cleanup, so a crash
+// never leaves a marker that points at deleted staging data.
+func cleanupAbandonedMigrationStaging(marker databaseMigrationMarker, markerPath string) {
+	if marker.StagingPath == "" || marker.Phase != migrationPhasePrepared {
+		return
+	}
+	if !migrationMarkerRecordsPhase(markerPath, migrationPhasePrepared) {
+		return
+	}
+	if _, err := os.Stat(marker.DatabasePath); err != nil {
+		return
+	}
+	if err := removeDatabaseMigrationMarker(markerPath); err != nil {
+		return
+	}
+	if err := os.RemoveAll(marker.StagingPath); err != nil {
+		return
+	}
+	_ = syncMigrationDirectory(filepath.Dir(marker.DatabasePath))
+}
+
+// migrationMarkerRecordsPhase reports whether the on-disk marker records the
+// given protocol phase. Cleanup decisions read the persisted phase rather than
+// the caller's in-memory copy, because only the persisted phase describes what
+// a crash left behind.
+func migrationMarkerRecordsPhase(markerPath, phase string) bool {
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		return false
+	}
+	var marker databaseMigrationMarker
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return false
+	}
+	return marker.Phase == phase
 }
 
 // legacyMigrationFileMoves lists the native Ladybug file set that must move
@@ -302,26 +400,41 @@ func legacyMigrationFileMoves(databasePath, backupPath string) ([]migrationFileM
 
 // moveLegacyDatabaseFileSet moves sidecars before the main database so a
 // partial move either leaves the original main path intact or puts the complete
-// set in the backup namespace. On failure it restores every move already made.
+// set in the backup namespace, and flushes the sidecar renames before the main
+// database moves so a durable main database in the backup namespace always
+// implies that its complete set moved with it. On failure it restores every
+// move already made.
 func moveLegacyDatabaseFileSet(databasePath, backupPath string) error {
 	moves, err := legacyMigrationFileMoves(databasePath, backupPath)
 	if err != nil {
 		return fmt.Errorf("list legacy database files for backup: %w", err)
 	}
+	parent := filepath.Dir(databasePath)
 	applied := make([]migrationFileMove, 0, len(moves))
-	for _, move := range moves {
-		if err := os.Rename(move.source, move.target); err != nil {
-			var rollbackErr error
-			for index := len(applied) - 1; index >= 0; index-- {
-				if err := os.Rename(applied[index].target, applied[index].source); err != nil {
-					rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore legacy database file %q: %w", applied[index].target, err))
-				}
+	rollback := func() error {
+		var rollbackErr error
+		for index := len(applied) - 1; index >= 0; index-- {
+			if err := migrationRename(applied[index].target, applied[index].source); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore legacy database file %q: %w", applied[index].target, err))
 			}
-			return errors.Join(fmt.Errorf("back up legacy database file %q: %w", move.source, err), rollbackErr)
+		}
+		return rollbackErr
+	}
+	for index, move := range moves {
+		if index > 0 && index == len(moves)-1 {
+			// The main database moves last. Flushing the sidecar renames first
+			// keeps the recovery invariant that a main database found in the
+			// backup namespace means the whole set is there.
+			if err := syncMigrationDirectory(parent); err != nil {
+				return errors.Join(fmt.Errorf("sync legacy database backup directory: %w", err), rollback())
+			}
+		}
+		if err := migrationRename(move.source, move.target); err != nil {
+			return errors.Join(fmt.Errorf("back up legacy database file %q: %w", move.source, err), rollback())
 		}
 		applied = append(applied, move)
 	}
-	if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
+	if err := syncMigrationDirectory(parent); err != nil {
 		return fmt.Errorf("sync legacy database backup directory: %w", err)
 	}
 	return nil
@@ -353,7 +466,7 @@ func restoreLegacyDatabaseFileSet(databasePath, backupPath string) error {
 	}
 	var restoreErr error
 	for _, move := range moves {
-		if err := os.Rename(move.source, move.target); err != nil {
+		if err := migrationRename(move.source, move.target); err != nil {
 			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore legacy database file %q: %w", move.source, err))
 		}
 	}
@@ -381,14 +494,10 @@ func restoreLegacyDatabaseSet(marker databaseMigrationMarker, markerPath string)
 		return err
 	}
 	// The verified staging database is no longer needed once the legacy set is
-	// back in place; keep the marker when cleanup fails so recovery can retry.
-	if err := os.RemoveAll(marker.StagingPath); err != nil {
-		return fmt.Errorf("remove abandoned migration staging database: %w", err)
-	}
-	if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
-		return fmt.Errorf("sync migration staging cleanup: %w", err)
-	}
-	return removeDatabaseMigrationMarker(markerPath)
+	// back in place, and the marker may only be cleared after that cleanup is
+	// durable: a marker pointing at a missing staging path would leave recovery
+	// with nothing to install.
+	return clearDatabaseMigrationState(marker, markerPath)
 }
 
 // legacyDatabasePartiallyBackedUp reports whether some native members already
@@ -461,36 +570,17 @@ func recoverDatabaseMigration(databasePath string) error {
 			if partial {
 				return restoreLegacyDatabaseSet(marker, markerPath)
 			}
-			// Nothing was moved: remove only our staging directory and the
-			// marker.
-			if err := os.RemoveAll(marker.StagingPath); err != nil {
-				return fmt.Errorf("remove abandoned migration staging database: %w", err)
-			}
-			if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
-				return fmt.Errorf("sync migration staging cleanup: %w", err)
-			}
-			return removeDatabaseMigrationMarker(markerPath)
+			// Nothing was moved, so the live database is the original legacy
+			// database and the abandoned staging copy can be discarded.
+			return clearDatabaseMigrationState(marker, markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {
-			// The legacy set was moved but the marker was not advanced. Record
-			// the installation intent before renaming staging into place, so a
-			// retry after the rename finalizes the installation instead of
-			// trying to roll it back.
-			marker.Phase = migrationPhaseBackedUp
-			if err := writeDatabaseMigrationMarker(marker); err != nil {
-				return err
-			}
-			if err := os.Rename(marker.StagingPath, databasePath); err != nil {
-				return fmt.Errorf("resume prepared lattice database install: %w", err)
-			}
-			if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
-				return fmt.Errorf("sync resumed lattice database install: %w", err)
-			}
-			marker.Phase = migrationPhaseInstalled
-			if err := writeDatabaseMigrationMarker(marker); err != nil {
-				return err
-			}
-			return removeDatabaseMigrationMarker(markerPath)
+			// The legacy set was moved but the marker was not advanced.
+			// installStagingDatabase records the backed-up phase before the
+			// rename, so a retry after the rename finalizes the installation
+			// instead of trying to roll it back.
+			_, err := installStagingDatabase(marker, markerPath)
+			return err
 		}
 		if _, err := os.Stat(marker.BackupPath); err != nil {
 			return fmt.Errorf("migration is prepared but source and backup databases are missing")
@@ -501,26 +591,17 @@ func recoverDatabaseMigration(databasePath string) error {
 		if _, err := os.Stat(databasePath); err == nil {
 			// The installation completed (or the set was already restored);
 			// the backup stays in place.
-			return removeDatabaseMigrationMarker(markerPath)
+			return clearDatabaseMigrationState(marker, markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {
-			if err := os.Rename(marker.StagingPath, databasePath); err != nil {
-				return fmt.Errorf("resume lattice database install: %w", err)
-			}
-			if err := syncMigrationDirectory(filepath.Dir(databasePath)); err != nil {
-				return fmt.Errorf("sync resumed lattice database install: %w", err)
-			}
-			marker.Phase = migrationPhaseInstalled
-			if err := writeDatabaseMigrationMarker(marker); err != nil {
-				return err
-			}
-			return removeDatabaseMigrationMarker(markerPath)
+			_, err := installStagingDatabase(marker, markerPath)
+			return err
 		}
 		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseRestoring:
 		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseInstalled:
-		return removeDatabaseMigrationMarker(markerPath)
+		return clearDatabaseMigrationState(marker, markerPath)
 	default:
 		return fmt.Errorf("unsupported migration phase %q", marker.Phase)
 	}
