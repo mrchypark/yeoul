@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -277,7 +278,7 @@ Usage:
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+	if err := writePrivateFile(outPath, data); err != nil {
 		return err
 	}
 	if jsonOut {
@@ -285,6 +286,37 @@ Usage:
 	}
 	_, err = fmt.Fprintf(c.stdout, "exported %s\n", outPath)
 	return err
+}
+
+// writePrivateFile writes data to path with 0600 permissions. Exports contain
+// complete episode contents and source metadata, so neither a permissive umask
+// nor a previously permissive export at the same path may leave the payload
+// readable by other local accounts. The data is written to a private temporary
+// file in the target directory and published with a rename, so a failed write
+// leaves any previous export intact.
+func writePrivateFile(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tempPath, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }
 
 func (c cli) runAdminImport(ctx context.Context, args []string) error {

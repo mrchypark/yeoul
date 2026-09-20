@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -2124,5 +2125,64 @@ func TestCLIInitForcePreservesForeignDirectory(t *testing.T) {
 		if string(got) != want {
 			t.Fatalf("expected %s to keep its bytes, got %q", path, string(got))
 		}
+	}
+}
+
+func TestCLIAdminExportUsesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "private-export.ltdb")
+	exportPath := filepath.Join(tmpDir, "private-export.json")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI(
+		"ingest", "episode",
+		"--db", dbPath,
+		"--id", "ep-private",
+		"--kind", "note",
+		"--content", "private export",
+		"--source-kind", "note",
+		"--source-external-ref", "thread-private",
+	)
+
+	assertPrivate := func(stage string) {
+		t.Helper()
+		info, err := os.Stat(exportPath)
+		if err != nil {
+			t.Fatalf("stat export after %s: %v", stage, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("expected export mode 0600 after %s, got %o", stage, got)
+		}
+	}
+
+	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
+	assertPrivate("first export")
+
+	if err := os.Chmod(exportPath, 0o644); err != nil {
+		t.Fatalf("chmod export: %v", err)
+	}
+	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
+	assertPrivate("replacement export")
+
+	data, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	if !strings.Contains(string(data), "ep-private") {
+		t.Fatalf("expected the replacement export to contain the episode, got %q", string(data))
 	}
 }
