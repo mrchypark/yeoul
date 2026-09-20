@@ -20,6 +20,31 @@ type ladybugStore struct {
 	failed    error
 }
 
+// mandatoryLegacyTables are the legacy node and relationship tables every
+// Yeoul database must have. A database missing one is not a Yeoul database, so
+// the strict migration reader refuses it instead of loading a partial snapshot.
+var mandatoryLegacyTables = map[string]bool{
+	"YeoulMeta":     true,
+	"Source":        true,
+	"Episode":       true,
+	"Entity":        true,
+	"Fact":          true,
+	"FROM_SOURCE":   true,
+	"ASSERTS":       true,
+	"SUBJECT":       true,
+	"OBJECT_ENTITY": true,
+	"SUPPORTED_BY":  true,
+	"SUPERSEDES":    true,
+}
+
+// optionalLegacyTables were added after the first schema, so an older database
+// may legitimately lack them. Absent is fine; present but malformed is not.
+var optionalLegacyTables = map[string]bool{
+	"YeoulMigration": true,
+	"EntityRevision": true,
+	"FactRevision":   true,
+}
+
 func newLadybugStore(cfg Config) (stateStore, error) {
 	if !cfg.ReadOnly && !cfg.legacyLadybugWrites {
 		return nil, errorf(ErrNotSupported, "ladybug storage driver is read-only; migrate the database to the lattice driver to write", map[string]any{
@@ -46,9 +71,14 @@ func (s *ladybugStore) Load() (*persistedState, error) {
 			return nil, err
 		}
 	}
+	if s.cfg.legacyStrictRead {
+		if err := s.verifyMandatoryTables(); err != nil {
+			return nil, err
+		}
+	}
 
 	state := emptyPersistedState()
-	state.Version = 1
+	state.Version = currentStateVersion
 	if err := s.loadMeta(&state); err != nil {
 		return nil, err
 	}
@@ -146,16 +176,193 @@ func (s *ladybugStore) ensureSchema() error {
 	return nil
 }
 
+// verifyMandatoryTables checks the catalog for every mandatory legacy table.
+// A truncated or foreign schema can be missing a table the loaders never query
+// (for example FROM_SOURCE), so the strict migration reader consults the
+// catalog instead of inferring completeness from the queries it happens to run.
+func (s *ladybugStore) verifyMandatoryTables() error {
+	result, err := s.store.Query(lstore.QueryTables())
+	if err != nil {
+		return errorf(ErrStorageFailed, "read legacy database catalog", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+		}, err)
+	}
+	defer result.Close()
+
+	present := make(map[string]bool)
+	for result.HasNext() {
+		tuple, err := result.Next()
+		if err != nil {
+			return errorf(ErrStorageFailed, "read legacy database catalog row", map[string]any{
+				"database_path": s.cfg.DatabasePath,
+			}, err)
+		}
+		values, err := tuple.GetAsSlice()
+		if err != nil {
+			return errorf(ErrStorageFailed, "decode legacy database catalog row", map[string]any{
+				"database_path": s.cfg.DatabasePath,
+			}, err)
+		}
+		if len(values) < 2 {
+			continue
+		}
+		present[asString(values[1])] = true
+	}
+
+	missing := make([]string, 0, len(mandatoryLegacyTables))
+	for table := range mandatoryLegacyTables {
+		if !present[table] {
+			missing = append(missing, table)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	return errorf(ErrStorageFailed, "legacy database is missing a mandatory table", map[string]any{
+		"database_path": s.cfg.DatabasePath,
+		"tables":        missing,
+	}, nil)
+}
+
+// legacyFields decodes the properties of one legacy node. The ordinary read
+// path keeps its historical coercions; the strict migration reader records the
+// first malformed or unexpectedly typed field instead, so corruption cannot be
+// dropped on the floor before the cutover. The first error wins and the caller
+// checks it once the whole record is decoded.
+type legacyFields struct {
+	store  *ladybugStore
+	table  string
+	record string
+	props  map[string]any
+	err    error
+}
+
+func (s *ladybugStore) legacyFields(table string, node lbug.Node) *legacyFields {
+	return &legacyFields{
+		store:  s,
+		table:  table,
+		record: asString(node.Properties["id"]),
+		props:  node.Properties,
+	}
+}
+
+func (f *legacyFields) result() error { return f.err }
+
+func (f *legacyFields) fail(err error) {
+	if f.err == nil {
+		f.err = err
+	}
+}
+
+func (f *legacyFields) string(field string) string {
+	value := f.props[field]
+	if value == nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if ok {
+		return text
+	}
+	if f.store.cfg.legacyStrictRead {
+		f.fail(f.unexpectedType(field, value))
+	}
+	return fmt.Sprint(value)
+}
+
+func (f *legacyFields) metadata(field string) map[string]any {
+	decoded, err := decodeJSONMapStrict(f.string(field))
+	if err != nil && f.store.cfg.legacyStrictRead {
+		f.fail(f.malformed(field, err))
+	}
+	return decoded
+}
+
+func (f *legacyFields) stringSlice(field string) []string {
+	decoded, err := decodeJSONStringSliceStrict(f.string(field))
+	if err != nil && f.store.cfg.legacyStrictRead {
+		f.fail(f.malformed(field, err))
+	}
+	return decoded
+}
+
+func (f *legacyFields) float(field string) float64 {
+	switch value := f.props[field].(type) {
+	case nil:
+		return 0
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case int:
+		return float64(value)
+	default:
+		if f.store.cfg.legacyStrictRead {
+			f.fail(f.unexpectedType(field, value))
+		}
+		return 0
+	}
+}
+
+func (f *legacyFields) timestamp(field string) time.Time {
+	value := f.props[field]
+	switch typed := value.(type) {
+	case nil:
+		return time.Time{}
+	case time.Time:
+		return typed.UTC()
+	case string:
+		parsed, err := time.Parse(time.RFC3339Nano, typed)
+		if err != nil {
+			if f.store.cfg.legacyStrictRead {
+				f.fail(f.malformed(field, err))
+			}
+			return time.Time{}
+		}
+		return parsed.UTC()
+	default:
+		if f.store.cfg.legacyStrictRead {
+			f.fail(f.unexpectedType(field, value))
+		}
+		return time.Time{}
+	}
+}
+
+func (f *legacyFields) unexpectedType(field string, value any) error {
+	return errorf(ErrStorageFailed, "legacy record has an unexpectedly typed field", map[string]any{
+		"database_path": f.store.cfg.DatabasePath,
+		"table":         f.table,
+		"record_id":     f.record,
+		"field":         field,
+		"value_type":    fmt.Sprintf("%T", value),
+	}, nil)
+}
+
+func (f *legacyFields) malformed(field string, cause error) error {
+	return errorf(ErrStorageFailed, "legacy record has a malformed field", map[string]any{
+		"database_path": f.store.cfg.DatabasePath,
+		"table":         f.table,
+		"record_id":     f.record,
+		"field":         field,
+	}, cause)
+}
+
 func (s *ladybugStore) loadSources(state *persistedState) error {
 	return s.loadNodes("Source", func(node lbug.Node) error {
+		fields := s.legacyFields("Source", node)
 		source := Source{
-			ID:          asString(node.Properties["id"]),
-			SpaceID:     asString(node.Properties["space_id"]),
-			Kind:        asString(node.Properties["kind"]),
-			URI:         asString(node.Properties["uri"]),
-			ExternalRef: asString(node.Properties["external_ref"]),
-			Metadata:    decodeJSONMap(asString(node.Properties["metadata_json"])),
-			CreatedAt:   asTime(node.Properties["created_at"]),
+			ID:          fields.string("id"),
+			SpaceID:     fields.string("space_id"),
+			Kind:        fields.string("kind"),
+			URI:         fields.string("uri"),
+			ExternalRef: fields.string("external_ref"),
+			Metadata:    fields.metadata("metadata_json"),
+			CreatedAt:   fields.timestamp("created_at"),
+		}
+		if err := fields.result(); err != nil {
+			return err
 		}
 		state.Sources[source.ID] = source
 		return nil
@@ -163,26 +370,74 @@ func (s *ladybugStore) loadSources(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadMeta(state *persistedState) error {
-	return s.loadRows(lstore.QueryMetaSequence(), func(values []any) error {
-		if len(values) > 0 {
-			state.Sequence = asUint64(values[0])
+	// The legacy writer only creates the singleton meta row once it has to
+	// generate an id, so a database whose records all carry explicit ids has no
+	// row at all. An absent row is therefore legal and means sequence 0; a
+	// present row must still decode strictly.
+	return s.loadRows("YeoulMeta", lstore.QueryMetaSequence(), func(values []any) error {
+		if err := s.checkMetaRow(values); err != nil {
+			return err
 		}
+		state.Sequence = asUint64(values[0])
 		return nil
 	})
 }
 
+// checkMetaRow validates the singleton meta row in strict mode. The meta row
+// carries live state (the id sequence), so a missing column or a sequence that
+// is not a non-negative integer must fail the migration instead of being
+// coerced to zero.
+func (s *ladybugStore) checkMetaRow(values []any) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	if len(values) == 0 {
+		return errorf(ErrStorageFailed, "legacy meta row is missing its sequence column", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+			"table":         "YeoulMeta",
+		}, nil)
+	}
+	switch value := values[0].(type) {
+	case int64:
+		if value < 0 {
+			return s.malformedMetaSequence(value)
+		}
+	case int:
+		if value < 0 {
+			return s.malformedMetaSequence(value)
+		}
+	case uint64:
+	default:
+		return s.malformedMetaSequence(values[0])
+	}
+	return nil
+}
+
+func (s *ladybugStore) malformedMetaSequence(value any) error {
+	return errorf(ErrStorageFailed, "legacy meta row has a malformed sequence value", map[string]any{
+		"database_path": s.cfg.DatabasePath,
+		"table":         "YeoulMeta",
+		"field":         "sequence",
+		"value_type":    fmt.Sprintf("%T", value),
+	}, nil)
+}
+
 func (s *ladybugStore) loadEpisodes(state *persistedState) error {
 	return s.loadNodes("Episode", func(node lbug.Node) error {
+		fields := s.legacyFields("Episode", node)
 		episode := Episode{
-			ID:         asString(node.Properties["id"]),
-			SpaceID:    asString(node.Properties["space_id"]),
-			Kind:       asString(node.Properties["kind"]),
-			Content:    asString(node.Properties["content"]),
-			SourceID:   asString(node.Properties["source_id"]),
-			GroupID:    asString(node.Properties["group_id"]),
-			ObservedAt: asTime(node.Properties["observed_at"]),
-			IngestedAt: asTime(node.Properties["ingested_at"]),
-			Metadata:   decodeJSONMap(asString(node.Properties["metadata_json"])),
+			ID:         fields.string("id"),
+			SpaceID:    fields.string("space_id"),
+			Kind:       fields.string("kind"),
+			Content:    fields.string("content"),
+			SourceID:   fields.string("source_id"),
+			GroupID:    fields.string("group_id"),
+			ObservedAt: fields.timestamp("observed_at"),
+			IngestedAt: fields.timestamp("ingested_at"),
+			Metadata:   fields.metadata("metadata_json"),
+		}
+		if err := fields.result(); err != nil {
+			return err
 		}
 		state.Episodes[episode.ID] = episode
 		return nil
@@ -191,16 +446,20 @@ func (s *ladybugStore) loadEpisodes(state *persistedState) error {
 
 func (s *ladybugStore) loadEntities(state *persistedState) error {
 	return s.loadNodes("Entity", func(node lbug.Node) error {
+		fields := s.legacyFields("Entity", node)
 		entity := Entity{
-			ID:            asString(node.Properties["id"]),
-			SpaceID:       asString(node.Properties["space_id"]),
-			Namespace:     asString(node.Properties["namespace"]),
-			Type:          asString(node.Properties["type"]),
-			CanonicalName: asString(node.Properties["canonical_name"]),
-			Aliases:       decodeJSONStringSlice(asString(node.Properties["aliases_json"])),
-			Metadata:      decodeJSONMap(asString(node.Properties["metadata_json"])),
-			CreatedAt:     asTime(node.Properties["created_at"]),
-			UpdatedAt:     asTime(node.Properties["updated_at"]),
+			ID:            fields.string("id"),
+			SpaceID:       fields.string("space_id"),
+			Namespace:     fields.string("namespace"),
+			Type:          fields.string("type"),
+			CanonicalName: fields.string("canonical_name"),
+			Aliases:       fields.stringSlice("aliases_json"),
+			Metadata:      fields.metadata("metadata_json"),
+			CreatedAt:     fields.timestamp("created_at"),
+			UpdatedAt:     fields.timestamp("updated_at"),
+		}
+		if err := fields.result(); err != nil {
+			return err
 		}
 		state.Entities[entity.ID] = entity
 		return nil
@@ -209,21 +468,25 @@ func (s *ladybugStore) loadEntities(state *persistedState) error {
 
 func (s *ladybugStore) loadFacts(state *persistedState) error {
 	return s.loadNodes("Fact", func(node lbug.Node) error {
+		fields := s.legacyFields("Fact", node)
 		fact := Fact{
-			ID:               asString(node.Properties["id"]),
-			SpaceID:          asString(node.Properties["space_id"]),
-			Predicate:        asString(node.Properties["predicate"]),
-			ValueText:        asString(node.Properties["value_text"]),
-			Confidence:       asFloat64(node.Properties["confidence"]),
-			Status:           asString(node.Properties["status"]),
-			ValidFrom:        asTime(node.Properties["valid_from"]),
-			ValidTo:          asTime(node.Properties["valid_to"]),
-			ObservedAt:       asTime(node.Properties["observed_at"]),
-			CreatedAt:        asTime(node.Properties["created_at"]),
-			UpdatedAt:        asTime(node.Properties["updated_at"]),
-			RetractedAt:      asTime(node.Properties["retracted_at"]),
-			RetractionReason: asString(node.Properties["retraction_reason"]),
-			Metadata:         decodeJSONMap(asString(node.Properties["metadata_json"])),
+			ID:               fields.string("id"),
+			SpaceID:          fields.string("space_id"),
+			Predicate:        fields.string("predicate"),
+			ValueText:        fields.string("value_text"),
+			Confidence:       fields.float("confidence"),
+			Status:           fields.string("status"),
+			ValidFrom:        fields.timestamp("valid_from"),
+			ValidTo:          fields.timestamp("valid_to"),
+			ObservedAt:       fields.timestamp("observed_at"),
+			CreatedAt:        fields.timestamp("created_at"),
+			UpdatedAt:        fields.timestamp("updated_at"),
+			RetractedAt:      fields.timestamp("retracted_at"),
+			RetractionReason: fields.string("retraction_reason"),
+			Metadata:         fields.metadata("metadata_json"),
+		}
+		if err := fields.result(); err != nil {
+			return err
 		}
 		state.Facts[fact.ID] = fact
 		return nil
@@ -232,27 +495,31 @@ func (s *ladybugStore) loadFacts(state *persistedState) error {
 
 func (s *ladybugStore) loadFactRevisions(state *persistedState) error {
 	return s.loadNodes("FactRevision", func(node lbug.Node) error {
+		fields := s.legacyFields("FactRevision", node)
 		revision := FactRevision{
-			ID:                   asString(node.Properties["id"]),
-			FactID:               asString(node.Properties["fact_id"]),
-			SpaceID:              asString(node.Properties["space_id"]),
-			RevisionKind:         asString(node.Properties["revision_kind"]),
-			TxTime:               asTime(node.Properties["tx_time"]),
-			Predicate:            asString(node.Properties["predicate"]),
-			SubjectID:            asString(node.Properties["subject_id"]),
-			ObjectID:             asString(node.Properties["object_id"]),
-			ValueText:            asString(node.Properties["value_text"]),
-			Confidence:           asFloat64(node.Properties["confidence"]),
-			Status:               asString(node.Properties["status"]),
-			ValidFrom:            asTime(node.Properties["valid_from"]),
-			ValidTo:              asTime(node.Properties["valid_to"]),
-			ObservedAt:           asTime(node.Properties["observed_at"]),
-			CreatedAt:            asTime(node.Properties["created_at"]),
-			UpdatedAt:            asTime(node.Properties["updated_at"]),
-			RetractedAt:          asTime(node.Properties["retracted_at"]),
-			RetractionReason:     asString(node.Properties["retraction_reason"]),
-			SupportingEpisodeIDs: decodeJSONStringSlice(asString(node.Properties["supporting_episode_ids_json"])),
-			Metadata:             decodeJSONMap(asString(node.Properties["metadata_json"])),
+			ID:                   fields.string("id"),
+			FactID:               fields.string("fact_id"),
+			SpaceID:              fields.string("space_id"),
+			RevisionKind:         fields.string("revision_kind"),
+			TxTime:               fields.timestamp("tx_time"),
+			Predicate:            fields.string("predicate"),
+			SubjectID:            fields.string("subject_id"),
+			ObjectID:             fields.string("object_id"),
+			ValueText:            fields.string("value_text"),
+			Confidence:           fields.float("confidence"),
+			Status:               fields.string("status"),
+			ValidFrom:            fields.timestamp("valid_from"),
+			ValidTo:              fields.timestamp("valid_to"),
+			ObservedAt:           fields.timestamp("observed_at"),
+			CreatedAt:            fields.timestamp("created_at"),
+			UpdatedAt:            fields.timestamp("updated_at"),
+			RetractedAt:          fields.timestamp("retracted_at"),
+			RetractionReason:     fields.string("retraction_reason"),
+			SupportingEpisodeIDs: fields.stringSlice("supporting_episode_ids_json"),
+			Metadata:             fields.metadata("metadata_json"),
+		}
+		if err := fields.result(); err != nil {
+			return err
 		}
 		state.FactRevisions[revision.ID] = revision
 		return nil
@@ -261,19 +528,23 @@ func (s *ladybugStore) loadFactRevisions(state *persistedState) error {
 
 func (s *ladybugStore) loadEntityRevisions(state *persistedState) error {
 	return s.loadNodes("EntityRevision", func(node lbug.Node) error {
+		fields := s.legacyFields("EntityRevision", node)
 		revision := EntityRevision{
-			ID:            asString(node.Properties["id"]),
-			EntityID:      asString(node.Properties["entity_id"]),
-			SpaceID:       asString(node.Properties["space_id"]),
-			RevisionKind:  asString(node.Properties["revision_kind"]),
-			TxTime:        asTime(node.Properties["tx_time"]),
-			Namespace:     asString(node.Properties["namespace"]),
-			Type:          asString(node.Properties["type"]),
-			CanonicalName: asString(node.Properties["canonical_name"]),
-			Aliases:       decodeJSONStringSlice(asString(node.Properties["aliases_json"])),
-			Metadata:      decodeJSONMap(asString(node.Properties["metadata_json"])),
-			CreatedAt:     asTime(node.Properties["created_at"]),
-			UpdatedAt:     asTime(node.Properties["updated_at"]),
+			ID:            fields.string("id"),
+			EntityID:      fields.string("entity_id"),
+			SpaceID:       fields.string("space_id"),
+			RevisionKind:  fields.string("revision_kind"),
+			TxTime:        fields.timestamp("tx_time"),
+			Namespace:     fields.string("namespace"),
+			Type:          fields.string("type"),
+			CanonicalName: fields.string("canonical_name"),
+			Aliases:       fields.stringSlice("aliases_json"),
+			Metadata:      fields.metadata("metadata_json"),
+			CreatedAt:     fields.timestamp("created_at"),
+			UpdatedAt:     fields.timestamp("updated_at"),
+		}
+		if err := fields.result(); err != nil {
+			return err
 		}
 		state.EntityRevisions[revision.ID] = revision
 		return nil
@@ -282,10 +553,14 @@ func (s *ladybugStore) loadEntityRevisions(state *persistedState) error {
 
 func (s *ladybugStore) loadMigrationWatermarks(state *persistedState) error {
 	return s.loadNodes("YeoulMigration", func(node lbug.Node) error {
+		fields := s.legacyFields("YeoulMigration", node)
 		watermark := MigrationWatermark{
-			ID:        asString(node.Properties["id"]),
-			AppliedAt: asTime(node.Properties["applied_at"]),
-			Metadata:  decodeJSONMap(asString(node.Properties["metadata_json"])),
+			ID:        fields.string("id"),
+			AppliedAt: fields.timestamp("applied_at"),
+			Metadata:  fields.metadata("metadata_json"),
+		}
+		if err := fields.result(); err != nil {
+			return err
 		}
 		state.MigrationWatermarks[watermark.ID] = watermark
 		return nil
@@ -293,8 +568,17 @@ func (s *ladybugStore) loadMigrationWatermarks(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadSubjectEdges(state *persistedState) error {
-	return s.loadRows(lstore.QuerySubjectEdges(), func(values []any) error {
+	return s.loadRows("SUBJECT", lstore.QuerySubjectEdges(), func(values []any) error {
+		if err := s.checkEdgeRow("SUBJECT", values, 2, 2); err != nil {
+			return err
+		}
 		factID, entityID := asString(values[0]), asString(values[1])
+		if err := s.checkFactEdgeReference("SUBJECT", factID, "Fact", state.Facts); err != nil {
+			return err
+		}
+		if err := s.checkEntityEdgeReference("SUBJECT", entityID, state.Entities); err != nil {
+			return err
+		}
 		fact := state.Facts[factID]
 		fact.SubjectID = entityID
 		state.Facts[factID] = fact
@@ -303,8 +587,17 @@ func (s *ladybugStore) loadSubjectEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadObjectEdges(state *persistedState) error {
-	return s.loadRows(lstore.QueryObjectEdges(), func(values []any) error {
+	return s.loadRows("OBJECT_ENTITY", lstore.QueryObjectEdges(), func(values []any) error {
+		if err := s.checkEdgeRow("OBJECT_ENTITY", values, 2, 2); err != nil {
+			return err
+		}
 		factID, entityID := asString(values[0]), asString(values[1])
+		if err := s.checkFactEdgeReference("OBJECT_ENTITY", factID, "Fact", state.Facts); err != nil {
+			return err
+		}
+		if err := s.checkEntityEdgeReference("OBJECT_ENTITY", entityID, state.Entities); err != nil {
+			return err
+		}
 		fact := state.Facts[factID]
 		fact.ObjectID = entityID
 		state.Facts[factID] = fact
@@ -313,8 +606,17 @@ func (s *ladybugStore) loadObjectEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadSupportedByEdges(state *persistedState) error {
-	return s.loadRows(lstore.QuerySupportedByEdges(), func(values []any) error {
+	return s.loadRows("SUPPORTED_BY", lstore.QuerySupportedByEdges(), func(values []any) error {
+		if err := s.checkEdgeRow("SUPPORTED_BY", values, 2, 2); err != nil {
+			return err
+		}
 		factID, episodeID := asString(values[0]), asString(values[1])
+		if err := s.checkFactEdgeReference("SUPPORTED_BY", factID, "Fact", state.Facts); err != nil {
+			return err
+		}
+		if _, ok := state.Episodes[episodeID]; !ok && s.cfg.legacyStrictRead {
+			return s.danglingReference("SUPPORTED_BY", "Episode", episodeID)
+		}
 		fact := state.Facts[factID]
 		if !slices.Contains(fact.SupportingEpisodeIDs, episodeID) {
 			fact.SupportingEpisodeIDs = append(fact.SupportingEpisodeIDs, episodeID)
@@ -325,8 +627,20 @@ func (s *ladybugStore) loadSupportedByEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
-	return s.loadRows(lstore.QuerySupersedesEdges(), func(values []any) error {
+	return s.loadRows("SUPERSEDES", lstore.QuerySupersedesEdges(), func(values []any) error {
+		if err := s.checkEdgeRow("SUPERSEDES", values, 3, 2); err != nil {
+			return err
+		}
+		if err := s.checkSupersedesReason(values); err != nil {
+			return err
+		}
 		newID, oldID, reason := asString(values[0]), asString(values[1]), asString(values[2])
+		if err := s.checkFactEdgeReference("SUPERSEDES", newID, "Fact", state.Facts); err != nil {
+			return err
+		}
+		if err := s.checkFactEdgeReference("SUPERSEDES", oldID, "Fact", state.Facts); err != nil {
+			return err
+		}
 		oldFact := state.Facts[oldID]
 		oldFact.Metadata = mergeAnyMap(oldFact.Metadata, map[string]any{
 			"superseded_by":    newID,
@@ -346,23 +660,45 @@ func (s *ladybugStore) loadSupersedesEdges(state *persistedState) error {
 }
 
 func (s *ladybugStore) loadNodes(label string, apply func(node lbug.Node) error) error {
-	return s.loadRows(lstore.QueryNodes(label), func(values []any) error {
+	return s.loadRows(label, lstore.QueryNodes(label), func(values []any) error {
 		if len(values) == 0 {
+			if s.cfg.legacyStrictRead {
+				return errorf(ErrStorageFailed, "read legacy node row without a value column", map[string]any{
+					"database_path": s.cfg.DatabasePath,
+					"table":         label,
+				}, nil)
+			}
 			return nil
 		}
 		node, ok := values[0].(lbug.Node)
 		if !ok {
+			if s.cfg.legacyStrictRead {
+				return errorf(ErrStorageFailed, "read legacy node row with an unexpected value type", map[string]any{
+					"database_path": s.cfg.DatabasePath,
+					"table":         label,
+					"value_type":    fmt.Sprintf("%T", values[0]),
+				}, nil)
+			}
 			return nil
 		}
 		return apply(node)
 	})
 }
 
-func (s *ladybugStore) loadRows(query string, apply func(values []any) error) error {
+// loadRows runs one legacy read query. In strict mode a missing mandatory table
+// is a hard failure, while the optional tables added after the first schema may
+// still be absent. The lenient read path keeps its previous behavior.
+func (s *ladybugStore) loadRows(table, query string, apply func(values []any) error) error {
 	result, err := s.store.Query(query)
 	if err != nil {
 		if s.cfg.ReadOnly && lstore.IsMissingTableError(err) {
-			return nil
+			if !s.cfg.legacyStrictRead || optionalLegacyTables[table] {
+				return nil
+			}
+			return errorf(ErrStorageFailed, "legacy database is missing a mandatory table", map[string]any{
+				"database_path": s.cfg.DatabasePath,
+				"table":         table,
+			}, err)
 		}
 		return errorf(ErrStorageFailed, "query ladybug graph state", map[string]any{
 			"database_path": s.cfg.DatabasePath,
@@ -391,6 +727,84 @@ func (s *ladybugStore) loadRows(query string, apply func(values []any) error) er
 		}
 	}
 	return nil
+}
+
+// checkSupersedesReason validates the trailing reason column of a SUPERSEDES
+// row. The column is nullable, so a string or SQL NULL is legal and every
+// other representation must fail instead of being stringified into a value
+// that differs from what the source database stored.
+func (s *ladybugStore) checkSupersedesReason(values []any) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	if _, ok := values[2].(string); !ok && values[2] != nil {
+		return errorf(ErrStorageFailed, "legacy relationship row has an unexpectedly typed reason", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+			"table":         "SUPERSEDES",
+			"column":        "reason",
+			"value_type":    fmt.Sprintf("%T", values[2]),
+		}, nil)
+	}
+	return nil
+}
+
+// checkEdgeRow rejects a relationship row whose projected columns are missing
+// or whose id columns are not strings. A row that does not carry the ids its
+// query projects cannot be resolved to records, so the strict reader refuses it
+// instead of writing an edge onto the empty id. Columns past idColumns are
+// validated by the caller when they carry meaning.
+func (s *ladybugStore) checkEdgeRow(table string, values []any, total, idColumns int) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	if len(values) < total {
+		return errorf(ErrStorageFailed, "legacy relationship row is missing projected columns", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+			"table":         table,
+			"columns":       len(values),
+			"expected":      total,
+		}, nil)
+	}
+	for index := 0; index < idColumns; index++ {
+		if _, ok := values[index].(string); !ok {
+			return errorf(ErrStorageFailed, "legacy relationship row has an unexpectedly typed column", map[string]any{
+				"database_path": s.cfg.DatabasePath,
+				"table":         table,
+				"column":        index,
+				"value_type":    fmt.Sprintf("%T", values[index]),
+			}, nil)
+		}
+	}
+	return nil
+}
+
+func (s *ladybugStore) checkFactEdgeReference(table, factID, label string, facts map[string]Fact) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	if _, ok := facts[factID]; ok {
+		return nil
+	}
+	return s.danglingReference(table, label, factID)
+}
+
+func (s *ladybugStore) checkEntityEdgeReference(table, entityID string, entities map[string]Entity) error {
+	if !s.cfg.legacyStrictRead {
+		return nil
+	}
+	if _, ok := entities[entityID]; ok {
+		return nil
+	}
+	return s.danglingReference(table, "Entity", entityID)
+}
+
+func (s *ladybugStore) danglingReference(table, label, id string) error {
+	return errorf(ErrStorageFailed, "legacy relationship references a missing record", map[string]any{
+		"database_path":  s.cfg.DatabasePath,
+		"table":          table,
+		"missing_label":  label,
+		"missing_record": id,
+	}, nil)
 }
 
 // execStatements runs legacy write statements one by one so a later failure is
@@ -890,26 +1304,37 @@ func factRelationshipsChanged(oldFact, newFact Fact) bool {
 	return oldSupersededBy != newSupersededBy || oldReason != newReason
 }
 
-func decodeJSONMap(raw string) map[string]any {
-	if strings.TrimSpace(raw) == "" || raw == "null" {
-		return nil
+// decodeJSONMapStrict decodes a persisted JSON object and reports corruption
+// instead of returning nil, so the migration reader can tell an absent value
+// from a malformed one. The lenient read path keeps the historical behavior by
+// ignoring the error and using the nil result.
+func decodeJSONMapStrict(raw string) (map[string]any, error) {
+	if isAbsentJSON(raw) {
+		return nil, nil
 	}
 	var out map[string]any
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil
+		return nil, err
 	}
-	return out
+	return out, nil
 }
 
-func decodeJSONStringSlice(raw string) []string {
-	if strings.TrimSpace(raw) == "" || raw == "null" {
-		return nil
+// decodeJSONStringSliceStrict decodes a persisted JSON string array: a
+// non-empty value that does not decode is corruption.
+func decodeJSONStringSliceStrict(raw string) ([]string, error) {
+	if isAbsentJSON(raw) {
+		return nil, nil
 	}
 	var out []string
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil
+		return nil, err
 	}
-	return out
+	return out, nil
+}
+
+func isAbsentJSON(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return trimmed == "" || trimmed == "null"
 }
 
 func asString(value any) string {
@@ -920,23 +1345,6 @@ func asString(value any) string {
 		return v
 	default:
 		return fmt.Sprint(v)
-	}
-}
-
-func asFloat64(value any) float64 {
-	switch v := value.(type) {
-	case nil:
-		return 0
-	case float64:
-		return v
-	case float32:
-		return float64(v)
-	case int64:
-		return float64(v)
-	case int:
-		return float64(v)
-	default:
-		return 0
 	}
 }
 
@@ -963,23 +1371,6 @@ func asUint64(value any) uint64 {
 		return uint64(v)
 	default:
 		return 0
-	}
-}
-
-func asTime(value any) time.Time {
-	switch v := value.(type) {
-	case nil:
-		return time.Time{}
-	case time.Time:
-		return v.UTC()
-	case string:
-		parsed, err := time.Parse(time.RFC3339Nano, v)
-		if err != nil {
-			return time.Time{}
-		}
-		return parsed.UTC()
-	default:
-		return time.Time{}
 	}
 }
 

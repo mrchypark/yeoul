@@ -781,7 +781,7 @@ func (e *engine) applyState(state persistedState) {
 
 func (e *engine) snapshotLocked() persistedState {
 	return clonePersistedState(persistedState{
-		Version:             1,
+		Version:             currentStateVersion,
 		Sequence:            e.sequence,
 		Sources:             e.sources,
 		Episodes:            e.episodes,

@@ -27,11 +27,66 @@ var errDatabaseOwnershipBusy = errors.New("database ownership is held by another
 // lock that later opens must reclaim, and no caller ever removes the lock file
 // on behalf of another owner.
 type databaseOwnershipLock struct {
-	file *os.File
+	file      *os.File
+	exclusive bool
 }
 
 func databaseOwnershipPath(databasePath string) string {
 	return databasePath + databaseOwnershipSuffix
+}
+
+// resolveDatabasePathAliases resolves the directory symlinks in a database
+// path, so two spellings of one database locate the same ownership file.
+//
+// The native engine resolves symlinks before it locks a database, so a path
+// reached through a symlinked directory and the same database reached directly
+// are one database to the engine but two ownership namespaces to Yeoul. Two
+// namespaces would let a second opener enter the critical section that an
+// exclusive owner believes it holds, so the path is resolved before any
+// ownership or migration marker lookup.
+//
+// Only symlinks are resolved; the path is not otherwise cleaned or rewritten.
+// The walk follows the native engine's own resolution: the longest existing
+// prefix is resolved and the missing components are appended to it, so a
+// database that does not exist yet under a symlinked directory gets the same
+// name as the database that a writable open creates there.
+func resolveDatabasePathAliases(databasePath string) (string, error) {
+	current := databasePath
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+// sameDatabasePath reports whether two spellings name one database. A marker or
+// a helper result written before the aliases were resolved carries the spelling
+// of its time, so an exact comparison would refuse to recognize the database it
+// describes and strand the recovery state that belongs to it.
+func sameDatabasePath(left, right string) bool {
+	if left == right {
+		return true
+	}
+	resolvedLeft, leftErr := resolveDatabasePathAliases(left)
+	resolvedRight, rightErr := resolveDatabasePathAliases(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return resolvedLeft == resolvedRight
 }
 
 // acquireDatabaseOwnership takes the advisory lock that guards one database
@@ -51,7 +106,7 @@ func acquireDatabaseOwnership(databasePath string, exclusive bool) (*databaseOwn
 		_ = file.Close()
 		return nil, err
 	}
-	return &databaseOwnershipLock{file: file}, nil
+	return &databaseOwnershipLock{file: file, exclusive: exclusive}, nil
 }
 
 // ensureDatabaseOwnershipDirectory creates the directory that will hold a new

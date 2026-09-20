@@ -69,6 +69,15 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 	if err != nil {
 		return nil, fmt.Errorf("resolve migration database path: %w", err)
 	}
+	// The ownership lock, the migration marker, and the native engine's own
+	// lock all have to name the same database. A path reached through a
+	// symlinked directory is one database to the engine but a second ownership
+	// namespace to Yeoul, so the aliases are resolved before any of them is
+	// used.
+	databasePath, err = resolveDatabasePathAliases(databasePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve migration database path: %w", err)
+	}
 	// Ownership spans loading the source, building and verifying the staging
 	// database, the marker phases, and the cutover, so no writer can commit
 	// records the snapshot misses and no competing migrator can move the file
@@ -85,9 +94,16 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 		return nil, err
 	}
 
-	if store, err := newLatticeStore(Config{DatabasePath: databasePath, ReadOnly: true}); err == nil {
-		_, loadErr := store.Load()
-		closeErr := store.Close()
+	lattice, latticeErr := newLatticeStore(Config{DatabasePath: databasePath, ReadOnly: true})
+	if latticeErr != nil && errors.Is(latticeErr, errUnsupportedStateVersion) {
+		// The path holds a LatticeDB state written under an application-state
+		// version this build cannot read. The legacy conversion below would replace
+		// the database, so the version rejection is reported as it stands.
+		return nil, latticeErr
+	}
+	if latticeErr == nil {
+		_, loadErr := lattice.Load()
+		closeErr := lattice.Close()
 		if loadErr == nil {
 			if closeErr != nil {
 				return nil, closeErr
@@ -225,9 +241,17 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 	// The caller already holds the exclusive ownership lock for the whole
 	// migration, so a concurrent writer or migrator cannot change the source
 	// after this snapshot or replace the shared marker.
+	//
+	// The reader is strict: malformed or missing mandatory source data has to
+	// fail here, before the staging database, marker, or backup exist, because
+	// the verification below can only compare the state this reader produced.
+	legacy, err := newLadybugStore(Config{
+		Driver:           StorageDriverLadybug,
+		DatabasePath:     databasePath,
+		ReadOnly:         true,
+		legacyStrictRead: true,
+	})
 	markerPath := databaseMigrationMarkerPath(databasePath)
-
-	legacy, err := newLadybugStore(Config{Driver: StorageDriverLadybug, DatabasePath: databasePath, ReadOnly: true})
 	if err != nil {
 		return nil, errorf(ErrStorageFailed, "open legacy ladybug database for migration", map[string]any{
 			"database_path": databasePath,
@@ -426,9 +450,10 @@ func discardUnpublishedMigrationStaging(markerPath, stagingPath string) {
 
 // cleanupAbandonedMigrationStaging removes the staging database only when the
 // protocol has no further use for it: the on-disk marker must still record the
-// prepared phase (so no installation was published) and the legacy set must be
-// back in place. The marker is removed before the staging cleanup, so a crash
-// never leaves a marker that points at deleted staging data.
+// prepared phase (so no installation was published), the legacy set must be
+// back in place, and the restored database must be readable. The marker is
+// removed before the staging cleanup, so a crash never leaves a marker that
+// points at deleted staging data.
 func cleanupAbandonedMigrationStaging(marker databaseMigrationMarker, markerPath string) {
 	if marker.StagingPath == "" || marker.Phase != migrationPhasePrepared {
 		return
@@ -437,9 +462,10 @@ func cleanupAbandonedMigrationStaging(marker databaseMigrationMarker, markerPath
 		return
 	}
 	// The staging copy and the marker are recovery inputs whenever any member
-	// of the legacy set is still stranded in the backup namespace, so cleanup
-	// only runs once the complete set is verifiably back at the live path.
-	restored, err := legacyDatabaseSetFullyRestored(marker)
+	// of the legacy set is still stranded in the backup namespace, or the live
+	// path does not hold a database that can be read back, so cleanup only runs
+	// once the complete set is verifiably restored.
+	restored, err := legacyDatabaseSetVerifiablyRestored(marker)
 	if err != nil || !restored {
 		return
 	}
@@ -486,6 +512,53 @@ func legacyDatabaseSetFullyRestored(marker databaseMigrationMarker) (bool, error
 		}
 	}
 	return true, nil
+}
+
+// legacyDatabaseSetVerifiablyRestored reports whether the legacy set is fully
+// back at its original paths and the restored main database can be read back.
+// Every member being visible is not evidence that the rollback restored a
+// database: a failed or partial restoration can leave a file at the live path
+// that no reader can open, and discarding the verified staging copy on that
+// evidence would destroy the only readable copy of the converted data.
+func legacyDatabaseSetVerifiablyRestored(marker databaseMigrationMarker) (bool, error) {
+	restored, err := legacyDatabaseSetFullyRestored(marker)
+	if err != nil || !restored {
+		return false, err
+	}
+	return legacyDatabaseReadable(marker.DatabasePath), nil
+}
+
+// legacyDatabaseReadable reports whether the path holds a legacy database that
+// the migration reader can open and load. A present file cannot be told apart
+// from the leftover of an interrupted write by its name alone, so the protocol
+// treats a successful read as the evidence that a restoration completed.
+func legacyDatabaseReadable(databasePath string) bool {
+	store, err := newLadybugStore(Config{Driver: StorageDriverLadybug, DatabasePath: databasePath, ReadOnly: true})
+	if err != nil {
+		return false
+	}
+	_, loadErr := store.Load()
+	closeErr := store.Close()
+	return loadErr == nil && closeErr == nil
+}
+
+// migrationLiveDatabaseReadable reports whether the live path holds a database
+// that can be read back: either the restored legacy database or the converted
+// database an installation already published. Recovery only clears the
+// migration state once one of them is readable, so a live path that an
+// interrupted rollback left unreadable keeps the marker and the verified
+// staging copy instead of discarding the remaining recovery input.
+func migrationLiveDatabaseReadable(databasePath string) bool {
+	if legacyDatabaseReadable(databasePath) {
+		return true
+	}
+	store, err := newLatticeStore(Config{Driver: StorageDriverLattice, DatabasePath: databasePath, ReadOnly: true})
+	if err != nil {
+		return false
+	}
+	_, loadErr := store.Load()
+	closeErr := store.Close()
+	return loadErr == nil && closeErr == nil
 }
 
 // migrationMarkerRecordsPhase reports whether the on-disk marker records the
@@ -695,7 +768,7 @@ func recoverDatabaseMigration(databasePath string) error {
 	if err := json.Unmarshal(data, &marker); err != nil {
 		return fmt.Errorf("decode migration marker: %w", err)
 	}
-	if marker.DatabasePath != databasePath || marker.BackupPath == "" || marker.StagingPath == "" {
+	if !sameDatabasePath(marker.DatabasePath, databasePath) || marker.BackupPath == "" || marker.StagingPath == "" {
 		return fmt.Errorf("migration marker does not match database path %q", databasePath)
 	}
 	if err := validateDatabaseMigrationPaths(marker); err != nil {
@@ -716,12 +789,25 @@ func recoverDatabaseMigration(databasePath string) error {
 			if partial {
 				return restoreLegacyDatabaseSet(marker, markerPath)
 			}
-			// Nothing is left in the backup namespace, so the live database is
-			// the original legacy database and the abandoned staging copy can be
-			// discarded. The visible set may still be the product of an
-			// unsynced rollback from the previous process, so flush it before
-			// unlinking the marker: otherwise a power loss could preserve the
-			// marker removal while reverting the restoration it depends on.
+			// Nothing is left in the backup namespace, so the live path holds
+			// either the original legacy database or the converted database an
+			// installation already published, and the abandoned staging copy can
+			// be discarded. A name that survived the previous process is not
+			// proof that the rollback restored a database: when the live path
+			// cannot be read back, the verified staging copy is the only
+			// remaining readable artifact, so keep the marker and the staging
+			// copy instead of discarding them on the strength of a file that
+			// only exists.
+			if !migrationLiveDatabaseReadable(marker.DatabasePath) {
+				return errorf(ErrStorageFailed, "migration is prepared but the live database is not readable", map[string]any{
+					"database_path": marker.DatabasePath,
+					"staging_path":  marker.StagingPath,
+				}, nil)
+			}
+			// The visible set may still be the product of an unsynced rollback
+			// from the previous process, so flush it before unlinking the
+			// marker: otherwise a power loss could preserve the marker removal
+			// while reverting the restoration it depends on.
 			if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
 				return fmt.Errorf("sync recovered migration namespace: %w", err)
 			}
@@ -736,6 +822,13 @@ func recoverDatabaseMigration(databasePath string) error {
 			// marker while reverting the backup rename.
 			if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
 				return fmt.Errorf("sync recovered migration namespace: %w", err)
+			}
+			// The staged database is proved readable before the installation
+			// intent is published, because a staging copy this build cannot open
+			// would otherwise consume the backup and only be rejected after the
+			// rename.
+			if err := validateStagingDatabaseVersion(marker.StagingPath); err != nil {
+				return err
 			}
 			// installStagingDatabase records the backed-up phase before the
 			// rename, so a retry after the rename finalizes the installation
@@ -761,6 +854,9 @@ func recoverDatabaseMigration(databasePath string) error {
 			return clearDatabaseMigrationState(marker, markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {
+			if err := validateStagingDatabaseVersion(marker.StagingPath); err != nil {
+				return err
+			}
 			_, err := installStagingDatabase(marker, markerPath)
 			return err
 		}
@@ -787,6 +883,18 @@ func validateDatabaseMigrationPaths(marker databaseMigrationMarker) error {
 		return fmt.Errorf("migration staging path is outside the expected database sibling namespace")
 	}
 	return nil
+}
+
+// validateStagingDatabaseVersion proves a staged migration result is a
+// database this build can read before recovery installs it at the canonical
+// path. A staging database left behind by another build is otherwise only
+// discovered after the rename, when the legacy backup has already been consumed
+// and the rejection can no longer be undone by a retry. A staging path the
+// native engine cannot open is refused for the same reason: installing it would
+// consume the backup for a database that cannot be opened, and the rejection
+// keeps the migration state intact so a later retry can still install it.
+func validateStagingDatabaseVersion(stagingPath string) error {
+	return readStateVersionReadOnly(stagingPath)
 }
 
 // syncMigrationDirectory is the directory durability hook for the migration

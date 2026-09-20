@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	json "github.com/goccy/go-json"
@@ -256,9 +257,9 @@ func TestRecoverDatabaseMigrationResumesAfterBackupRename(t *testing.T) {
 	if err := os.Mkdir(backupPath, 0o755); err != nil {
 		t.Fatalf("create backup: %v", err)
 	}
-	if err := os.Mkdir(stagingPath, 0o755); err != nil {
-		t.Fatalf("create staging: %v", err)
-	}
+	// The staged database is a real LatticeDB database: recovery installs it
+	// only after proving that this build can read it.
+	writeLatticeStateFixture(t, stagingPath, strconv.Itoa(currentStateVersion), false, nil)
 	marker := databaseMigrationMarker{
 		Phase:        migrationPhasePrepared,
 		DatabasePath: dbPath,
@@ -310,6 +311,9 @@ func TestLatticeLoadRejectsCorruptRecordIdentity(t *testing.T) {
 				t.Fatalf("create lattice database: %v", err)
 			}
 			if err := db.Update(func(tx *latticedb.Tx) error {
+				if err := tx.PutAppMetadata([]byte(latticeMetaVersion), []byte(strconv.Itoa(currentStateVersion))); err != nil {
+					return err
+				}
 				for _, properties := range test.nodes {
 					if _, err := tx.CreateNode(latticedb.CreateNodeOptions{Labels: []string{"Episode"}, Properties: properties}); err != nil {
 						return err
