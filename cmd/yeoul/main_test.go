@@ -1952,7 +1952,7 @@ func TestCLIContext(t *testing.T) {
 	}
 }
 
-func TestCLIInitForceRejectsDatabaseInUse(t *testing.T) {
+func TestCLIInitForceRefusesExistingDatabase(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "locked.ltdb")
@@ -1971,21 +1971,21 @@ func TestCLIInitForceRejectsDatabaseInUse(t *testing.T) {
 	var resetOut strings.Builder
 	resetErr := run(ctx, []string{"init", "--db", dbPath, "--force", "--confirm"}, &resetOut, &resetOut)
 	if resetErr == nil {
-		t.Fatal("expected forced init to be rejected while the database is in use")
+		t.Fatal("expected forced init on an existing database to be refused")
 	}
-	if !strings.Contains(resetErr.Error(), "in use") {
-		t.Fatalf("expected an in-use rejection, got %v", resetErr)
+	if !strings.Contains(resetErr.Error(), "not supported") {
+		t.Fatalf("expected an explicit refusal, got %v", resetErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(dbPath, "state.json")); statErr != nil {
-		t.Fatalf("database must remain intact after the rejected reset: %v", statErr)
+		t.Fatalf("database must remain intact after the refused reset: %v", statErr)
 	}
 
 	if err := eng.Close(ctx); err != nil {
 		t.Fatalf("close engine: %v", err)
 	}
 	var retryOut strings.Builder
-	if err := run(ctx, []string{"init", "--db", dbPath, "--force", "--confirm"}, &retryOut, &retryOut); err != nil {
-		t.Fatalf("forced init after close: %v", err)
+	if err := run(ctx, []string{"init", "--db", dbPath, "--force", "--confirm"}, &retryOut, &retryOut); err == nil {
+		t.Fatal("expected forced init to keep refusing an existing database after the owner closed")
 	}
 }
 
@@ -1993,8 +1993,12 @@ func TestCLIInitForcePreservesForeignDirectory(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	keepPath := filepath.Join(dir, "keep.txt")
+	tmpPath := filepath.Join(dir, ".state-important.tmp")
 	if err := os.WriteFile(keepPath, []byte("precious"), 0o600); err != nil {
 		t.Fatalf("write keep file: %v", err)
+	}
+	if err := os.WriteFile(tmpPath, []byte("temporary-but-foreign"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
 	}
 
 	var out strings.Builder
@@ -2002,7 +2006,13 @@ func TestCLIInitForcePreservesForeignDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected forced init to refuse a directory that is not a Yeoul database")
 	}
-	if _, statErr := os.Stat(keepPath); statErr != nil {
-		t.Fatalf("foreign directory must be preserved: %v", statErr)
+	for path, want := range map[string]string{keepPath: "precious", tmpPath: "temporary-but-foreign"} {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("expected %s to survive the refusal: %v", path, readErr)
+		}
+		if string(got) != want {
+			t.Fatalf("expected %s to keep its bytes, got %q", path, string(got))
+		}
 	}
 }

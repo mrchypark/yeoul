@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -11,8 +10,6 @@ import (
 
 	json "github.com/goccy/go-json"
 	latticedb "github.com/mrchypark/latticedb-go"
-	ladybugstorage "github.com/mrchypark/yeoul/internal/storage/ladybug"
-	lstorage "github.com/mrchypark/yeoul/internal/storage/lattice"
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/retrieval"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -125,33 +122,6 @@ const (
 	observedAtBasisSystemTimeDefault = "system_time_default"
 )
 
-// ensureForceInitTarget verifies that dbPath names a recognizable Yeoul
-// database that no other process currently owns. init --force replaces the
-// database, so the ownership and shape checks must run before any recursive
-// removal.
-func ensureForceInitTarget(dbPath string) error {
-	info, err := os.Stat(dbPath)
-	if err != nil {
-		return fmt.Errorf("stat database: %w", err)
-	}
-	if info.IsDir() {
-		store, err := lstorage.Open(dbPath, false, false)
-		if err != nil {
-			if errors.Is(err, latticedb.ErrDatabaseLocked) {
-				return fmt.Errorf("refusing to replace %s: the database is in use by another process", dbPath)
-			}
-			return fmt.Errorf("refusing to remove %s: not a recognized Lattice database: %w", dbPath, err)
-		}
-		return store.Close()
-	}
-	legacy, err := ladybugstorage.Open(dbPath, true)
-	if err != nil {
-		return fmt.Errorf("refusing to remove %s: not a recognized Ladybug database: %w", dbPath, err)
-	}
-	legacy.Close()
-	return nil
-}
-
 func (c cli) runInit(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
@@ -163,7 +133,7 @@ Usage:
 	var force bool
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
-	fs.BoolVar(&force, "force", false, "replace an existing database file")
+	fs.BoolVar(&force, "force", false, "accepted for compatibility; in-place replacement of an existing database is refused")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -185,13 +155,7 @@ Usage:
 			if !c.confirm {
 				return &usageError{message: usage + "\n\nThis operation is destructive. Re-run with --confirm."}
 			}
-			if err := ensureForceInitTarget(dbPath); err != nil {
-				return err
-			}
-			if err := os.RemoveAll(dbPath); err != nil {
-				return fmt.Errorf("remove existing database: %w", err)
-			}
-			created = true
+			return &usageError{message: usage + "\n\nReplacing an existing database in place is not supported: a reset cannot be made atomic while another process may own the database. Move or remove " + dbPath + " explicitly, then run init again."}
 		}
 	} else if os.IsNotExist(err) {
 		created = true
