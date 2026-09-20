@@ -156,6 +156,16 @@ func QuerySupersedesEdges() string {
 	return "MATCH (newFact:Fact)-[r:SUPERSEDES]->(oldFact:Fact) RETURN newFact.id, oldFact.id, r.reason"
 }
 
+// QueryFromSourceEdges returns the FROM_SOURCE edges of all episodes.
+func QueryFromSourceEdges() string {
+	return "MATCH (e:Episode)-[:FROM_SOURCE]->(s:Source) RETURN e.id, s.id"
+}
+
+// QueryAssertsEdges returns the ASSERTS edges of all episodes.
+func QueryAssertsEdges() string {
+	return "MATCH (e:Episode)-[:ASSERTS]->(f:Fact) RETURN e.id, f.id"
+}
+
 // QueryVersion returns the Ladybug engine version.
 func QueryVersion() string {
 	return "CALL db_version() RETURN *"
