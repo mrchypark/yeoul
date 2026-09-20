@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// hardenPrivateFile replaces the inherited ACL on the freshly created export
-// temporary file with a grant for the current user only, so inherited read
-// grants cannot expose the payload.
+// hardenPrivateFile replaces the inherited ACL on the empty export staging
+// directory with a grant for the current user only, so the export file created
+// inside it inherits no read grants for other accounts.
 func hardenPrivateFile(path string) error {
 	account, err := user.Current()
 	if err != nil {

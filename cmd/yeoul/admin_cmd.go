@@ -291,28 +291,35 @@ Usage:
 // writePrivateFile writes data to path with 0600 permissions. Exports contain
 // complete episode contents and source metadata, so neither a permissive umask
 // nor a previously permissive export at the same path may leave the payload
-// readable by other local accounts. The data is written to a private temporary
-// file in the target directory and published with a rename, so a failed write
-// leaves any previous export intact.
+// readable by other local accounts.
 //
-// Mode bits alone do not guarantee private effective access: inherited ACL
-// entries can grant read access on some platforms, so hardenPrivateFile
-// establishes platform-specific private access before any payload is written.
+// The payload is written inside a staging directory that is hardened before it
+// receives any data: the empty directory is created, its inherited ACL grants
+// are removed, and only then is the export file created inside it. A file
+// created there inherits no grants for other accounts, so no window exists in
+// which another local account can open the payload and keep a read handle
+// across a later permission change. The finished file is published with a
+// rename, so a failed write leaves any previous export intact.
 func writePrivateFile(path string, data []byte) error {
 	if err := ensurePrivateFileSupported(); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	stageDir, err := os.MkdirTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(stageDir) }()
+
+	if err := hardenPrivateFile(stageDir); err != nil {
+		return err
+	}
+
+	temp, err := os.CreateTemp(stageDir, "export-*")
 	if err != nil {
 		return err
 	}
 	tempPath := temp.Name()
-	defer func() { _ = os.Remove(tempPath) }()
 
-	if err := hardenPrivateFile(tempPath); err != nil {
-		_ = temp.Close()
-		return err
-	}
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
 		return err

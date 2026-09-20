@@ -8,10 +8,10 @@ import (
 	"strings"
 )
 
-// hardenPrivateFile clears inherited ACL entries from the freshly created
-// export temporary file. On macOS a directory ACL can grant read access that
-// mode bits alone do not revoke, and the payload is written only after the ACL
-// has been cleared.
+// hardenPrivateFile clears inherited ACL entries from the empty export staging
+// directory. On macOS a directory ACL can grant read access that mode bits
+// alone do not revoke, and the export file is created inside the directory only
+// after the ACL has been cleared, so it inherits no grants for other accounts.
 func hardenPrivateFile(path string) error {
 	out, err := exec.Command("/bin/chmod", "-N", path).CombinedOutput()
 	if err != nil {
