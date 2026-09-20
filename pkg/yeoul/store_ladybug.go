@@ -48,7 +48,7 @@ func (s *ladybugStore) Load() (*persistedState, error) {
 	}
 
 	state := emptyPersistedState()
-	state.Version = 1
+	state.Version = currentStateVersion
 	if err := s.loadMeta(&state); err != nil {
 		return nil, err
 	}

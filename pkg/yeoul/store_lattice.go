@@ -2,6 +2,7 @@ package yeoul
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -15,6 +16,12 @@ const (
 	latticeMetaVersion  = "yeoul.state.version"
 	latticeMetaSequence = "yeoul.state.sequence"
 )
+
+// errUnsupportedStateVersion marks the rejection of a persisted
+// application-state version this build cannot read. The open path checks for it
+// so an unreadable database is reported as it stands instead of being handed to
+// the legacy migration fallback, which would replace it.
+var errUnsupportedStateVersion = errors.New("unsupported application-state version")
 
 var latticeLabels = []string{
 	"Source",
@@ -40,6 +47,14 @@ func newLatticeStore(cfg Config) (stateStore, error) {
 			"database_path": cfg.DatabasePath,
 		}, err)
 	}
+	state := &latticeStore{cfg: cfg, store: store, lastState: emptyPersistedState()}
+	// Resolve the application-state version before any index, seeding, or
+	// application write, so a rejected version leaves the database exactly as it
+	// was found.
+	if err := state.validateStateVersion(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	if !cfg.ReadOnly {
 		for _, label := range latticeLabels {
 			if err := store.EnsureNodeIDIndex(label); err != nil {
@@ -51,7 +66,7 @@ func newLatticeStore(cfg Config) (stateStore, error) {
 			}
 		}
 	}
-	return &latticeStore{cfg: cfg, store: store, lastState: emptyPersistedState()}, nil
+	return state, nil
 }
 
 func (s *latticeStore) Load() (*persistedState, error) {
@@ -60,10 +75,11 @@ func (s *latticeStore) Load() (*persistedState, error) {
 		if value, ok, err := tx.GetAppMetadata([]byte(latticeMetaVersion)); err != nil {
 			return err
 		} else if ok {
-			state.Version, err = strconv.Atoi(string(value))
+			version, err := s.decodeStateVersion(value)
 			if err != nil {
-				return fmt.Errorf("decode state version: %w", err)
+				return err
 			}
+			state.Version = version
 		}
 		if value, ok, err := tx.GetAppMetadata([]byte(latticeMetaSequence)); err != nil {
 			return err
@@ -196,6 +212,80 @@ func (s *latticeStore) Load() (*persistedState, error) {
 	s.lastState = clonePersistedState(state)
 	s.loaded = true
 	return &state, nil
+}
+
+// validateStateVersion rejects a persisted application-state version this build
+// does not support, before any index build, seeding, or application write. It
+// also rejects a database that holds application records but no version, whose
+// provenance is unknown. A database without a version and without records is
+// the state a brand-new database starts in, so it is accepted.
+func (s *latticeStore) validateStateVersion() error {
+	var (
+		value   []byte
+		present bool
+	)
+	if err := s.store.View(func(tx *latticedb.Tx) error {
+		got, ok, err := tx.GetAppMetadata([]byte(latticeMetaVersion))
+		if err != nil {
+			return err
+		}
+		value, present = got, ok
+		return nil
+	}); err != nil {
+		return errorf(ErrStorageFailed, "read lattice state version", map[string]any{
+			"database_path": s.cfg.DatabasePath,
+		}, err)
+	}
+	if !present {
+		empty, err := latticeStateEmpty(s.store)
+		if err != nil {
+			return errorf(ErrStorageFailed, "read lattice state version", map[string]any{
+				"database_path": s.cfg.DatabasePath,
+			}, err)
+		}
+		if empty {
+			return nil
+		}
+		return s.unsupportedStateVersion("missing")
+	}
+	_, err := s.decodeStateVersion(value)
+	return err
+}
+
+// decodeStateVersion converts a persisted application-state version and rejects
+// any value this build does not support, so the loader and the snapshot writer
+// share one definition of the supported version.
+func (s *latticeStore) decodeStateVersion(value []byte) (int, error) {
+	version, err := strconv.Atoi(string(value))
+	if err != nil || version != currentStateVersion {
+		return 0, s.unsupportedStateVersion(string(value))
+	}
+	return version, nil
+}
+
+// unsupportedStateVersion reports a persisted version this build cannot read.
+// The wrapped sentinel lets the open path tell this rejection apart from a
+// database the legacy migration path may legitimately convert.
+func (s *latticeStore) unsupportedStateVersion(found string) error {
+	return errorf(ErrNotSupported, "unsupported application-state version", map[string]any{
+		"database_path":     s.cfg.DatabasePath,
+		"found_version":     found,
+		"supported_version": currentStateVersion,
+	}, errUnsupportedStateVersion)
+}
+
+// latticeStateEmpty reports whether the database holds no application records.
+func latticeStateEmpty(store *lstore.Store) (bool, error) {
+	for _, label := range latticeLabels {
+		ids, err := store.NodeIDs(label)
+		if err != nil {
+			return false, err
+		}
+		if len(ids) > 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func latticePayload(value any) ([]byte, error) {

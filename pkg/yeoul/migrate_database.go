@@ -85,9 +85,16 @@ func MigrateDatabase(ctx context.Context, databasePath string) (*DatabaseMigrati
 		return nil, err
 	}
 
-	if store, err := newLatticeStore(Config{DatabasePath: databasePath, ReadOnly: true}); err == nil {
-		_, loadErr := store.Load()
-		closeErr := store.Close()
+	lattice, latticeErr := newLatticeStore(Config{DatabasePath: databasePath, ReadOnly: true})
+	if latticeErr != nil && errors.Is(latticeErr, errUnsupportedStateVersion) {
+		// The path holds a LatticeDB state written under an application-state
+		// version this build cannot read. The legacy conversion below would replace
+		// the database, so the version rejection is reported as it stands.
+		return nil, latticeErr
+	}
+	if latticeErr == nil {
+		_, loadErr := lattice.Load()
+		closeErr := lattice.Close()
 		if loadErr == nil {
 			if closeErr != nil {
 				return nil, closeErr

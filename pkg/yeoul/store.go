@@ -60,6 +60,13 @@ func CheckpointDatabase(ctx context.Context, databasePath string) error {
 	return errors.Join(checkpointErr, store.Close())
 }
 
+// currentStateVersion is the only application-state version this build can read
+// or write. A database persisted under any other version is rejected on open
+// instead of being silently rewritten, because a version transition is only
+// allowed through an explicit migration. The loader and the snapshot writer
+// both use this constant so they cannot drift apart.
+const currentStateVersion = 1
+
 type persistedState struct {
 	Version             int                           `json:"version"`
 	Sequence            uint64                        `json:"sequence"`
@@ -137,6 +144,12 @@ func openStateStore(cfg Config) (stateStore, error) {
 		}
 		if releaseErr := ownership.Release(); releaseErr != nil {
 			return nil, errors.Join(openErr, releaseErr)
+		}
+		if errors.Is(openErr, errUnsupportedStateVersion) {
+			// The database holds a LatticeDB state written under an application-state
+			// version this build cannot read. The legacy conversion below would replace
+			// the database, so the version rejection is reported as it stands.
+			return nil, openErr
 		}
 		if !openMayRequireMigration(cfg) {
 			return nil, openErr
@@ -299,7 +312,7 @@ func resolveStorageDriver(cfg Config) StorageDriver {
 
 func emptyPersistedState() persistedState {
 	return persistedState{
-		Version:             1,
+		Version:             currentStateVersion,
 		Sources:             make(map[string]Source),
 		Episodes:            make(map[string]Episode),
 		Entities:            make(map[string]Entity),

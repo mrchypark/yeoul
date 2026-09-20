@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	json "github.com/goccy/go-json"
@@ -310,6 +311,9 @@ func TestLatticeLoadRejectsCorruptRecordIdentity(t *testing.T) {
 				t.Fatalf("create lattice database: %v", err)
 			}
 			if err := db.Update(func(tx *latticedb.Tx) error {
+				if err := tx.PutAppMetadata([]byte(latticeMetaVersion), []byte(strconv.Itoa(currentStateVersion))); err != nil {
+					return err
+				}
 				for _, properties := range test.nodes {
 					if _, err := tx.CreateNode(latticedb.CreateNodeOptions{Labels: []string{"Episode"}, Properties: properties}); err != nil {
 						return err
