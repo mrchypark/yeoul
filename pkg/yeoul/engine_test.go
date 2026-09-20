@@ -3,10 +3,13 @@ package yeoul
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestEngineRoundTripInMemory(t *testing.T) {
@@ -2477,5 +2480,87 @@ func TestTimelineRetractionKeepsEarlierSupersession(t *testing.T) {
 	}
 	if !timelineHasEvent(prefix.Events, "evt:"+factA.ID+":superseded") || timelineHasEvent(prefix.Events, "evt:"+factA.ID+":retracted") {
 		t.Fatalf("expected as_of prefix to keep supersession and drop retraction, got %#v", prefix.Events)
+	}
+}
+
+// lifecycleRevisionAllocationBudget bounds the bytes a timeline over a fact
+// revision log may allocate per known revision. A single indexed pass copies
+// each revision once (one FactRevision) and derives a couple of small events,
+// so this ceiling is generous. A per-fact rescan instead allocates a revision
+// capacity slice for every fact, exceeding this budget by orders of magnitude.
+const lifecycleRevisionAllocationBudget = 16 * int(unsafe.Sizeof(FactRevision{}))
+
+// TestTimelineLifecycleDerivationStaysLinearInRevisions proves timeline
+// construction consumes the prebuilt revision index instead of rescanning the
+// whole revision log for every fact. The regression it guards against is
+// quadratic: it allocates a revision-capacity slice per fact, so the measured
+// allocation grows with facts x revisions rather than with revisions.
+func TestTimelineLifecycleDerivationStaysLinearInRevisions(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	rawEng.now = func() time.Time {
+		now = now.Add(time.Second)
+		return now
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "lifecycle scale", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "lifecycle scale"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+
+	const factCount = 1000
+	firstFactID := ""
+	for i := 0; i < factCount; i++ {
+		fact, err := eng.AssertFact(ctx, FactInput{Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: fmt.Sprintf("value-%d", i), SupportingEpisodeIDs: []string{episode.EpisodeID}})
+		if err != nil {
+			t.Fatalf("assert fact %d: %v", i, err)
+		}
+		if i == 0 {
+			firstFactID = fact.ID
+		}
+		if _, err := eng.RetractFact(ctx, fact.ID, "scale harness"); err != nil {
+			t.Fatalf("retract fact %d: %v", i, err)
+		}
+	}
+	revisionCount := len(rawEng.factRevisions)
+	if revisionCount < 2*factCount {
+		t.Fatalf("expected assert and retract revisions for %d facts, got %d revisions", factCount, revisionCount)
+	}
+
+	// Warm once so one-time allocations stay out of the measured call.
+	if _, err := eng.Timeline(ctx, TimelineRequest{}); err != nil {
+		t.Fatalf("warm timeline: %v", err)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	timeline, err := eng.Timeline(ctx, TimelineRequest{})
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+
+	// The derivation must have actually run, otherwise the budget below is
+	// vacuous: every fact contributes a creation event and a retraction event
+	// on top of the single episode event.
+	if len(timeline.Events) != 2*factCount+1 {
+		t.Fatalf("expected a created and a retracted event for each of %d facts, got %d events", factCount, len(timeline.Events))
+	}
+	if !timelineHasEvent(timeline.Events, "evt:"+firstFactID+":retracted") {
+		t.Fatalf("expected retraction event for %s, got %#v", firstFactID, timeline.Events)
+	}
+
+	allocated := int64(after.TotalAlloc - before.TotalAlloc)
+	budget := int64(revisionCount) * int64(lifecycleRevisionAllocationBudget)
+	if allocated > budget {
+		t.Fatalf("timeline over %d facts and %d revisions allocated %d bytes, want at most %d (about %d revision copies); lifecycle derivation is rescanning the revision log once per fact",
+			factCount, revisionCount, allocated, budget, allocated/int64(unsafe.Sizeof(FactRevision{})))
 	}
 }

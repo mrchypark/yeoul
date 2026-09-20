@@ -278,6 +278,9 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 		}
 		addIfAllowed(event)
 	}
+	// Index the append-only revision log once instead of rescanning it for every
+	// fact, which would make timeline construction O(F x R).
+	revisionsByFact := e.factRevisionsByFact()
 	for _, fact := range e.facts {
 		factRecord := e.factVersionAt(fact, temporal)
 		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, temporal) || !matchesAnchors(req.AnchorIDs, append([]string{factRecord.SubjectID, factRecord.ObjectID, factRecord.ID}, factRecord.SupportingEpisodeIDs...)...) {
@@ -294,7 +297,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 		if timelineEventVisible(createdEvent, temporal) {
 			addIfAllowed(createdEvent)
 		}
-		for _, event := range e.factLifecycleEvents(*factRecord, temporal) {
+		for _, event := range e.factLifecycleEvents(*factRecord, revisionsByFact[factRecord.ID], temporal) {
 			if !timelineEventVisible(event, temporal) {
 				continue
 			}
@@ -326,21 +329,29 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	}, nil
 }
 
+// factRevisionsByFact groups the append-only revision log by fact ID in a
+// single pass. Timeline builds it once per invocation so lifecycle derivation
+// stays O(F + R) instead of rescanning every revision once per fact.
+func (e *engine) factRevisionsByFact() map[string][]FactRevision {
+	index := make(map[string][]FactRevision, len(e.facts))
+	for _, revision := range e.factRevisions {
+		index[revision.FactID] = append(index[revision.FactID], revision)
+	}
+	return index
+}
+
 // factLifecycleEvents derives a fact's supersede and retract events from its
 // append-only revisions. Deriving them from revisions instead of the fact's
 // current status keeps earlier transitions visible: retracting a superseded
 // fact must not erase the supersession from the timeline.
-func (e *engine) factLifecycleEvents(fact Fact, filter TemporalFilter) []TimelineEvent {
-	revisions := make([]FactRevision, 0, len(e.factRevisions))
-	for _, revision := range e.factRevisions {
-		if revision.FactID == fact.ID {
-			revisions = append(revisions, revision)
-		}
-	}
+//
+// revisions is the fact's slice from the per-invocation index built by
+// factRevisionsByFact. It is Timeline-local scratch and is sorted in place.
+func (e *engine) factLifecycleEvents(fact Fact, revisions []FactRevision, filter TemporalFilter) []TimelineEvent {
 	if len(revisions) == 0 {
 		// Facts loaded from state without revisions fall back to their current
 		// status so legacy stores keep reporting lifecycle events.
-		revisions = append(revisions, newFactRevision("", fact, "", fact.UpdatedAt))
+		revisions = []FactRevision{newFactRevision("", fact, "", fact.UpdatedAt)}
 	}
 	sort.Slice(revisions, func(i, j int) bool {
 		if revisions[i].TxTime.Equal(revisions[j].TxTime) {
