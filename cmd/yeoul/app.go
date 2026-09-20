@@ -234,6 +234,14 @@ func openWriteEngine(ctx context.Context, dbPath string) (yeoul.Engine, error) {
 	})
 }
 
+// openMaintenanceEngine opens the database for an explicit maintenance
+// operation. The returned engine holds writable database ownership for its
+// whole lifetime, so an operation that discovers state and then changes it does
+// so inside one owned window instead of racing another process in between.
+func openMaintenanceEngine(ctx context.Context, dbPath string) (yeoul.Engine, error) {
+	return yeoul.OpenMaintenance(ctx, dbPath)
+}
+
 func closeEngine(ctx context.Context, eng yeoul.Engine) error {
 	if eng == nil {
 		return nil
