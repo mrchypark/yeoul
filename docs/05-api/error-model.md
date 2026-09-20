@@ -77,10 +77,19 @@ Examples:
 - lifecycle consistency errors: not retryable without logic change
 
 ## CLI mapping
-- validation/config errors -> exit 2
-- not found -> exit 3
-- storage/query failures -> exit 4
-- unsafe operation blocked -> exit 5
+
+The CLI classifies the concrete error codes below, not every error that shares a
+semantic label:
+
+- success -> exit 0
+- usage errors (including a destructive command that is missing `--confirm`) and the `YEOUL_CONFIG_INVALID`, `YEOUL_INPUT_INVALID`, `YEOUL_LIFECYCLE_INVALID`, and `YEOUL_NOT_SUPPORTED` codes -> exit 2
+- the `YEOUL_ENTITY_NOT_FOUND`, `YEOUL_FACT_NOT_FOUND`, and `YEOUL_SOURCE_NOT_FOUND` codes -> exit 3
+- the `YEOUL_QUERY_FAILED` code -> exit 4
+- every other error -> exit 1, including `YEOUL_STORAGE_FAILED` and plain errors such as a missing search recipe or an unsupported recipe strategy
+
+There is no separate exit code for blocked operations, and an error that merely
+describes a missing record or an unsupported operation still exits 1 unless it
+carries one of the codes listed above.
 
 ## Service API mapping
 - validation -> HTTP 400
