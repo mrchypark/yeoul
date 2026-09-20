@@ -4,11 +4,16 @@ package main
 
 import (
 	"errors"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
 
 func raxFFIIngestDocs(libPath, storePath string, jsonl []byte) ([]byte, error) {
+	// Rax stores errors thread-locally, so the error read below must stay on the
+	// thread that ran the failing operation.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	dll := syscall.NewLazyDLL(libPath)
 	ingest := dll.NewProc("rax_ingest_docs")
 	free := dll.NewProc("rax_string_free")
@@ -27,6 +32,8 @@ func raxFFIIngestDocs(libPath, storePath string, jsonl []byte) ([]byte, error) {
 }
 
 func raxFFISearchText(libPath, storePath, query string, topK int) ([]byte, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	dll := syscall.NewLazyDLL(libPath)
 	search := dll.NewProc("rax_search")
 	free := dll.NewProc("rax_string_free")
