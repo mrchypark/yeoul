@@ -1636,6 +1636,8 @@ func TestCLIAdminCompactPreservesActiveAndDistinctFacts(t *testing.T) {
   "entities": [
     {"id":"project:yeoul","type":"Project","canonical_name":"Yeoul"},
     {"id":"project:Yeoul","type":"Project","canonical_name":"Yeoul Upper"},
+    {"id":"project:space","type":"Project","canonical_name":"Space"},
+    {"id":"project:space ","type":"Project","canonical_name":"Space Padded"},
     {"id":"database:ladybug","type":"Database","canonical_name":"Ladybug"}
   ],
   "facts": [
@@ -1645,7 +1647,13 @@ func TestCLIAdminCompactPreservesActiveAndDistinctFacts(t *testing.T) {
     {"id":"fact-delim-many","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"delimiter twin","supporting_episode_ids":["ep-1","ep-2"]},
     {"id":"fact-delim-one","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"delimiter twin","supporting_episode_ids":["ep-1,ep-2"]},
     {"id":"fact-case-lower","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"case twin","supporting_episode_ids":["ep-2"]},
-    {"id":"fact-case-upper","predicate":"USES_STORAGE_ENGINE","subject_id":"project:Yeoul","object_id":"database:ladybug","value_text":"case twin","supporting_episode_ids":["ep-2"]}
+    {"id":"fact-case-upper","predicate":"USES_STORAGE_ENGINE","subject_id":"project:Yeoul","object_id":"database:ladybug","value_text":"case twin","supporting_episode_ids":["ep-2"]},
+    {"id":"fact-meta-string","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata twin","metadata":{"x":"1"},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-meta-number","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata twin","metadata":{"x":1},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-meta-boundary","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata boundary","metadata":{"a":"b c:d"},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-meta-split","predicate":"USES_STORAGE_ENGINE","subject_id":"project:yeoul","object_id":"database:ladybug","value_text":"metadata boundary","metadata":{"a":"b","c":"d"},"supporting_episode_ids":["ep-1"]},
+    {"id":"fact-space-plain","predicate":"USES_STORAGE_ENGINE","subject_id":"project:space","object_id":"database:ladybug","value_text":"space twin","supporting_episode_ids":["ep-1"]},
+    {"id":"fact-space-padded","predicate":"USES_STORAGE_ENGINE","subject_id":"project:space ","object_id":"database:ladybug","value_text":"space twin","supporting_episode_ids":["ep-1"]}
   ]
 }`
 	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
@@ -1704,7 +1712,18 @@ func TestCLIAdminCompactPreservesActiveAndDistinctFacts(t *testing.T) {
 	if !strings.Contains(superseded, `"status": "superseded"`) {
 		t.Fatalf("expected the superseded predecessor to stay superseded, got %q", superseded)
 	}
-	for _, id := range []string{"fact-delim-many", "fact-delim-one", "fact-case-lower", "fact-case-upper"} {
+	for _, id := range []string{
+		"fact-delim-many",
+		"fact-delim-one",
+		"fact-case-lower",
+		"fact-case-upper",
+		"fact-meta-string",
+		"fact-meta-number",
+		"fact-meta-boundary",
+		"fact-meta-split",
+		"fact-space-plain",
+		"fact-space-padded",
+	} {
 		record := runCLI("fact", "get", "--db", dbPath, "--id", id)
 		if !strings.Contains(record, `"status": "active"`) {
 			t.Fatalf("expected %s to stay active, got %q", id, record)

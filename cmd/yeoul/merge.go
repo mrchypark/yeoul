@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,15 +64,72 @@ type factIdentityKey struct {
 
 func factIdentityOf(fact yeoul.FactInput) factIdentityKey {
 	return factIdentityKey{
-		SpaceID:    strings.TrimSpace(fact.SpaceID),
-		Predicate:  strings.TrimSpace(fact.Predicate),
-		SubjectID:  strings.TrimSpace(fact.SubjectID),
-		ObjectID:   strings.TrimSpace(fact.ObjectID),
-		ValueText:  strings.TrimSpace(fact.ValueText),
+		SpaceID:    fact.SpaceID,
+		Predicate:  fact.Predicate,
+		SubjectID:  fact.SubjectID,
+		ObjectID:   fact.ObjectID,
+		ValueText:  fact.ValueText,
 		Supporting: encodeIdentityParts(sortedStrings(fact.SupportingEpisodeIDs)),
 		ValidFrom:  fact.ValidFrom.UTC().Format(time.RFC3339Nano),
 		ValidTo:    fact.ValidTo.UTC().Format(time.RFC3339Nano),
-		Metadata:   fmt.Sprintf("%v", fact.Metadata),
+		Metadata:   canonicalMetadata(fact.Metadata),
+	}
+}
+
+// canonicalMetadata renders metadata structurally so that values which differ
+// in type or in key/value boundaries cannot share an identity. Plain map
+// formatting collapses {"x":"1"} with {"x":1} and {"a":"b c:d"} with
+// {"a":"b","c":"d"}.
+func canonicalMetadata(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		parts = append(parts, key, canonicalValue(metadata[key]))
+	}
+	return "map[" + encodeIdentityParts(parts) + "]"
+}
+
+func canonicalValue(value any) string {
+	if value == nil {
+		return "nil"
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Map:
+		keys := make([]string, 0, rv.Len())
+		byKey := make(map[string]string, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			key := fmt.Sprintf("%v", iter.Key().Interface())
+			keys = append(keys, key)
+			byKey[key] = canonicalValue(iter.Value().Interface())
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys)*2)
+		for _, key := range keys {
+			parts = append(parts, key, byKey[key])
+		}
+		return "map[" + encodeIdentityParts(parts) + "]"
+	case reflect.Slice, reflect.Array:
+		parts := make([]string, 0, rv.Len())
+		for index := 0; index < rv.Len(); index++ {
+			parts = append(parts, canonicalValue(rv.Index(index).Interface()))
+		}
+		return "list[" + encodeIdentityParts(parts) + "]"
+	case reflect.Pointer, reflect.Interface:
+		if rv.IsNil() {
+			return "nil"
+		}
+		return canonicalValue(rv.Elem().Interface())
+	default:
+		return fmt.Sprintf("%T:%v", value, value)
 	}
 }
 
