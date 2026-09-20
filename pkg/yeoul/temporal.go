@@ -33,7 +33,7 @@ func (e *engine) factVisibleAt(fact Fact, filter TemporalFilter) bool {
 	return true
 }
 
-func (e *engine) factVersionAt(fact Fact, filter TemporalFilter) *Fact {
+func (e *engine) factVersionAt(fact Fact, filter TemporalFilter, index *temporalIndex) *Fact {
 	at := asOfTime(filter)
 	if at == nil {
 		if !e.factVisibleAt(fact, filter) {
@@ -41,7 +41,7 @@ func (e *engine) factVersionAt(fact Fact, filter TemporalFilter) *Fact {
 		}
 		return cloneFact(fact)
 	}
-	revision, ok := e.latestFactRevisionAt(fact.ID, *at)
+	revision, ok := index.latestFactRevisionAt(fact.ID, *at)
 	if !ok {
 		if fact.UpdatedAt.After(*at) {
 			return nil
@@ -58,19 +58,25 @@ func (e *engine) factVersionAt(fact Fact, filter TemporalFilter) *Fact {
 	return &record
 }
 
-func (e *engine) latestFactRevisionAt(factID string, at time.Time) (FactRevision, bool) {
-	var latest FactRevision
-	ok := false
-	for _, revision := range e.factRevisions {
-		if revision.FactID != factID || revision.TxTime.After(at) {
-			continue
-		}
-		if !ok || revision.TxTime.After(latest.TxTime) || (revision.TxTime.Equal(latest.TxTime) && revision.ID > latest.ID) {
-			latest = revision
-			ok = true
-		}
+// revisionComesAfter reports whether the revision identified by (id, txTime)
+// is ordered after the one identified by (otherID, otherTxTime). A later
+// transaction time always wins; equal transaction times (supersession
+// deliberately creates them) fall back to the engine's numeric revision order
+// so an ID digit boundary cannot hand the win to the older representation. The
+// raw ID is only a last-resort tie-break between revisions that carry no
+// recovered order.
+//
+// This is the engine's single revision ordering. The temporal index rebuilds
+// its per-record latest maps with it, so an as-of read and a timeline sort
+// cannot disagree about which representation of a record is newer.
+func revisionComesAfter(id string, txTime time.Time, otherID string, otherTxTime time.Time) bool {
+	if !txTime.Equal(otherTxTime) {
+		return txTime.After(otherTxTime)
 	}
-	return latest, ok
+	if order, otherOrder := revisionOrder(id), revisionOrder(otherID); order != otherOrder {
+		return order > otherOrder
+	}
+	return id > otherID
 }
 
 func (e *engine) episodeVisibleAt(episode Episode, filter TemporalFilter) bool {
@@ -95,12 +101,12 @@ func (e *engine) entityVisibleAt(entity Entity, filter TemporalFilter) bool {
 	return true
 }
 
-func (e *engine) entityVersionAt(entity Entity, filter TemporalFilter) *Entity {
+func (e *engine) entityVersionAt(entity Entity, filter TemporalFilter, index *temporalIndex) *Entity {
 	at := asOfTime(filter)
 	if at == nil {
 		return cloneEntity(entity)
 	}
-	if revision, ok := e.latestEntityRevisionAt(entity.ID, *at); ok {
+	if revision, ok := index.latestEntityRevisionAt(entity.ID, *at); ok {
 		record := revision.toEntity()
 		return &record
 	}
@@ -125,28 +131,13 @@ func (e *engine) entityVersionAt(entity Entity, filter TemporalFilter) *Entity {
 	return cloneEntity(entity)
 }
 
-func (e *engine) latestEntityRevisionAt(entityID string, at time.Time) (EntityRevision, bool) {
-	var latest EntityRevision
-	ok := false
-	for _, revision := range e.entityRevisions {
-		if revision.EntityID != entityID || revision.TxTime.After(at) {
-			continue
-		}
-		if !ok || revision.TxTime.After(latest.TxTime) || (revision.TxTime.Equal(latest.TxTime) && revision.ID > latest.ID) {
-			latest = revision
-			ok = true
-		}
-	}
-	return latest, ok
-}
-
 func (e *engine) appendFactRevisionLocked(fact Fact, kind string) {
-	revision := newFactRevision(e.newIDLocked("factrev"), fact, kind, chooseTime(fact.UpdatedAt, e.now()))
+	revision := newFactRevision(e.newIDLocked(factRevisionIDPrefix), fact, kind, chooseTime(fact.UpdatedAt, e.now()))
 	e.factRevisions[revision.ID] = revision
 }
 
 func (e *engine) appendEntityRevisionLocked(entity Entity, kind string) {
-	revision := newEntityRevision(e.newIDLocked("entityrev"), entity, kind, chooseTime(entity.UpdatedAt, e.now()))
+	revision := newEntityRevision(e.newIDLocked(entityRevisionIDPrefix), entity, kind, chooseTime(entity.UpdatedAt, e.now()))
 	e.entityRevisions[revision.ID] = revision
 }
 
@@ -318,7 +309,7 @@ func (e *engine) sourceVisibleAt(source Source, filter TemporalFilter) bool {
 	return true
 }
 
-func (e *engine) matchesScopeForFact(fact Fact, scope ScopeFilter, filter TemporalFilter) bool {
+func (e *engine) matchesScopeForFact(fact Fact, scope ScopeFilter, filter TemporalFilter, index *temporalIndex) bool {
 	if len(scope.FactStatus) > 0 && !slices.Contains(scope.FactStatus, fact.Status) {
 		return false
 	}
@@ -327,14 +318,14 @@ func (e *engine) matchesScopeForFact(fact Fact, scope ScopeFilter, filter Tempor
 		object, objectOK := e.entities[fact.ObjectID]
 		if subjectOK {
 			subjectOK = false
-			if version := e.entityVersionAt(subject, filter); version != nil {
+			if version := e.entityVersionAt(subject, filter, index); version != nil {
 				subject = *version
 				subjectOK = true
 			}
 		}
 		if objectOK {
 			objectOK = false
-			if version := e.entityVersionAt(object, filter); version != nil {
+			if version := e.entityVersionAt(object, filter, index); version != nil {
 				object = *version
 				objectOK = true
 			}

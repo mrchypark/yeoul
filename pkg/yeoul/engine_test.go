@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -1283,6 +1284,97 @@ func TestIngestBatchIsAtomic(t *testing.T) {
 	}
 }
 
+// TestIngestBatchCommitsAtOneTransactionTime drives an advancing clock so every
+// extra system-time read would stamp a later second. A batch must still pin one
+// transaction time for all of its records, so no historical cut can show the
+// episode while omitting the entity and fact committed by the same call.
+func TestIngestBatchCommitsAtOneTransactionTime(t *testing.T) {
+	ctx := context.Background()
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	rawEng := eng
+
+	base := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	var ticks int64
+	rawEng.mu.Lock()
+	rawEng.now = func() time.Time {
+		ticks++
+		return base.Add(time.Duration(ticks) * time.Second)
+	}
+	rawEng.mu.Unlock()
+
+	if _, err := eng.IngestBatch(ctx, BatchInput{
+		Episodes: []EpisodeInput{{ID: "ep:batch", Kind: "note", Content: "atomic batch", Source: SourceInput{Kind: "note"}}},
+		Entities: []EntityInput{{ID: "entity:batch", Type: "Thing", CanonicalName: "atomic"}},
+		Facts: []FactInput{{
+			ID:                   "fact:batch",
+			Predicate:            "HAS_STATE",
+			SubjectID:            "entity:batch",
+			ValueText:            "one transaction",
+			SupportingEpisodeIDs: []string{"ep:batch"},
+		}},
+	}); err != nil {
+		t.Fatalf("ingest batch: %v", err)
+	}
+
+	rawEng.mu.RLock()
+	episode := rawEng.episodes["ep:batch"]
+	entity := rawEng.entities["entity:batch"]
+	fact := rawEng.facts["fact:batch"]
+	revisionTimes := make([]time.Time, 0, 1)
+	for _, revision := range rawEng.factRevisions {
+		if revision.FactID == "fact:batch" {
+			revisionTimes = append(revisionTimes, revision.TxTime)
+		}
+	}
+	rawEng.mu.RUnlock()
+
+	committedAt := episode.IngestedAt
+	if entity.CreatedAt != committedAt || fact.CreatedAt != committedAt {
+		t.Fatalf("expected one transaction time for the batch, got episode=%s entity=%s fact=%s", committedAt, entity.CreatedAt, fact.CreatedAt)
+	}
+	if len(revisionTimes) == 0 {
+		t.Fatal("expected a revision for the batch fact")
+	}
+	for _, txTime := range revisionTimes {
+		if txTime != committedAt {
+			t.Fatalf("expected revisions to share the batch transaction time %s, got %s", committedAt, txTime)
+		}
+	}
+
+	// The atomic batch is wholly visible at its commit time and wholly absent
+	// before it. A partial cut would expose the episode alone.
+	for _, record := range []struct {
+		kind string
+		id   string
+	}{
+		{kind: "episode", id: "ep:batch"},
+		{kind: "entity", id: "entity:batch"},
+		{kind: "fact", id: "fact:batch"},
+	} {
+		before := committedAt.Add(-time.Nanosecond)
+		if _, err := eng.GetRecord(ctx, GetRecordRequest{
+			Kind:     record.kind,
+			ID:       record.id,
+			Temporal: TemporalFilter{AsOf: &before, IncludeInactive: true},
+		}); err == nil {
+			t.Fatalf("expected %s to be invisible before the batch commit time", record.kind)
+		}
+		at := committedAt
+		resp, err := eng.GetRecord(ctx, GetRecordRequest{
+			Kind:     record.kind,
+			ID:       record.id,
+			Temporal: TemporalFilter{AsOf: &at, IncludeInactive: true},
+		})
+		if err != nil {
+			t.Fatalf("expected %s to be visible at the batch commit time: %v", record.kind, err)
+		}
+		if resp.Record == nil {
+			t.Fatalf("expected a %s record at the batch commit time", record.kind)
+		}
+	}
+}
+
 func TestIngestBatchRejectsRevisionImport(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
@@ -1314,6 +1406,128 @@ func TestImportedRevisionIDsDoNotCollideWithGeneratedIDs(t *testing.T) {
 	if _, ok := rawEng.factRevisions["factrev_000001"]; !ok {
 		t.Fatal("expected imported revision to remain present")
 	}
+}
+
+// TestRevisionOrderSurvivesSixDigitIDBoundary seeds the ID sequence next to the
+// six-digit boundary so the cardinality-one auto-supersede revision lands on
+// factrev_999999 while the explicit supersede revision crosses to
+// factrev_1000001. Those two revisions share a transaction time, and text
+// ordering puts the later one first, so only numeric revision order can keep
+// the later operation winning.
+func TestRevisionOrderSurvivesSixDigitIDBoundary(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "revision-order.db")
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+
+	// A fixed clock makes supersession produce equal-time revisions, which is the
+	// tie the ordering rule has to break.
+	fixed := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	rawEng := eng.(*engine)
+	rawEng.mu.Lock()
+	rawEng.now = func() time.Time { return fixed }
+	rawEng.mu.Unlock()
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{
+		Kind:    "note",
+		Content: "revision order subject",
+		Source:  SourceInput{Kind: "note"},
+	})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	subject, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "boundary"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	original, err := eng.AssertFact(ctx, FactInput{
+		Predicate:            "HAS_STATE",
+		SubjectID:            subject.ID,
+		ValueText:            "old",
+		Cardinality:          "one",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	})
+	if err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+
+	// Parking the sequence here puts the auto-supersede revision on 999999 and
+	// the explicit supersede revision on 1000001: numerically later, but
+	// lexicographically earlier.
+	rawEng.mu.Lock()
+	rawEng.sequence = 999997
+	rawEng.mu.Unlock()
+
+	if _, err := eng.SupersedeFact(ctx, original.ID, FactInput{
+		Predicate:            "HAS_STATE",
+		SubjectID:            subject.ID,
+		ValueText:            "new",
+		Cardinality:          "one",
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}, "explicit-boundary-supersede"); err != nil {
+		t.Fatalf("supersede fact: %v", err)
+	}
+
+	// Pin down that the tie really straddles the digit boundary instead of
+	// trusting the sequence arithmetic above.
+	autoRevision, explicitRevision := "", ""
+	rawEng.mu.RLock()
+	for _, revision := range rawEng.factRevisions {
+		if revision.FactID != original.ID {
+			continue
+		}
+		switch revision.RevisionKind {
+		case "auto_supersede":
+			autoRevision = revision.ID
+		case "supersede":
+			explicitRevision = revision.ID
+		}
+	}
+	rawEng.mu.RUnlock()
+	if autoRevision == "" || explicitRevision == "" {
+		t.Fatalf("expected both tied revisions, got auto=%q explicit=%q", autoRevision, explicitRevision)
+	}
+	if revisionOrder(explicitRevision) <= revisionOrder(autoRevision) {
+		t.Fatalf("expected the explicit revision to be numerically later: auto=%s explicit=%s", autoRevision, explicitRevision)
+	}
+	if explicitRevision >= autoRevision {
+		t.Fatalf("expected the explicit revision ID to sort earlier as text: auto=%s explicit=%s", autoRevision, explicitRevision)
+	}
+
+	assertLaterSupersedeWins := func(t *testing.T, eng Engine) {
+		t.Helper()
+		at := fixed
+		resp, err := eng.GetRecord(ctx, GetRecordRequest{
+			Kind:     "fact",
+			ID:       original.ID,
+			Temporal: TemporalFilter{AsOf: &at, IncludeInactive: true},
+		})
+		if err != nil {
+			t.Fatalf("get fact version: %v", err)
+		}
+		fact, ok := resp.Record.(*Fact)
+		if !ok {
+			t.Fatalf("unexpected record type %T", resp.Record)
+		}
+		if reason, _ := fact.Metadata["supersede_reason"].(string); reason != "explicit-boundary-supersede" {
+			t.Fatalf("expected the later operation to win, got supersede_reason=%q metadata=%#v (auto=%s explicit=%s)", reason, fact.Metadata, autoRevision, explicitRevision)
+		}
+	}
+
+	assertLaterSupersedeWins(t, eng)
+
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
+
+	reopened, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("reopen engine: %v", err)
+	}
+	defer func() { _ = reopened.Close(ctx) }()
+	assertLaterSupersedeWins(t, reopened)
 }
 
 func TestAssertFactRequiresSupportingEpisode(t *testing.T) {
@@ -1907,6 +2121,250 @@ func TestCardinalityOneProvenanceIncludesAllAutoSupersededFacts(t *testing.T) {
 	}
 	if !edges[oldA.ID] || !edges[oldB.ID] {
 		t.Fatalf("expected provenance edges to both old facts, got %#v", prov.Edges)
+	}
+}
+
+func TestExplicitSupersessionKeepsAutoSupersededIDs(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "explicit supersession lineage", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "explicit supersession"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	oldA, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old a: %v", err)
+	}
+	oldB, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old b", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old b: %v", err)
+	}
+	replacement, err := eng.SupersedeFact(ctx, oldA.ID, FactInput{
+		ID:                   "fact:new",
+		Predicate:            "HAS_STATE",
+		SubjectID:            entity.ID,
+		ValueText:            "new",
+		Cardinality:          factCardinalityOne,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}, "explicit replacement")
+	if err != nil {
+		t.Fatalf("supersede fact: %v", err)
+	}
+
+	// The explicit target and the fact that cardinality-one slot replacement
+	// superseded on its own must both survive, in one representation.
+	stored, err := eng.GetFact(ctx, replacement.NewFactID)
+	if err != nil {
+		t.Fatalf("get replacement: %v", err)
+	}
+	listed, isList := stored.Metadata["supersedes"].([]string)
+	if !isList {
+		t.Fatalf("expected supersedes to be recorded as a list, got %#v", stored.Metadata["supersedes"])
+	}
+	if !slices.Contains(listed, oldA.ID) || !slices.Contains(listed, oldB.ID) {
+		t.Fatalf("expected explicit and automatic supersession targets, got %#v", listed)
+	}
+
+	snapshot, err := Snapshot(ctx, eng)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	snapshotIDs := metadataStringIDs(snapshot.Facts[replacement.NewFactID].Metadata["supersedes"])
+	if !slices.Contains(snapshotIDs, oldA.ID) || !slices.Contains(snapshotIDs, oldB.ID) {
+		t.Fatalf("expected snapshot to keep both superseded facts, got %#v", snapshotIDs)
+	}
+
+	prov, err := eng.Provenance(ctx, ProvenanceRequest{
+		Kind:     "fact",
+		ID:       replacement.NewFactID,
+		Temporal: TemporalFilter{IncludeInactive: true},
+	})
+	if err != nil {
+		t.Fatalf("provenance: %v", err)
+	}
+	edges := map[string]bool{}
+	for _, edge := range prov.Edges {
+		if edge.Type == "SUPERSEDES" && edge.FromID == replacement.NewFactID {
+			edges[edge.ToID] = true
+		}
+	}
+	if !edges[oldA.ID] || !edges[oldB.ID] {
+		t.Fatalf("expected provenance edges to both superseded facts, got %#v", prov.Edges)
+	}
+}
+func TestCanceledContextCreatesNoRecordsOrSaves(t *testing.T) {
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "canceled episode", Source: SourceInput{Kind: "note"}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled ingest to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.IngestBatch(ctx, BatchInput{Episodes: []EpisodeInput{{Kind: "note", Content: "canceled batch", Source: SourceInput{Kind: "note"}}}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled batch to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "canceled"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled upsert to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{Predicate: "HAS_STATE", SubjectID: "entity:missing", SupportingEpisodeIDs: []string{"ep:missing"}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled assert to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.SupersedeFact(ctx, "fact:missing", FactInput{}, "canceled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled supersede to fail with context.Canceled, got %v", err)
+	}
+	if _, err := eng.RetractFact(ctx, "fact:missing", "canceled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled retract to fail with context.Canceled, got %v", err)
+	}
+
+	if store.saveCount != 0 {
+		t.Fatalf("expected canceled mutations to skip the durable save, got %d saves", store.saveCount)
+	}
+	rawEng := eng
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.sources) != 0 || len(rawEng.episodes) != 0 || len(rawEng.entities) != 0 || len(rawEng.facts) != 0 {
+		t.Fatalf("expected no records, got sources=%d episodes=%d entities=%d facts=%d", len(rawEng.sources), len(rawEng.episodes), len(rawEng.entities), len(rawEng.facts))
+	}
+	if len(rawEng.factRevisions) != 0 || len(rawEng.entityRevisions) != 0 {
+		t.Fatalf("expected no revisions, got fact=%d entity=%d", len(rawEng.factRevisions), len(rawEng.entityRevisions))
+	}
+	if rawEng.sequence != 0 {
+		t.Fatalf("expected no ID sequence consumption, got %d", rawEng.sequence)
+	}
+}
+
+func TestCanceledWhileWaitingForWriteLockCreatesNoRecords(t *testing.T) {
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	rawEng := eng
+
+	// Hold the write lock so the mutation below is queued behind it.
+	rawEng.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	errs := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "queued behind the lock", Source: SourceInput{Kind: "note"}})
+		errs <- err
+	}()
+	<-started
+	// The queued mutation waits on the lock rather than on cancellation, so give
+	// it a moment to reach the lock before abandoning the request.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	rawEng.mu.Unlock()
+
+	if err := <-errs; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the queued mutation to report cancellation, got %v", err)
+	}
+	if store.saveCount != 0 {
+		t.Fatalf("expected the abandoned mutation to skip the durable save, got %d saves", store.saveCount)
+	}
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.episodes) != 0 || len(rawEng.sources) != 0 {
+		t.Fatalf("expected no records, got episodes=%d sources=%d", len(rawEng.episodes), len(rawEng.sources))
+	}
+}
+
+// blockingSaveStore blocks inside Save so a test can cancel a mutation while its
+// commit is in flight.
+type blockingSaveStore struct {
+	countingStore
+	saveStarted chan struct{}
+	release     chan struct{}
+}
+
+func (s *blockingSaveStore) Save(state persistedState) error {
+	select {
+	case s.saveStarted <- struct{}{}:
+	default:
+	}
+	<-s.release
+	return s.countingStore.Save(state)
+}
+
+func TestCommittedMutationIsNotReportedAsCanceled(t *testing.T) {
+	store := &blockingSaveStore{saveStarted: make(chan struct{}, 1), release: make(chan struct{})}
+	eng := newEngine(Config{}, store)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "committed while canceled", Source: SourceInput{Kind: "note"}})
+		errs <- err
+	}()
+	<-store.saveStarted
+	cancel()
+	close(store.release)
+
+	// The commit already happened when the context was canceled: reporting
+	// cancellation would mislabel durable work as skipped.
+	if err := <-errs; err != nil {
+		t.Fatalf("expected the committed mutation to succeed, got %v", err)
+	}
+	if store.saveCount != 1 {
+		t.Fatalf("expected exactly one durable save, got %d", store.saveCount)
+	}
+	if len(store.state.Episodes) != 1 {
+		t.Fatalf("expected the committed episode to be persisted, got %#v", store.state.Episodes)
+	}
+}
+
+// TestCanceledBeforeSaveBeginsRollsBackTheMutation covers the window between
+// the mutation body finishing and the durable save starting. Nothing is durable
+// in that window, so an abandoned request must roll back instead of committing:
+// a mutation body that ran to completion is not itself a commit.
+func TestCanceledBeforeSaveBeginsRollsBackTheMutation(t *testing.T) {
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel inside the pre-save window: the mutation body has completed and
+	// produced in-memory records, but no durable work has started.
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	previousHook := mutatePreSaveHook
+	mutatePreSaveHook = func() {
+		close(reached)
+		<-release
+	}
+	t.Cleanup(func() { mutatePreSaveHook = previousHook })
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "canceled before the save", Source: SourceInput{Kind: "note"}})
+		errs <- err
+	}()
+
+	<-reached
+	cancel()
+	close(release)
+
+	if err := <-errs; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the pre-save cancellation to be reported, got %v", err)
+	}
+	if store.saveCount != 0 {
+		t.Fatalf("expected the abandoned mutation to skip the durable save, got %d saves", store.saveCount)
+	}
+
+	rawEng := eng
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if len(rawEng.episodes) != 0 || len(rawEng.sources) != 0 {
+		t.Fatalf("expected the rolled-back mutation to leave no records, got episodes=%d sources=%d", len(rawEng.episodes), len(rawEng.sources))
+	}
+	if rawEng.sequence != 0 {
+		t.Fatalf("expected the rolled-back mutation to leave no ID sequence consumption, got %d", rawEng.sequence)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ var reservedEntityMetadataKeys = map[string]bool{
 type engine struct {
 	mu       sync.RWMutex
 	now      func() time.Time
+	txTime   time.Time
 	sequence uint64
 	cfg      Config
 	store    stateStore
@@ -162,7 +164,6 @@ func (e *engine) ensureWritableLocked() error {
 }
 
 func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*EpisodeResult, error) {
-	_ = ctx
 	if err := rejectSecretFields(episodeSecretFields(input)); err != nil {
 		return nil, err
 	}
@@ -173,11 +174,11 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 		return nil, errorf(ErrInputInvalid, "episode content is required", map[string]any{"field": "content"}, nil)
 	}
 
-	now := e.now()
 	spaceID := normalizeSpaceID(input.SpaceID)
 
 	var result *EpisodeResult
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
+		now := e.txNow()
 		source, err := e.resolveSource(spaceID, input.SourceID, input.Source, now)
 		if err != nil {
 			return err
@@ -192,7 +193,6 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 }
 
 func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResult, error) {
-	_ = ctx
 	for _, episode := range input.Episodes {
 		if err := rejectSecretFields(episodeSecretFields(episode)); err != nil {
 			return nil, err
@@ -210,12 +210,15 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 		}
 	}
 	result := &BatchResult{}
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		for _, episode := range input.Episodes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if strings.TrimSpace(episode.Kind) == "" || strings.TrimSpace(episode.Content) == "" {
 				return errorf(ErrInputInvalid, "episode kind and content are required", map[string]any{"kind": episode.Kind, "id": episode.ID}, nil)
 			}
-			now := e.now()
+			now := e.txNow()
 			spaceID := normalizeSpaceID(episode.SpaceID)
 			source, err := e.resolveSource(spaceID, episode.SourceID, episode.Source, now)
 			if err != nil {
@@ -229,6 +232,9 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 		}
 		referenceRewrites := make(map[string]string)
 		for _, entity := range input.Entities {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if strings.TrimSpace(entity.Type) == "" || strings.TrimSpace(entity.CanonicalName) == "" {
 				return errorf(ErrInputInvalid, "entity type and canonical_name are required", map[string]any{"id": entity.ID}, nil)
 			}
@@ -253,6 +259,9 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 			referenceRewrites[reference] = item.ID
 		}
 		for _, fact := range input.Facts {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if rewritten, ok := referenceRewrites[fact.SubjectID]; ok {
 				fact.SubjectID = rewritten
 			}
@@ -277,7 +286,6 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 }
 
 func (e *engine) UpsertEntity(ctx context.Context, input EntityInput) (*Entity, error) {
-	_ = ctx
 	if err := rejectSecretFields(entitySecretFields(input)); err != nil {
 		return nil, err
 	}
@@ -289,7 +297,7 @@ func (e *engine) UpsertEntity(ctx context.Context, input EntityInput) (*Entity, 
 	}
 
 	var entity *Entity
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		var err error
 		entity, err = e.upsertEntityLocked(input)
 		return err
@@ -359,7 +367,7 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 			return nil, errorf(ErrLifecycleInvalid, "entity metadata key is lifecycle-managed", map[string]any{"metadata_key": key}, nil)
 		}
 	}
-	now := e.now()
+	now := e.txNow()
 	spaceID := normalizeSpaceID(input.SpaceID)
 	id := input.ID
 	derived := id == ""
@@ -447,7 +455,6 @@ func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
 }
 
 func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error) {
-	_ = ctx
 	if err := rejectSecretFields(append(factSecretFields(input), textSecretFields("fact.supporting_episode_ids", input.SupportingEpisodeIDs)...)); err != nil {
 		return nil, err
 	}
@@ -457,7 +464,7 @@ func (e *engine) AssertFact(ctx context.Context, input FactInput) (*Fact, error)
 
 	spaceID := normalizeSpaceID(input.SpaceID)
 	var fact *Fact
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		var err error
 		fact, err = e.assertFactLocked(spaceID, input, false)
 		return err
@@ -530,7 +537,7 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 		return nil, errorf(ErrInputInvalid, "supporting_episode_ids must contain at least one episode", map[string]any{"field": "supporting_episode_ids"}, nil)
 	}
 
-	now := e.now()
+	now := e.txNow()
 	id := input.ID
 	if id == "" {
 		id = e.newIDLocked("fact")
@@ -618,6 +625,9 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 	if len(superseded) == 0 {
 		return newFact
 	}
+	// The recorded lineage is a set of IDs, so it is sorted: metadata must not
+	// depend on the order the map scan above happened to visit facts in.
+	slices.Sort(superseded)
 	newFact.Metadata = mergeAnyMap(newFact.Metadata, map[string]any{
 		"supersedes":       superseded,
 		"supersede_reason": "cardinality_one_slot_replaced",
@@ -626,14 +636,13 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 }
 
 func (e *engine) SupersedeFact(ctx context.Context, factID string, input FactInput, reason string) (*SupersedeFactResult, error) {
-	_ = ctx
 	fields := append(factSecretFields(input), textSecretFields("fact.supporting_episode_ids", input.SupportingEpisodeIDs)...)
 	fields = append(fields, reasonSecretField("supersede.reason", reason)...)
 	if err := rejectSecretFields(fields); err != nil {
 		return nil, err
 	}
 	var result *SupersedeFactResult
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		var err error
 		result, err = e.supersedeFactLocked(factID, input, reason)
 		return err
@@ -678,8 +687,16 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 	e.facts[factID] = oldFact
 	e.appendFactRevisionLocked(oldFact, "supersede")
 	if storedNewFact, ok := e.facts[newFact.ID]; ok {
+		// Replacing a fact through the cardinality-one slot may already have
+		// recorded automatic supersession targets. The explicit target is merged
+		// into that list instead of overwriting it, and the list representation is
+		// kept, so snapshot and provenance consumers always see the complete
+		// lineage of the replacement.
+		supersedes := append(metadataStringIDs(storedNewFact.Metadata["supersedes"]), factID)
+		supersedes = dedupeStrings(supersedes)
+		slices.Sort(supersedes)
 		storedNewFact.Metadata = mergeAnyMap(storedNewFact.Metadata, map[string]any{
-			"supersedes":       factID,
+			"supersedes":       supersedes,
 			"supersede_reason": reason,
 		})
 		e.facts[newFact.ID] = storedNewFact
@@ -693,12 +710,11 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 }
 
 func (e *engine) RetractFact(ctx context.Context, factID string, reason string) (*RetractFactResult, error) {
-	_ = ctx
 	if err := rejectSecretFields(reasonSecretField("retract.reason", reason)); err != nil {
 		return nil, err
 	}
 	var result *RetractFactResult
-	err := e.mutateLocked(func() error {
+	err := e.mutateLocked(ctx, func() error {
 		fact, ok := e.facts[factID]
 		if !ok {
 			return errorf(ErrFactNotFound, "fact not found", map[string]any{"fact_id": factID}, nil)
@@ -711,7 +727,7 @@ func (e *engine) RetractFact(ctx context.Context, factID string, reason string) 
 			return nil
 		}
 
-		now := e.now()
+		now := e.txNow()
 		fact.Status = factStatusRetracted
 		fact.RetractedAt = now
 		fact.RetractionReason = reason
@@ -754,7 +770,7 @@ func (e *engine) GetRecord(ctx context.Context, req GetRecordRequest) (*GetRecor
 			e.mu.RUnlock()
 			return nil, errorf(ErrEntityNotFound, "entity not found", map[string]any{"entity_id": req.ID}, nil)
 		}
-		record := e.entityVersionAt(entity, req.Temporal)
+		record := e.entityVersionAt(entity, req.Temporal, newTemporalIndex(e))
 		e.mu.RUnlock()
 		if record == nil {
 			return nil, errorf(ErrQueryFailed, "record not visible at requested time", map[string]any{"id": req.ID}, nil)
@@ -771,7 +787,7 @@ func (e *engine) GetRecord(ctx context.Context, req GetRecordRequest) (*GetRecor
 		version := record
 		if temporalFilterSet(req.Temporal) {
 			e.mu.RLock()
-			version = e.factVersionAt(*record, req.Temporal)
+			version = e.factVersionAt(*record, req.Temporal, newTemporalIndex(e))
 			e.mu.RUnlock()
 		}
 		if version == nil {
@@ -919,17 +935,47 @@ func (e *engine) saveLocked() error {
 	return e.store.Save(e.snapshotLocked())
 }
 
+// mutatePreSaveHook runs after the mutation body returns and before the save
+// starts. Tests replace it to cancel a request inside that window; production
+// leaves it nil.
+var mutatePreSaveHook func()
+
 // mutateLocked runs fn under the engine lock and persists the mutated
 // state. When fn or the save fails, in-memory state is rolled back to the
 // pre-mutation snapshot so a failed write never leaks partial mutations.
-func (e *engine) mutateLocked(fn func() error) error {
+func (e *engine) mutateLocked(ctx context.Context, fn func() error) error {
+	// The caller's context governs the mutation. A canceled request is refused
+	// before any work, and refused again once the write lock is acquired, because
+	// a request can be abandoned while it waits for a concurrent writer.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := e.ensureWritableLocked(); err != nil {
 		return err
 	}
+	// Pin one transaction time for the whole mutation so every record it creates
+	// shares a single commit instant. An atomic batch then becomes visible all at
+	// once: no historical cut can fall between the system times of its records.
+	e.txTime = e.now()
+	defer func() { e.txTime = time.Time{} }()
 	snapshot := e.snapshotLocked()
 	if err := fn(); err != nil {
+		e.restoreLocked(snapshot)
+		return err
+	}
+	if mutatePreSaveHook != nil {
+		mutatePreSaveHook()
+	}
+	// Re-check after the mutation body and before the save starts. A request
+	// can be abandoned in the window between the last in-memory change and the
+	// commit, and that window is still pre-commit work: nothing durable exists
+	// yet, so the mutation must roll back rather than commit an abandoned write.
+	if err := ctx.Err(); err != nil {
 		e.restoreLocked(snapshot)
 		return err
 	}
@@ -937,7 +983,22 @@ func (e *engine) mutateLocked(fn func() error) error {
 		e.restoreLocked(snapshot)
 		return err
 	}
+	// The save is the commit point. The context is not consulted once the save
+	// has begun, so cancellation racing the commit cannot mislabel durable work
+	// as skipped; the check above covers only the pre-commit window.
 	return nil
+}
+
+// txNow returns the system time for records created by the current mutation.
+// mutateLocked pins one transaction time per mutation, so an atomic batch is
+// stamped as one commit. Outside a mutation there is no pinned time and callers
+// get the wall clock, which keeps ReadOnly queries and metadata timestamps
+// unchanged.
+func (e *engine) txNow() time.Time {
+	if !e.txTime.IsZero() {
+		return e.txTime
+	}
+	return e.now()
 }
 
 func (e *engine) restoreLocked(snapshot persistedState) {
