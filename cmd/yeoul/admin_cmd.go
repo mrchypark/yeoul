@@ -308,7 +308,6 @@ func writePrivateFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(stageDir) }()
 
 	if err := hardenPrivateFile(stageDir); err != nil {
 		return err
@@ -319,6 +318,13 @@ func writePrivateFile(path string, data []byte) error {
 		return err
 	}
 	tempPath := temp.Name()
+	// Clean up without recursion: in a shared writable parent the staging
+	// directory entry can be substituted with an unrelated directory, and a
+	// recursive delete would then destroy data this process does not own.
+	defer func() {
+		_ = os.Remove(tempPath)
+		_ = os.Remove(stageDir)
+	}()
 
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
