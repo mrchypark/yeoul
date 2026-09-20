@@ -20,8 +20,9 @@ Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written i
 
 Release artifacts are published for macOS, Linux, and Windows.
 `install.sh` and `install.ps1` are uploaded as GitHub Release assets, so you can execute them directly from the release URL without checking out the repository.
-The installer downloads the matching archive and checksum from the same release, verifies it, and installs Yeoul under the default per-user location.
-On macOS and Linux that is `~/.local/share/yeoul/<tag>` with wrapper commands in `~/.local/bin`. On Windows that is `%LOCALAPPDATA%\\Programs\\yeoul\\<tag>`, and the script adds its `bin` directory to the user `PATH`.
+The installer downloads the matching archive and checksum from the same release, verifies the checksum with `sha256sum` or `shasum`, and installs Yeoul under the default per-user location.
+Checksum verification is mandatory: when neither tool is available the installer stops before it changes an existing installation.
+On macOS and Linux that is `~/.local/share/yeoul/<tag>` with wrapper commands in `~/.local/bin`. On Windows that is `%LOCALAPPDATA%\\Programs\\yeoul\\<tag>`, and the script puts that `bin` directory first on the user `PATH`, ahead of the directories of earlier versions, so a new shell runs the version you just installed.
 
 Latest release on macOS and Linux:
 
@@ -32,13 +33,7 @@ curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.s
 Specific version on macOS and Linux:
 
 ```bash
-curl -fsSL https://github.com/mrchypark/yeoul/releases/download/v0.1.0/install.sh | bash
-```
-
-If you want the latest installer script but a specific Yeoul version:
-
-```bash
-curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.sh | YEOUL_VERSION=v0.1.0 bash
+curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.sh | YEOUL_VERSION=v0.5.5 bash
 ```
 
 Latest release on Windows PowerShell:
@@ -50,15 +45,25 @@ irm https://github.com/mrchypark/yeoul/releases/latest/download/install.ps1 | ie
 Specific version on Windows PowerShell:
 
 ```powershell
-irm https://github.com/mrchypark/yeoul/releases/download/v0.1.0/install.ps1 | iex
+$env:YEOUL_VERSION = "v0.5.5"
+irm https://github.com/mrchypark/yeoul/releases/latest/download/install.ps1 | iex
 ```
 
-If you want the latest installer script but a specific Yeoul version:
+A version-pinned script URL does not pin the binary version, because each installer resolves `latest` from the release metadata when no version is given.
+Pass the version explicitly for a pinned installation, including when the script itself comes from that release URL:
+
+```bash
+curl -fsSL https://github.com/mrchypark/yeoul/releases/download/v0.1.0/install.sh | YEOUL_VERSION=v0.1.0 bash
+```
 
 ```powershell
 $env:YEOUL_VERSION = "v0.1.0"
-irm https://github.com/mrchypark/yeoul/releases/latest/download/install.ps1 | iex
+irm https://github.com/mrchypark/yeoul/releases/download/v0.1.0/install.ps1 | iex
 ```
+
+Both installers validate the archive layout promised by the selected release.
+Releases from `v0.5.1` on must ship the version-pinned Ladybug migration helper; earlier tags ship only the binaries, and they install without one.
+An explicit version always wins over the `latest` release metadata.
 
 Windows builds currently target `x64`. Release archives include a version-pinned
 Ladybug migration helper and runtime; they are used only when converting an

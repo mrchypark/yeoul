@@ -120,6 +120,14 @@ var supportedRecipeExpandKeys = []string{"entity_types", "hops"}
 // may select, mirroring the status domain the search runtime accepts.
 var supportedRecipeFactStatuses = []string{"active", "superseded", "retracted"}
 
+// expandSettingStrategies maps each supported expand setting to the strategies
+// that actually apply it. applySearchRecipe reads entity_types only inside the
+// neighborhood branch, so declaring it elsewhere would pass validation while
+// execution silently ignored it.
+var expandSettingStrategies = map[string][]string{
+	"entity_types": {"neighborhood"},
+}
+
 // ValidateSearchRecipe reports recipe controls that the runtime does not
 // implement. Every accepted setting must change the executed request, so a
 // recipe can never advertise behavior the CLI ignores. A control is accepted
@@ -146,6 +154,13 @@ func ValidateSearchRecipe(name string, recipe SearchRecipe) []string {
 		}
 		if err := validateRecipeExpandValue(key, recipe); err != nil {
 			issues = append(issues, fmt.Sprintf("recipe %q declares invalid expand setting %q: %v", name, key, err))
+			continue
+		}
+		// Only keys that map to a real request field are strategy-checked.
+		// Advisory keys such as hops are validated for shape but never applied.
+		strategies, applied := expandSettingStrategies[key]
+		if applied && !slices.Contains(strategies, recipe.Strategy) {
+			issues = append(issues, fmt.Sprintf("recipe %q declares expand setting %q, which the %q strategy does not apply", name, key, recipe.Strategy))
 		}
 	}
 	return issues

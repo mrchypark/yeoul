@@ -48,6 +48,14 @@ jobs:
         if: matrix.goos == 'linux'
         run: sh scripts/ci/check-legacy-helper-module.sh
 
+      - name: Test release installers
+        if: matrix.goos == 'linux'
+        run: sh scripts/ci/test-installers.sh
+
+      - name: Test Homebrew publication policy
+        if: matrix.goos == 'linux'
+        run: bash scripts/ci/test-publish-homebrew.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -152,6 +160,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Test PowerShell installer
+        shell: pwsh
+        run: ./scripts/ci/test-install-ps1.ps1
 
       - name: Install GoReleaser
         run: go install github.com/goreleaser/goreleaser/v2@v2.15.3
@@ -310,6 +322,13 @@ jobs:
     needs:
       - publish-release
     runs-on: ubuntu-24.04
+    # Every tag updates the same Formula/yeoul.rb in the tap repository, so
+    # serialize on the destination formula instead of on the workflow ref. A
+    # queued run waits for the in-flight one, and publish-homebrew.sh refuses
+    # to move the formula backwards from a late older job.
+    concurrency:
+      group: homebrew-formula-mrchypark-homebrew-tap
+      cancel-in-progress: false
     steps:
       - name: Check out code
         uses: actions/checkout@v4
