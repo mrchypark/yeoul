@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -277,7 +278,7 @@ Usage:
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+	if err := writePrivateFile(outPath, data); err != nil {
 		return err
 	}
 	if jsonOut {
@@ -285,6 +286,60 @@ Usage:
 	}
 	_, err = fmt.Fprintf(c.stdout, "exported %s\n", outPath)
 	return err
+}
+
+// writePrivateFile writes data to path with 0600 permissions. Exports contain
+// complete episode contents and source metadata, so neither a permissive umask
+// nor a previously permissive export at the same path may leave the payload
+// readable by other local accounts.
+//
+// The payload is written inside a staging directory that is hardened before it
+// receives any data: the empty directory is created, its inherited ACL grants
+// are removed, and only then is the export file created inside it. A file
+// created there inherits no grants for other accounts, so no window exists in
+// which another local account can open the payload and keep a read handle
+// across a later permission change. The finished file is published with a
+// rename, so a failed write leaves any previous export intact.
+func writePrivateFile(path string, data []byte) error {
+	if err := ensurePrivateFileSupported(); err != nil {
+		return err
+	}
+	stageDir, err := os.MkdirTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	temp, err := os.CreateTemp(stageDir, "export-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	// Clean up without recursion: in a shared writable parent the staging
+	// directory entry can be substituted with an unrelated directory, and a
+	// recursive delete would then destroy data this process does not own.
+	defer func() {
+		_ = os.Remove(tempPath)
+		_ = os.Remove(stageDir)
+	}()
+
+	// Bind the permission change to the open descriptor: a path-based chmod
+	// would follow a substituted symlink in a shared writable parent.
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }
 
 func (c cli) runAdminImport(ctx context.Context, args []string) error {

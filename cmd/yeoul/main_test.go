@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -772,7 +773,16 @@ func TestCLIIndexRejectsUnsafeProjectionManifestPath(t *testing.T) {
 	}
 }
 
+// requireExportSupport skips export tests where admin export refuses to run.
+func requireExportSupport(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		t.Skip("admin export is not supported on this platform")
+	}
+}
+
 func TestCLIAdminExportImport(t *testing.T) {
+	requireExportSupport(t)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
@@ -850,6 +860,7 @@ func TestCLIAdminExportImport(t *testing.T) {
 }
 
 func TestCLIAdminExportRejectsLifecycleLoss(t *testing.T) {
+	requireExportSupport(t)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
@@ -911,6 +922,7 @@ func TestCLIAdminExportRejectsLifecycleLoss(t *testing.T) {
 }
 
 func TestCLIAdminExportRejectsRevisionLoss(t *testing.T) {
+	requireExportSupport(t)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
@@ -2125,5 +2137,106 @@ func TestCLIInitForcePreservesForeignDirectory(t *testing.T) {
 		if string(got) != want {
 			t.Fatalf("expected %s to keep its bytes, got %q", path, string(got))
 		}
+	}
+}
+
+func TestCLIAdminExportUsesPrivatePermissions(t *testing.T) {
+	requireExportSupport(t)
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "private-export.ltdb")
+	exportPath := filepath.Join(tmpDir, "private-export.json")
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	runCLI(
+		"ingest", "episode",
+		"--db", dbPath,
+		"--id", "ep-private",
+		"--kind", "note",
+		"--content", "private export",
+		"--source-kind", "note",
+		"--source-external-ref", "thread-private",
+	)
+
+	assertPrivate := func(stage string) {
+		t.Helper()
+		info, err := os.Stat(exportPath)
+		if err != nil {
+			t.Fatalf("stat export after %s: %v", stage, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("expected export mode 0600 after %s, got %o", stage, got)
+		}
+	}
+
+	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
+	assertPrivate("first export")
+
+	if err := os.Chmod(exportPath, 0o644); err != nil {
+		t.Fatalf("chmod export: %v", err)
+	}
+	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
+	assertPrivate("replacement export")
+
+	data, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	if !strings.Contains(string(data), "ep-private") {
+		t.Fatalf("expected the replacement export to contain the episode, got %q", string(data))
+	}
+}
+
+func TestCLIAdminExportRefusesUnsupportedPlatform(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("admin export refuses to run on macOS and Windows")
+	}
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "refused-export.ltdb")
+	exportPath := filepath.Join(tmpDir, "refused-export.json")
+
+	runCLI := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
+	}
+
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runCLI(
+		"ingest", "episode",
+		"--db", dbPath,
+		"--id", "ep-refused",
+		"--kind", "note",
+		"--content", "refused export",
+		"--source-kind", "note",
+		"--source-external-ref", "thread-refused",
+	); err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+
+	_, err := runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
+	if err == nil {
+		t.Fatal("expected admin export to be refused on this platform")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected a not-supported error, got %v", err)
+	}
+	if _, statErr := os.Stat(exportPath); statErr == nil {
+		t.Fatal("expected the refused export to create no file")
 	}
 }
