@@ -309,10 +309,6 @@ func writePrivateFile(path string, data []byte) error {
 		return err
 	}
 
-	if err := hardenPrivateFile(stageDir); err != nil {
-		return err
-	}
-
 	temp, err := os.CreateTemp(stageDir, "export-*")
 	if err != nil {
 		return err

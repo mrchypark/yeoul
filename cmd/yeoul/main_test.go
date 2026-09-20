@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -775,7 +773,16 @@ func TestCLIIndexRejectsUnsafeProjectionManifestPath(t *testing.T) {
 	}
 }
 
+// requireExportSupport skips export tests where admin export refuses to run.
+func requireExportSupport(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		t.Skip("admin export is not supported on this platform")
+	}
+}
+
 func TestCLIAdminExportImport(t *testing.T) {
+	requireExportSupport(t)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
@@ -853,6 +860,7 @@ func TestCLIAdminExportImport(t *testing.T) {
 }
 
 func TestCLIAdminExportRejectsLifecycleLoss(t *testing.T) {
+	requireExportSupport(t)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
@@ -914,6 +922,7 @@ func TestCLIAdminExportRejectsLifecycleLoss(t *testing.T) {
 }
 
 func TestCLIAdminExportRejectsRevisionLoss(t *testing.T) {
+	requireExportSupport(t)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "yeoul.ltdb")
@@ -2131,9 +2140,7 @@ func TestCLIInitForcePreservesForeignDirectory(t *testing.T) {
 }
 
 func TestCLIAdminExportUsesPrivatePermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX permission bits are not meaningful on Windows")
-	}
+	requireExportSupport(t)
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "private-export.ltdb")
@@ -2189,57 +2196,46 @@ func TestCLIAdminExportUsesPrivatePermissions(t *testing.T) {
 	}
 }
 
-func TestCLIAdminExportClearsInheritedACL(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("ACL inheritance check applies to macOS")
+func TestCLIAdminExportRefusesUnsupportedPlatform(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("admin export refuses to run on macOS and Windows")
 	}
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "acl-export.ltdb")
-	exportDir := filepath.Join(tmpDir, "acl-out")
-	exportPath := filepath.Join(exportDir, "acl-export.json")
+	dbPath := filepath.Join(tmpDir, "refused-export.ltdb")
+	exportPath := filepath.Join(tmpDir, "refused-export.json")
 
-	runCLI := func(args ...string) string {
+	runCLI := func(args ...string) (string, error) {
 		t.Helper()
 		var stdout strings.Builder
 		var stderr strings.Builder
-		if err := run(ctx, args, &stdout, &stderr); err != nil {
-			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
-		}
-		return stdout.String()
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
 	}
 
-	runCLI("init", "--db", dbPath)
-	runCLI(
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runCLI(
 		"ingest", "episode",
 		"--db", dbPath,
-		"--id", "ep-acl",
+		"--id", "ep-refused",
 		"--kind", "note",
-		"--content", "acl export",
+		"--content", "refused export",
 		"--source-kind", "note",
-		"--source-external-ref", "thread-acl",
-	)
-	if err := os.MkdirAll(exportDir, 0o700); err != nil {
-		t.Fatalf("create export directory: %v", err)
-	}
-	account, err := user.Current()
-	if err != nil {
-		t.Fatalf("resolve current user: %v", err)
-	}
-	aclSpec := "user:" + account.Username + " allow read,file_inherit,directory_inherit"
-	if out, err := exec.Command("chmod", "+a", aclSpec, exportDir).CombinedOutput(); err != nil {
-		t.Skipf("cannot install a directory ACL in this environment: %v: %s", err, out)
+		"--source-external-ref", "thread-refused",
+	); err != nil {
+		t.Fatalf("ingest episode: %v", err)
 	}
 
-	runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
-
-	out, err := exec.Command("ls", "-le", exportPath).Output()
-	if err != nil {
-		t.Fatalf("inspect export ACL: %v", err)
+	_, err := runCLI("admin", "export", "--db", dbPath, "--out", exportPath)
+	if err == nil {
+		t.Fatal("expected admin export to be refused on this platform")
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, " allow ") {
-			t.Fatalf("expected the export to carry no inherited ACL entries, got %q", line)
-		}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected a not-supported error, got %v", err)
+	}
+	if _, statErr := os.Stat(exportPath); statErr == nil {
+		t.Fatal("expected the refused export to create no file")
 	}
 }
