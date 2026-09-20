@@ -36,6 +36,10 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 
 	hits := make([]SearchHit, 0)
 	included := IncludedRecords{}
+	// Support records are only reported when the caller asks for them, and
+	// collecting them builds the entity revision index. A request that discards
+	// them must not pay for that scan.
+	collectSupport := req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets
 	graphSeeds := map[string]float64{}
 	seenHits := map[string]bool{}
 	stats := e.searchCorpusStats(types, req, spaceID, index)
@@ -80,8 +84,10 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				seenHits["fact:"+factRecord.ID] = true
 				addGraphSeeds(graphSeeds, score, factRecord.ID, factRecord.SubjectID, factRecord.ObjectID)
 				addGraphSeeds(graphSeeds, score, factRecord.SupportingEpisodeIDs...)
-				included.Facts = append(included.Facts, *factRecord)
-				e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+				if collectSupport {
+					included.Facts = append(included.Facts, *factRecord)
+					e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+				}
 			}
 		}
 	}
@@ -195,8 +201,10 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			seenHits["fact:"+factRecord.ID] = true
 			addGraphSeeds(expandedSeeds, score, factRecord.ID, factRecord.SubjectID, factRecord.ObjectID)
 			addGraphSeeds(expandedSeeds, score, factRecord.SupportingEpisodeIDs...)
-			included.Facts = append(included.Facts, *factRecord)
-			e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+			if collectSupport {
+				included.Facts = append(included.Facts, *factRecord)
+				e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+			}
 		}
 		for _, fact := range e.facts {
 			factRecord := e.factVersionAt(fact, req.Temporal, index)
@@ -222,8 +230,10 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				Reasons:     []string{"graph_expansion_bfs"},
 			})
 			seenHits["fact:"+factRecord.ID] = true
-			included.Facts = append(included.Facts, *factRecord)
-			e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+			if collectSupport {
+				included.Facts = append(included.Facts, *factRecord)
+				e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+			}
 		}
 	}
 
@@ -244,7 +254,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 		Hits: hitsPage,
 	}
 	response.Meta.NextCursor = nextCursor
-	if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
+	if collectSupport {
 		response.Included = dedupeIncluded(included)
 	}
 	return response, nil

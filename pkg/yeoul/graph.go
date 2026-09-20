@@ -23,6 +23,10 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 
 	facts := make([]Fact, 0)
 	included := IncludedRecords{}
+	// Support records explain a hit; they are not the hit. Collecting them costs
+	// an entity version lookup per fact, and that lookup builds the entity
+	// revision index, so a request that discards them must not pay for them.
+	collectSupport := req.Include.Provenance || req.Include.RelatedEntities || req.Include.SupportingEpisodes
 	for _, fact := range e.facts {
 		factRecord := e.factVersionAt(fact, req.Temporal, index)
 		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
@@ -41,8 +45,10 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 			continue
 		}
 		facts = append(facts, *factRecord)
-		included.Facts = append(included.Facts, *factRecord)
-		e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+		if collectSupport {
+			included.Facts = append(included.Facts, *factRecord)
+			e.addFactSupport(&included, *factRecord, req.Scope, req.Temporal, index)
+		}
 	}
 
 	sort.SliceStable(facts, func(i, j int) bool {
@@ -61,7 +67,7 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 		Facts: factPage,
 	}
 	resp.Meta.NextCursor = nextCursor
-	if req.Include.Provenance || req.Include.RelatedEntities || req.Include.SupportingEpisodes {
+	if collectSupport {
 		resp.Included = dedupeIncluded(included)
 	}
 	return resp, nil

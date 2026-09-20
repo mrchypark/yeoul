@@ -16,8 +16,14 @@ import "time"
 // and no two readers share it.
 type temporalIndex struct {
 	engine *engine
-	at     time.Time
-	built  bool
+
+	// Fact and entity histories are indexed independently. A read that needs
+	// only one kind must not pay for the other kind's history: a fact lookup
+	// would otherwise scan every entity revision in the database.
+	factAt      time.Time
+	factBuilt   bool
+	entityAt    time.Time
+	entityBuilt bool
 
 	factRevisions   map[string]FactRevision
 	entityRevisions map[string]EntityRevision
@@ -30,17 +36,22 @@ type temporalIndex struct {
 // observation costs a nil check.
 var temporalIndexRebuildObserver func()
 
+// temporalIndexKindObserver reports which revision kind a rebuild scanned.
+// Tests set it to prove that a single-kind read never scans the other kind's
+// revision log. Production leaves it nil.
+var temporalIndexKindObserver func(kind string)
+
 func newTemporalIndex(e *engine) *temporalIndex {
 	return &temporalIndex{engine: e}
 }
 
-// rebuild indexes the newest revision at or before at for every known record.
-// A query that asks for a different instant after the index was built (a helper
-// handed a different temporal filter, for example) rebuilds instead of
-// answering from the wrong instant.
-func (idx *temporalIndex) rebuild(at time.Time) {
-	idx.at = at
-	idx.built = true
+// rebuildFacts indexes the newest fact revision at or before at. A query that
+// asks for a different instant after the index was built (a helper handed a
+// different temporal filter, for example) rebuilds instead of answering from
+// the wrong instant.
+func (idx *temporalIndex) rebuildFacts(at time.Time) {
+	idx.factAt = at
+	idx.factBuilt = true
 
 	facts := make(map[string]FactRevision)
 	for _, revision := range idx.engine.factRevisions {
@@ -54,6 +65,15 @@ func (idx *temporalIndex) rebuild(at time.Time) {
 	}
 	idx.factRevisions = facts
 
+	idx.observeRebuild("fact")
+}
+
+// rebuildEntities is the entity half of rebuildFacts, with the same rebuild
+// rule and the same reason for existing.
+func (idx *temporalIndex) rebuildEntities(at time.Time) {
+	idx.entityAt = at
+	idx.entityBuilt = true
+
 	entities := make(map[string]EntityRevision)
 	for _, revision := range idx.engine.entityRevisions {
 		if revision.TxTime.After(at) {
@@ -66,8 +86,15 @@ func (idx *temporalIndex) rebuild(at time.Time) {
 	}
 	idx.entityRevisions = entities
 
+	idx.observeRebuild("entity")
+}
+
+func (idx *temporalIndex) observeRebuild(kind string) {
 	if temporalIndexRebuildObserver != nil {
 		temporalIndexRebuildObserver()
+	}
+	if temporalIndexKindObserver != nil {
+		temporalIndexKindObserver(kind)
 	}
 }
 
@@ -82,16 +109,16 @@ func revisionNewerThan(candidateTime time.Time, candidateID string, currentTime 
 }
 
 func (idx *temporalIndex) latestFactRevisionAt(factID string, at time.Time) (FactRevision, bool) {
-	if !idx.built || !idx.at.Equal(at) {
-		idx.rebuild(at)
+	if !idx.factBuilt || !idx.factAt.Equal(at) {
+		idx.rebuildFacts(at)
 	}
 	revision, ok := idx.factRevisions[factID]
 	return revision, ok
 }
 
 func (idx *temporalIndex) latestEntityRevisionAt(entityID string, at time.Time) (EntityRevision, bool) {
-	if !idx.built || !idx.at.Equal(at) {
-		idx.rebuild(at)
+	if !idx.entityBuilt || !idx.entityAt.Equal(at) {
+		idx.rebuildEntities(at)
 	}
 	revision, ok := idx.entityRevisions[entityID]
 	return revision, ok
