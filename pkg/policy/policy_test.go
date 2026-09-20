@@ -174,6 +174,8 @@ func TestValidateSearchRecipeChecksControlValues(t *testing.T) {
 		{"entity_types rejects empty list", recipeExpand("entity_types", []any{}), `invalid expand setting "entity_types"`},
 		{"entity_types rejects empty entries", recipeExpand("entity_types", []any{"Project", ""}), `invalid expand setting "entity_types"`},
 		{"entity_types rejects non-string entries", recipeExpand("entity_types", []any{7}), `invalid expand setting "entity_types"`},
+		{"entity_types rejects the hybrid strategy", SearchRecipe{Strategy: "hybrid", Expand: map[string]any{"entity_types": []any{"Project"}}}, `expand setting "entity_types", which the "hybrid" strategy does not apply`},
+		{"entity_types rejects the predicate_subject_lookup strategy", SearchRecipe{Strategy: "predicate_subject_lookup", Expand: map[string]any{"entity_types": []any{"Project"}}}, `expand setting "entity_types", which the "predicate_subject_lookup" strategy does not apply`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issues := ValidateSearchRecipe("recipe", tc.recipe)
