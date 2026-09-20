@@ -3,10 +3,12 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -88,9 +90,15 @@ var supportedRecipeFilterKeys = []string{"fact_status", "window_days", "predicat
 // request fields.
 var supportedRecipeExpandKeys = []string{"entity_types"}
 
+// supportedRecipeFactStatuses lists the fact lifecycle states a recipe filter
+// may select, mirroring the status domain the search runtime accepts.
+var supportedRecipeFactStatuses = []string{"active", "superseded", "retracted"}
+
 // ValidateSearchRecipe reports recipe controls that the runtime does not
 // implement. Every accepted setting must change the executed request, so a
-// recipe can never advertise behavior the CLI ignores.
+// recipe can never advertise behavior the CLI ignores. A control is accepted
+// only when its value also has an applicable shape; a recognized key with a
+// malformed value is rejected here and never silently skipped at execution.
 func ValidateSearchRecipe(name string, recipe SearchRecipe) []string {
 	var issues []string
 	if len(recipe.Ranking) > 0 {
@@ -99,14 +107,192 @@ func ValidateSearchRecipe(name string, recipe SearchRecipe) []string {
 	for _, key := range sortedKeys(recipe.Filters) {
 		if !slices.Contains(supportedRecipeFilterKeys, key) {
 			issues = append(issues, fmt.Sprintf("recipe %q declares unsupported filter %q", name, key))
+			continue
+		}
+		if err := validateRecipeFilterValue(key, recipe); err != nil {
+			issues = append(issues, fmt.Sprintf("recipe %q declares invalid filter %q: %v", name, key, err))
 		}
 	}
 	for _, key := range sortedKeys(recipe.Expand) {
 		if !slices.Contains(supportedRecipeExpandKeys, key) {
 			issues = append(issues, fmt.Sprintf("recipe %q declares unsupported expand setting %q", name, key))
+			continue
+		}
+		if _, _, err := RecipeEntityTypes(recipe); err != nil {
+			issues = append(issues, fmt.Sprintf("recipe %q declares invalid expand setting %q: %v", name, key, err))
 		}
 	}
 	return issues
+}
+
+// validateRecipeFilterValue checks the value shape of a supported filter key.
+// The accepted shapes match what applySearchRecipe can execute, so validation
+// and execution can never disagree about a control.
+func validateRecipeFilterValue(key string, recipe SearchRecipe) error {
+	switch key {
+	case "fact_status":
+		_, _, err := RecipeFactStatuses(recipe)
+		return err
+	case "window_days":
+		_, _, err := RecipeWindowDays(recipe)
+		return err
+	case "predicate":
+		_, _, err := RecipePredicates(recipe)
+		return err
+	default:
+		return nil
+	}
+}
+
+// RecipeFactStatuses returns the fact_status filter values declared by the
+// recipe. The bool reports whether the recipe declares the filter at all. The
+// values are an explicit string list where every entry is a known status.
+func RecipeFactStatuses(recipe SearchRecipe) ([]string, bool, error) {
+	raw, ok := recipe.Filters["fact_status"]
+	if !ok {
+		return nil, false, nil
+	}
+	values, err := recipeStringList(raw, true)
+	if err != nil {
+		return nil, true, err
+	}
+	for _, value := range values {
+		if !slices.Contains(supportedRecipeFactStatuses, value) {
+			return nil, true, fmt.Errorf("must contain only %s, found %q", strings.Join(supportedRecipeFactStatuses, ", "), value)
+		}
+	}
+	return values, true, nil
+}
+
+// RecipePredicates returns the predicate filter values declared by the recipe.
+// The bool reports whether the recipe declares the filter at all.
+func RecipePredicates(recipe SearchRecipe) ([]string, bool, error) {
+	raw, ok := recipe.Filters["predicate"]
+	if !ok {
+		return nil, false, nil
+	}
+	values, err := recipeStringList(raw, true)
+	if err != nil {
+		return nil, true, err
+	}
+	return values, true, nil
+}
+
+// RecipeWindowDays returns the window_days filter value declared by the recipe.
+// The bool reports whether the recipe declares the filter at all. The value
+// must be a whole, non-negative integer; non-scalar shapes are rejected.
+func RecipeWindowDays(recipe SearchRecipe) (int, bool, error) {
+	raw, ok := recipe.Filters["window_days"]
+	if !ok {
+		return 0, false, nil
+	}
+	days, err := recipeInteger(raw)
+	if err != nil {
+		return 0, true, err
+	}
+	if days < 0 {
+		return 0, true, fmt.Errorf("must not be negative, found %d", days)
+	}
+	return days, true, nil
+}
+
+// RecipeEntityTypes returns the expand.entity_types list declared by the
+// recipe. The bool reports whether the recipe declares the setting at all. The
+// value must be a non-empty list of non-empty strings.
+func RecipeEntityTypes(recipe SearchRecipe) ([]string, bool, error) {
+	raw, ok := recipe.Expand["entity_types"]
+	if !ok {
+		return nil, false, nil
+	}
+	values, err := recipeStringList(raw, false)
+	if err != nil {
+		return nil, true, err
+	}
+	return values, true, nil
+}
+
+// recipeStringList coerces a scalar string or a string list into a non-empty
+// list of trimmed, non-empty strings. When allowScalar is false the value must
+// already be a list, so a bare string is rejected instead of being applied.
+func recipeStringList(raw any, allowScalar bool) ([]string, error) {
+	var items []any
+	switch value := raw.(type) {
+	case string:
+		if !allowScalar {
+			return nil, fmt.Errorf("must be a list of strings, found a string")
+		}
+		for _, part := range strings.Split(value, ",") {
+			items = append(items, part)
+		}
+	case []string:
+		for _, item := range value {
+			items = append(items, item)
+		}
+	case []any:
+		items = append(items, value...)
+	default:
+		if allowScalar {
+			return nil, fmt.Errorf("must be a string or list of strings, found %s", describeRecipeValue(raw))
+		}
+		return nil, fmt.Errorf("must be a list of strings, found %s", describeRecipeValue(raw))
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("must contain only strings, found %s", describeRecipeValue(item))
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil, fmt.Errorf("must not contain empty values")
+		}
+		values = append(values, text)
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("must not be empty")
+	}
+	return values, nil
+}
+
+// recipeInteger coerces a whole-number scalar into an int. Non-integral
+// numbers, non-numeric strings, and non-scalar shapes are rejected.
+func recipeInteger(raw any) (int, error) {
+	switch value := raw.(type) {
+	case int:
+		return value, nil
+	case int64:
+		return int(value), nil
+	case float64:
+		if math.Trunc(value) != value {
+			return 0, fmt.Errorf("must be a whole number, found %v", value)
+		}
+		return int(value), nil
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0, fmt.Errorf("must be an integer, found %q", value)
+		}
+		return parsed, nil
+	default:
+		return 0, fmt.Errorf("must be an integer, found %s", describeRecipeValue(raw))
+	}
+}
+
+func describeRecipeValue(raw any) string {
+	switch raw.(type) {
+	case map[string]any, map[any]any:
+		return "an object"
+	case []any, []string:
+		return "a list"
+	case nil:
+		return "null"
+	case bool:
+		return "a boolean"
+	case int, int64, float64:
+		return "a number"
+	default:
+		return fmt.Sprintf("%T", raw)
+	}
 }
 
 func sortedKeys(values map[string]any) []string {
