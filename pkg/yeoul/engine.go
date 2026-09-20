@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -523,6 +524,9 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 	if len(superseded) == 0 {
 		return newFact
 	}
+	// The recorded lineage is a set of IDs, so it is sorted: metadata must not
+	// depend on the order the map scan above happened to visit facts in.
+	slices.Sort(superseded)
 	newFact.Metadata = mergeAnyMap(newFact.Metadata, map[string]any{
 		"supersedes":       superseded,
 		"supersede_reason": "cardinality_one_slot_replaced",
@@ -578,8 +582,16 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 	e.facts[factID] = oldFact
 	e.appendFactRevisionLocked(oldFact, "supersede")
 	if storedNewFact, ok := e.facts[newFact.ID]; ok {
+		// Replacing a fact through the cardinality-one slot may already have
+		// recorded automatic supersession targets. The explicit target is merged
+		// into that list instead of overwriting it, and the list representation is
+		// kept, so snapshot and provenance consumers always see the complete
+		// lineage of the replacement.
+		supersedes := append(metadataStringIDs(storedNewFact.Metadata["supersedes"]), factID)
+		supersedes = dedupeStrings(supersedes)
+		slices.Sort(supersedes)
 		storedNewFact.Metadata = mergeAnyMap(storedNewFact.Metadata, map[string]any{
-			"supersedes":       factID,
+			"supersedes":       supersedes,
 			"supersede_reason": reason,
 		})
 		e.facts[newFact.ID] = storedNewFact

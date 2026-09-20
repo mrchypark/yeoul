@@ -1794,6 +1794,81 @@ func TestCardinalityOneProvenanceIncludesAllAutoSupersededFacts(t *testing.T) {
 	}
 }
 
+func TestExplicitSupersessionKeepsAutoSupersededIDs(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "explicit supersession lineage", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "explicit supersession"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	oldA, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old a: %v", err)
+	}
+	oldB, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old b", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old b: %v", err)
+	}
+	replacement, err := eng.SupersedeFact(ctx, oldA.ID, FactInput{
+		ID:                   "fact:new",
+		Predicate:            "HAS_STATE",
+		SubjectID:            entity.ID,
+		ValueText:            "new",
+		Cardinality:          factCardinalityOne,
+		SupportingEpisodeIDs: []string{episode.EpisodeID},
+	}, "explicit replacement")
+	if err != nil {
+		t.Fatalf("supersede fact: %v", err)
+	}
+
+	// The explicit target and the fact that cardinality-one slot replacement
+	// superseded on its own must both survive, in one representation.
+	stored, err := eng.GetFact(ctx, replacement.NewFactID)
+	if err != nil {
+		t.Fatalf("get replacement: %v", err)
+	}
+	listed, isList := stored.Metadata["supersedes"].([]string)
+	if !isList {
+		t.Fatalf("expected supersedes to be recorded as a list, got %#v", stored.Metadata["supersedes"])
+	}
+	if !slices.Contains(listed, oldA.ID) || !slices.Contains(listed, oldB.ID) {
+		t.Fatalf("expected explicit and automatic supersession targets, got %#v", listed)
+	}
+
+	snapshot, err := Snapshot(ctx, eng)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	snapshotIDs := metadataStringIDs(snapshot.Facts[replacement.NewFactID].Metadata["supersedes"])
+	if !slices.Contains(snapshotIDs, oldA.ID) || !slices.Contains(snapshotIDs, oldB.ID) {
+		t.Fatalf("expected snapshot to keep both superseded facts, got %#v", snapshotIDs)
+	}
+
+	prov, err := eng.Provenance(ctx, ProvenanceRequest{
+		Kind:     "fact",
+		ID:       replacement.NewFactID,
+		Temporal: TemporalFilter{IncludeInactive: true},
+	})
+	if err != nil {
+		t.Fatalf("provenance: %v", err)
+	}
+	edges := map[string]bool{}
+	for _, edge := range prov.Edges {
+		if edge.Type == "SUPERSEDES" && edge.FromID == replacement.NewFactID {
+			edges[edge.ToID] = true
+		}
+	}
+	if !edges[oldA.ID] || !edges[oldB.ID] {
+		t.Fatalf("expected provenance edges to both superseded facts, got %#v", prov.Edges)
+	}
+}
 func TestFactSupportRejectsCrossSpaceEpisodeSource(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
