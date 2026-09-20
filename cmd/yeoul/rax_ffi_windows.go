@@ -169,12 +169,17 @@ func openRaxFFISearcher(libPath, storePath string) (*raxFFISearcher, error) {
 			return nil, err
 		}
 		var handle unsafe.Pointer
+		// Rax reports failures through thread-local state, so the open call and the
+		// error extraction that follows it must run on the same OS thread.
+		runtime.LockOSThread()
 		status, _, callErr := lib.openReadOnly.Call(uintptr(unsafe.Pointer(store)), uintptr(unsafe.Pointer(&handle)))
 		if status != 0 {
 			_, err := lib.output(status, callErr, nil)
+			runtime.UnlockOSThread()
 			lib.close()
 			return nil, err
 		}
+		runtime.UnlockOSThread()
 		searcher.handle = handle
 	}
 	return searcher, nil
