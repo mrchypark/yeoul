@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -524,7 +525,6 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		return nil, err
 	}
 	candidates := make([]raxCandidate, 0, len(docIDs))
-	included := yeoul.IncludedRecords{}
 	coreScores := raxCoreRerankScores(ctx, eng, req, len(docIDs)*2)
 	types := compactStrings(req.Types...)
 	if len(types) == 0 {
@@ -609,9 +609,6 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 	hits := make([]yeoul.SearchHit, 0, len(page))
 	for _, candidate := range page {
 		hits = append(hits, candidate.hit)
-		if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
-			addIncludedRecord(ctx, eng, &included, candidate.record, req)
-		}
 	}
 	now := time.Now().UTC()
 	spaceID := strings.TrimSpace(req.Meta.SpaceID)
@@ -619,11 +616,9 @@ func buildRaxPrimarySearchResponse(ctx context.Context, eng yeoul.Engine, req ye
 		spaceID = "default"
 	}
 	resp := &yeoul.SearchResponse{
-		Meta: yeoul.QueryResponseMeta{SpaceID: spaceID, SnapshotAt: &now, NextCursor: nextCursor},
-		Hits: hits,
-	}
-	if req.Include.Provenance || req.Include.SupportingEpisodes || req.Include.RelatedEntities || req.Include.Snippets {
-		resp.Included = included
+		Meta:     yeoul.QueryResponseMeta{SpaceID: spaceID, SnapshotAt: &now, NextCursor: nextCursor},
+		Hits:     hits,
+		Included: raxAssembleIncludedRecords(ctx, eng, req, hits),
 	}
 	return resp, nil
 }
@@ -1033,50 +1028,97 @@ func raxRecordMatchesCurrentQuery(record any, query string) bool {
 	return false
 }
 
-func addIncludedRecord(ctx context.Context, eng yeoul.Engine, included *yeoul.IncludedRecords, record any, req yeoul.SearchRequest) {
-	switch value := record.(type) {
-	case *yeoul.Fact:
-		included.Facts = append(included.Facts, *value)
-		if record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "entity", ID: value.SubjectID, Temporal: req.Temporal}); err == nil {
-			if entity, ok := record.Record.(*yeoul.Entity); ok && yeoul.RecordPassesSearchFilters(ctx, eng, entity, req) {
-				included.Entities = append(included.Entities, *entity)
-			}
-		}
-		if value.ObjectID != "" {
-			if record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "entity", ID: value.ObjectID, Temporal: req.Temporal}); err == nil {
-				if entity, ok := record.Record.(*yeoul.Entity); ok && yeoul.RecordPassesSearchFilters(ctx, eng, entity, req) {
-					included.Entities = append(included.Entities, *entity)
-				}
-			}
-		}
-		for _, episodeID := range value.SupportingEpisodeIDs {
-			episode, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "episode", ID: episodeID, Temporal: req.Temporal})
-			if err != nil || !yeoul.RecordPassesSearchFilters(ctx, eng, episode.Record, req) {
-				continue
-			}
-			episodeRecord, _ := episode.Record.(*yeoul.Episode)
-			if episodeRecord == nil {
-				continue
-			}
-			included.Episodes = append(included.Episodes, *episodeRecord)
-			if source, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: episodeRecord.SourceID, Temporal: req.Temporal}); err == nil {
-				sourceRecord, _ := source.Record.(*yeoul.Source)
-				if sourceRecord == nil {
-					continue
-				}
-				included.Sources = append(included.Sources, *sourceRecord)
-			}
-		}
-	case *yeoul.Episode:
-		included.Episodes = append(included.Episodes, *value)
-		if source, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: value.SourceID, Temporal: req.Temporal}); err == nil {
-			if sourceRecord, ok := source.Record.(*yeoul.Source); ok {
-				included.Sources = append(included.Sources, *sourceRecord)
-			}
-		}
-	case *yeoul.Entity:
-		included.Entities = append(included.Entities, *value)
+// raxAssembleIncludedRecords shapes the page-scoped IncludedRecords for a Rax
+// search using the shared shaper, so Rax matches the core engine's flag
+// implications and dedupes support shared by multiple hits. Support visibility
+// is intentionally limited to space, scope, and temporal rules: predicate and
+// anchor filters select hits and must not also suppress the provenance that
+// explains those hits.
+func raxAssembleIncludedRecords(ctx context.Context, eng yeoul.Engine, req yeoul.SearchRequest, page []yeoul.SearchHit) yeoul.IncludedRecords {
+	spaceID := strings.TrimSpace(req.Meta.SpaceID)
+	if spaceID == "" {
+		spaceID = "default"
 	}
+	resolve := func(kind, id string) (any, bool) {
+		switch kind {
+		case "fact":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "fact", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			fact, ok := record.Record.(*yeoul.Fact)
+			if !ok || fact == nil || fact.SpaceID != spaceID {
+				return nil, false
+			}
+			return fact, true
+		case "episode":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "episode", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			episode, ok := record.Record.(*yeoul.Episode)
+			if !ok || episode == nil || episode.SpaceID != spaceID || !raxEpisodeMatchesScope(ctx, eng, episode, req) {
+				return nil, false
+			}
+			return episode, true
+		case "entity":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "entity", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			entity, ok := record.Record.(*yeoul.Entity)
+			if !ok || entity == nil || entity.SpaceID != spaceID || raxEntityMarkedDuplicate(entity) {
+				return nil, false
+			}
+			return entity, true
+		case "source":
+			record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: id, Temporal: req.Temporal})
+			if err != nil {
+				return nil, false
+			}
+			source, ok := record.Record.(*yeoul.Source)
+			if !ok || source == nil || source.SpaceID != spaceID {
+				return nil, false
+			}
+			return source, true
+		default:
+			return nil, false
+		}
+	}
+	return yeoul.AssembleIncludedRecords(req.Include, page, resolve)
+}
+
+// raxEpisodeMatchesScope keeps the group/source restrictions that legitimately
+// scope support visibility, without reusing predicate or anchor hit filters.
+func raxEpisodeMatchesScope(ctx context.Context, eng yeoul.Engine, episode *yeoul.Episode, req yeoul.SearchRequest) bool {
+	if len(req.Scope.GroupIDs) > 0 && !slices.Contains(req.Scope.GroupIDs, episode.GroupID) {
+		return false
+	}
+	if len(req.Scope.SourceIDs) > 0 && !slices.Contains(req.Scope.SourceIDs, episode.SourceID) {
+		return false
+	}
+	if len(req.Scope.SourceKinds) > 0 {
+		record, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: req.Meta, Kind: "source", ID: episode.SourceID, Temporal: req.Temporal})
+		if err != nil {
+			return false
+		}
+		source, ok := record.Record.(*yeoul.Source)
+		if !ok || source == nil || source.SpaceID != episode.SpaceID || !slices.Contains(req.Scope.SourceKinds, source.Kind) {
+			return false
+		}
+	}
+	return true
+}
+
+func raxEntityMarkedDuplicate(entity *yeoul.Entity) bool {
+	if len(entity.Metadata) == 0 {
+		return false
+	}
+	value, ok := entity.Metadata["duplicate_of"]
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(fmt.Sprint(value)) != ""
 }
 
 func buildProjectionArtifacts(dbPath string, payload *exportFile) ([]projectionDocument, projectionManifest) {

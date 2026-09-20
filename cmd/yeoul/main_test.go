@@ -2034,6 +2034,92 @@ func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
 	}
 }
 
+// TestRaxPrimarySearchIncludeFlagsAreIndependent mirrors the core flag-shaping
+// contract on the Rax path and checks that support shared by multiple hits is
+// deduplicated rather than repeated per hit.
+func TestRaxPrimarySearchIncludeFlagsAreIndependent(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	epShared, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-shared", Kind: "note", Content: "shared needle note", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "shared"}})
+	if err != nil {
+		t.Fatalf("ingest shared episode: %v", err)
+	}
+	project, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:alpha", Type: "Project", CanonicalName: "Alpha"})
+	if err != nil {
+		t.Fatalf("upsert project: %v", err)
+	}
+	database, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "database:shared", Type: "Database", CanonicalName: "Shared"})
+	if err != nil {
+		t.Fatalf("upsert database: %v", err)
+	}
+	for _, id := range []string{"fact-a", "fact-b"} {
+		if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: id, Predicate: "HAS_NEEDLE", SubjectID: project.ID, ObjectID: database.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epShared.EpisodeID}}); err != nil {
+			t.Fatalf("assert %s: %v", id, err)
+		}
+	}
+
+	search := func(t *testing.T, include yeoul.Include) *yeoul.SearchResponse {
+		t.Helper()
+		resp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+			QueryText: "shared needle value",
+			Types:     []string{"fact"},
+			Include:   include,
+		}, []string{"fact:fact-a", "fact:fact-b"})
+		if err != nil {
+			t.Fatalf("build rax response: %v", err)
+		}
+		if len(resp.Hits) != 2 {
+			t.Fatalf("expected two fact hits, got %#v", resp.Hits)
+		}
+		return resp
+	}
+
+	noFlags := search(t, yeoul.Include{})
+	if len(noFlags.Included.Facts) != 0 || len(noFlags.Included.Episodes) != 0 || len(noFlags.Included.Entities) != 0 || len(noFlags.Included.Sources) != 0 {
+		t.Fatalf("expected no includes without flags, got %#v", noFlags.Included)
+	}
+
+	factsOnly := search(t, yeoul.Include{SupportingFacts: true})
+	if len(factsOnly.Included.Facts) != 2 {
+		t.Fatalf("expected supporting_facts to include both facts, got %#v", factsOnly.Included.Facts)
+	}
+	if len(factsOnly.Included.Episodes) != 0 || len(factsOnly.Included.Entities) != 0 || len(factsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected supporting_facts to exclude other families, got %#v", factsOnly.Included)
+	}
+
+	episodesOnly := search(t, yeoul.Include{SupportingEpisodes: true})
+	if len(episodesOnly.Included.Episodes) != 1 || episodesOnly.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected shared support to dedupe to one episode, got %#v", episodesOnly.Included.Episodes)
+	}
+	if len(episodesOnly.Included.Facts) != 0 || len(episodesOnly.Included.Entities) != 0 {
+		t.Fatalf("expected supporting_episodes to exclude other families, got %#v", episodesOnly.Included)
+	}
+
+	provenance := search(t, yeoul.Include{Provenance: true})
+	if len(provenance.Included.Episodes) != 1 || provenance.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected provenance to include the shared episode once, got %#v", provenance.Included.Episodes)
+	}
+	if len(provenance.Included.Sources) != 1 || provenance.Included.Sources[0].Kind != "note" {
+		t.Fatalf("expected provenance to imply the episode source, got %#v", provenance.Included.Sources)
+	}
+
+	entitiesOnly := search(t, yeoul.Include{RelatedEntities: true})
+	if len(entitiesOnly.Included.Entities) != 2 {
+		t.Fatalf("expected related_entities to include the deduped subject and object, got %#v", entitiesOnly.Included.Entities)
+	}
+	if len(entitiesOnly.Included.Facts) != 0 || len(entitiesOnly.Included.Episodes) != 0 || len(entitiesOnly.Included.Sources) != 0 {
+		t.Fatalf("expected related_entities to exclude other families, got %#v", entitiesOnly.Included)
+	}
+
+	snippetsOnly := search(t, yeoul.Include{Snippets: true})
+	if len(snippetsOnly.Included.Facts) != 0 || len(snippetsOnly.Included.Episodes) != 0 || len(snippetsOnly.Included.Entities) != 0 || len(snippetsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected snippets to select no included family, got %#v", snippetsOnly.Included)
+	}
+}
+
 func TestCLISearchRejectsAmbiguousTemporalFlags(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

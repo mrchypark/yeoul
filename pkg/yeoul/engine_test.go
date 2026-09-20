@@ -2594,7 +2594,7 @@ func TestSearchPaginationBoundsIncludedRecords(t *testing.T) {
 		t.Fatalf("assert fact-b: %v", err)
 	}
 
-	include := Include{Provenance: true, SupportingEpisodes: true, RelatedEntities: true}
+	include := Include{Provenance: true, SupportingFacts: true, SupportingEpisodes: true, RelatedEntities: true}
 	page1, err := eng.Search(ctx, SearchRequest{
 		QueryText: "shared needle value",
 		Types:     []string{"fact"},
@@ -2657,7 +2657,7 @@ func TestSearchPaginationBoundsIncludedRecords(t *testing.T) {
 
 	lookupPage1, err := eng.LookupFacts(ctx, FactLookupRequest{
 		SubjectIDs: []string{projectA.ID, projectB.ID},
-		Include:    Include{Provenance: true, SupportingEpisodes: true, RelatedEntities: true},
+		Include:    Include{Provenance: true, SupportingFacts: true, SupportingEpisodes: true, RelatedEntities: true},
 		Page:       Page{Limit: 1},
 	})
 	if err != nil {
@@ -2671,5 +2671,90 @@ func TestSearchPaginationBoundsIncludedRecords(t *testing.T) {
 	}
 	if len(lookupPage1.Included.Facts) != 1 || lookupPage1.Included.Facts[0].ID != "fact-a" {
 		t.Fatalf("expected lookup page1 to include only fact-a, got %#v", lookupPage1.Included.Facts)
+	}
+}
+
+func TestSearchIncludeFlagsAreIndependentAndDedupeSharedSupport(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	epShared, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-shared", Kind: "note", Content: "shared needle note", Source: SourceInput{Kind: "note", ExternalRef: "shared"}})
+	if err != nil {
+		t.Fatalf("ingest shared episode: %v", err)
+	}
+	project, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:alpha", Type: "Project", CanonicalName: "Alpha"})
+	if err != nil {
+		t.Fatalf("upsert project: %v", err)
+	}
+	database, err := eng.UpsertEntity(ctx, EntityInput{ID: "database:shared", Type: "Database", CanonicalName: "Shared"})
+	if err != nil {
+		t.Fatalf("upsert database: %v", err)
+	}
+	for _, id := range []string{"fact-a", "fact-b"} {
+		if _, err := eng.AssertFact(ctx, FactInput{ID: id, Predicate: "HAS_NEEDLE", SubjectID: project.ID, ObjectID: database.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epShared.EpisodeID}}); err != nil {
+			t.Fatalf("assert %s: %v", id, err)
+		}
+	}
+
+	search := func(t *testing.T, include Include) *SearchResponse {
+		t.Helper()
+		resp, err := eng.Search(ctx, SearchRequest{QueryText: "shared needle value", Types: []string{"fact"}, Include: include})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(resp.Hits) != 2 {
+			t.Fatalf("expected two fact hits, got %#v", resp.Hits)
+		}
+		return resp
+	}
+
+	noFlags := search(t, Include{})
+	if len(noFlags.Included.Facts) != 0 || len(noFlags.Included.Episodes) != 0 || len(noFlags.Included.Entities) != 0 || len(noFlags.Included.Sources) != 0 {
+		t.Fatalf("expected no includes without flags, got %#v", noFlags.Included)
+	}
+
+	factsOnly := search(t, Include{SupportingFacts: true})
+	if len(factsOnly.Included.Facts) != 2 {
+		t.Fatalf("expected supporting_facts to include both facts, got %#v", factsOnly.Included.Facts)
+	}
+	if len(factsOnly.Included.Episodes) != 0 || len(factsOnly.Included.Entities) != 0 || len(factsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected supporting_facts to exclude other families, got %#v", factsOnly.Included)
+	}
+
+	episodesOnly := search(t, Include{SupportingEpisodes: true})
+	if len(episodesOnly.Included.Episodes) != 1 || episodesOnly.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected shared support to dedupe to one episode, got %#v", episodesOnly.Included.Episodes)
+	}
+	if len(episodesOnly.Included.Sources) != 1 || episodesOnly.Included.Sources[0].Kind != "note" {
+		t.Fatalf("expected an included episode to carry its source once, got %#v", episodesOnly.Included.Sources)
+	}
+	if len(episodesOnly.Included.Facts) != 0 || len(episodesOnly.Included.Entities) != 0 {
+		t.Fatalf("expected supporting_episodes to exclude other families, got %#v", episodesOnly.Included)
+	}
+
+	provenance := search(t, Include{Provenance: true})
+	if len(provenance.Included.Episodes) != 1 || provenance.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected provenance to include the shared episode once, got %#v", provenance.Included.Episodes)
+	}
+	if len(provenance.Included.Sources) != 1 || provenance.Included.Sources[0].Kind != "note" {
+		t.Fatalf("expected provenance to imply the episode source, got %#v", provenance.Included.Sources)
+	}
+	if len(provenance.Included.Facts) != 0 || len(provenance.Included.Entities) != 0 {
+		t.Fatalf("expected provenance to exclude facts and entities, got %#v", provenance.Included)
+	}
+
+	entitiesOnly := search(t, Include{RelatedEntities: true})
+	if len(entitiesOnly.Included.Entities) != 2 {
+		t.Fatalf("expected related_entities to include the deduped subject and object, got %#v", entitiesOnly.Included.Entities)
+	}
+	if len(entitiesOnly.Included.Facts) != 0 || len(entitiesOnly.Included.Episodes) != 0 || len(entitiesOnly.Included.Sources) != 0 {
+		t.Fatalf("expected related_entities to exclude other families, got %#v", entitiesOnly.Included)
+	}
+
+	snippetsOnly := search(t, Include{Snippets: true})
+	if len(snippetsOnly.Included.Facts) != 0 || len(snippetsOnly.Included.Episodes) != 0 || len(snippetsOnly.Included.Entities) != 0 || len(snippetsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected snippets to select no included family, got %#v", snippetsOnly.Included)
 	}
 }

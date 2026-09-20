@@ -565,74 +565,49 @@ func factLookupHits(facts []Fact) []SearchHit {
 // selects the page first and assembles just the support reachable from that
 // page, so a small page cannot leak the support of unreturned hits or repeat it
 // on every page. Callers must not assemble includes for unreturned matches.
+//
+// Shaping is delegated to AssembleIncludedRecords so the core engine and the Rax
+// backend honor identical flag implications and dedupe shared support.
 func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal TemporalFilter, page []SearchHit, spaceID string) IncludedRecords {
-	if !include.Provenance && !include.SupportingEpisodes && !include.RelatedEntities && !include.Snippets {
-		return IncludedRecords{}
-	}
-	included := IncludedRecords{}
-	for _, hit := range page {
-		switch hit.HitType {
+	resolve := func(kind, id string) (any, bool) {
+		switch kind {
 		case "fact":
-			fact, ok := e.facts[hit.RecordID]
+			fact, ok := e.facts[id]
 			if !ok {
-				continue
+				return nil, false
 			}
 			version := e.factVersionAt(fact, temporal)
 			if version == nil || version.SpaceID != spaceID || !e.matchesScopeForFact(*version, scope, temporal) {
-				continue
+				return nil, false
 			}
-			included.Facts = append(included.Facts, *version)
-			e.addFactSupport(&included, *version, scope, temporal, spaceID)
+			return version, true
 		case "episode":
-			episode, ok := e.episodes[hit.RecordID]
+			episode, ok := e.episodes[id]
 			if !ok || episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, temporal) || !matchesScopeForEpisode(episode, scope, e.sources) {
-				continue
+				return nil, false
 			}
-			included.Episodes = append(included.Episodes, episode)
-			e.addEpisodeSource(&included, episode, temporal, spaceID)
+			return &episode, true
 		case "entity":
-			entity, ok := e.entities[hit.RecordID]
+			entity, ok := e.entities[id]
 			if !ok {
-				continue
+				return nil, false
 			}
 			version := e.entityVersionAt(entity, temporal)
 			if version == nil || version.SpaceID != spaceID || entityMarkedDuplicate(*version) || !matchesEntityType(*version, scope.EntityTypes) {
-				continue
+				return nil, false
 			}
-			included.Entities = append(included.Entities, *version)
-		}
-	}
-	return dedupeIncluded(included)
-}
-
-// addFactSupport adds the subject/object entities and provenance episodes
-// reachable from a fact, honouring the request's scope and space.
-func (e *engine) addFactSupport(included *IncludedRecords, fact Fact, scope ScopeFilter, temporal TemporalFilter, spaceID string) {
-	if entity, ok := e.entities[fact.SubjectID]; ok {
-		if version := e.entityVersionAt(entity, temporal); version != nil && version.SpaceID == spaceID && !entityMarkedDuplicate(*version) && matchesEntityType(*version, scope.EntityTypes) {
-			included.Entities = append(included.Entities, *version)
-		}
-	}
-	if fact.ObjectID != "" {
-		if entity, ok := e.entities[fact.ObjectID]; ok {
-			if version := e.entityVersionAt(entity, temporal); version != nil && version.SpaceID == spaceID && !entityMarkedDuplicate(*version) && matchesEntityType(*version, scope.EntityTypes) {
-				included.Entities = append(included.Entities, *version)
+			return version, true
+		case "source":
+			source, ok := e.sources[id]
+			if !ok || source.SpaceID != spaceID || !e.sourceVisibleAt(source, temporal) {
+				return nil, false
 			}
+			return &source, true
+		default:
+			return nil, false
 		}
 	}
-	for _, episodeID := range fact.SupportingEpisodeIDs {
-		if episode, ok := e.episodes[episodeID]; ok && episode.SpaceID == fact.SpaceID && episode.SpaceID == spaceID && e.episodeVisibleAt(episode, temporal) && matchesScopeForEpisode(episode, scope, e.sources) {
-			included.Episodes = append(included.Episodes, episode)
-			e.addEpisodeSource(included, episode, temporal, spaceID)
-		}
-	}
-}
-
-// addEpisodeSource attaches an episode's source when it is visible in the space.
-func (e *engine) addEpisodeSource(included *IncludedRecords, episode Episode, temporal TemporalFilter, spaceID string) {
-	if source, ok := e.sources[episode.SourceID]; ok && source.SpaceID == spaceID && source.SpaceID == episode.SpaceID && e.sourceVisibleAt(source, temporal) {
-		included.Sources = append(included.Sources, source)
-	}
+	return AssembleIncludedRecords(include, page, resolve)
 }
 
 func dedupeIncluded(in IncludedRecords) IncludedRecords {
