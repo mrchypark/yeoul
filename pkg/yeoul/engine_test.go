@@ -1284,6 +1284,97 @@ func TestIngestBatchIsAtomic(t *testing.T) {
 	}
 }
 
+// TestIngestBatchCommitsAtOneTransactionTime drives an advancing clock so every
+// extra system-time read would stamp a later second. A batch must still pin one
+// transaction time for all of its records, so no historical cut can show the
+// episode while omitting the entity and fact committed by the same call.
+func TestIngestBatchCommitsAtOneTransactionTime(t *testing.T) {
+	ctx := context.Background()
+	store := &countingStore{}
+	eng := newEngine(Config{}, store)
+	rawEng := eng
+
+	base := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	var ticks int64
+	rawEng.mu.Lock()
+	rawEng.now = func() time.Time {
+		ticks++
+		return base.Add(time.Duration(ticks) * time.Second)
+	}
+	rawEng.mu.Unlock()
+
+	if _, err := eng.IngestBatch(ctx, BatchInput{
+		Episodes: []EpisodeInput{{ID: "ep:batch", Kind: "note", Content: "atomic batch", Source: SourceInput{Kind: "note"}}},
+		Entities: []EntityInput{{ID: "entity:batch", Type: "Thing", CanonicalName: "atomic"}},
+		Facts: []FactInput{{
+			ID:                   "fact:batch",
+			Predicate:            "HAS_STATE",
+			SubjectID:            "entity:batch",
+			ValueText:            "one transaction",
+			SupportingEpisodeIDs: []string{"ep:batch"},
+		}},
+	}); err != nil {
+		t.Fatalf("ingest batch: %v", err)
+	}
+
+	rawEng.mu.RLock()
+	episode := rawEng.episodes["ep:batch"]
+	entity := rawEng.entities["entity:batch"]
+	fact := rawEng.facts["fact:batch"]
+	revisionTimes := make([]time.Time, 0, 1)
+	for _, revision := range rawEng.factRevisions {
+		if revision.FactID == "fact:batch" {
+			revisionTimes = append(revisionTimes, revision.TxTime)
+		}
+	}
+	rawEng.mu.RUnlock()
+
+	committedAt := episode.IngestedAt
+	if entity.CreatedAt != committedAt || fact.CreatedAt != committedAt {
+		t.Fatalf("expected one transaction time for the batch, got episode=%s entity=%s fact=%s", committedAt, entity.CreatedAt, fact.CreatedAt)
+	}
+	if len(revisionTimes) == 0 {
+		t.Fatal("expected a revision for the batch fact")
+	}
+	for _, txTime := range revisionTimes {
+		if txTime != committedAt {
+			t.Fatalf("expected revisions to share the batch transaction time %s, got %s", committedAt, txTime)
+		}
+	}
+
+	// The atomic batch is wholly visible at its commit time and wholly absent
+	// before it. A partial cut would expose the episode alone.
+	for _, record := range []struct {
+		kind string
+		id   string
+	}{
+		{kind: "episode", id: "ep:batch"},
+		{kind: "entity", id: "entity:batch"},
+		{kind: "fact", id: "fact:batch"},
+	} {
+		before := committedAt.Add(-time.Nanosecond)
+		if _, err := eng.GetRecord(ctx, GetRecordRequest{
+			Kind:     record.kind,
+			ID:       record.id,
+			Temporal: TemporalFilter{AsOf: &before, IncludeInactive: true},
+		}); err == nil {
+			t.Fatalf("expected %s to be invisible before the batch commit time", record.kind)
+		}
+		at := committedAt
+		resp, err := eng.GetRecord(ctx, GetRecordRequest{
+			Kind:     record.kind,
+			ID:       record.id,
+			Temporal: TemporalFilter{AsOf: &at, IncludeInactive: true},
+		})
+		if err != nil {
+			t.Fatalf("expected %s to be visible at the batch commit time: %v", record.kind, err)
+		}
+		if resp.Record == nil {
+			t.Fatalf("expected a %s record at the batch commit time", record.kind)
+		}
+	}
+}
+
 func TestIngestBatchRejectsRevisionImport(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})

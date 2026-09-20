@@ -31,6 +31,7 @@ var reservedFactMetadataKeys = map[string]bool{
 type engine struct {
 	mu       sync.RWMutex
 	now      func() time.Time
+	txTime   time.Time
 	sequence uint64
 	cfg      Config
 	store    stateStore
@@ -141,11 +142,11 @@ func (e *engine) IngestEpisode(ctx context.Context, input EpisodeInput) (*Episod
 		return nil, errorf(ErrInputInvalid, "episode content is required", map[string]any{"field": "content"}, nil)
 	}
 
-	now := e.now()
 	spaceID := normalizeSpaceID(input.SpaceID)
 
 	var result *EpisodeResult
 	err := e.mutateLocked(ctx, func() error {
+		now := e.txNow()
 		source, err := e.resolveSource(spaceID, input.SourceID, input.Source, now)
 		if err != nil {
 			return err
@@ -169,7 +170,7 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 			if strings.TrimSpace(episode.Kind) == "" || strings.TrimSpace(episode.Content) == "" {
 				return errorf(ErrInputInvalid, "episode kind and content are required", map[string]any{"kind": episode.Kind, "id": episode.ID}, nil)
 			}
-			now := e.now()
+			now := e.txNow()
 			spaceID := normalizeSpaceID(episode.SpaceID)
 			source, err := e.resolveSource(spaceID, episode.SourceID, episode.Source, now)
 			if err != nil {
@@ -304,7 +305,7 @@ func (e *engine) ingestEpisodeLocked(spaceID string, input EpisodeInput, source 
 }
 
 func (e *engine) upsertEntityLocked(input EntityInput) (*Entity, error) {
-	now := e.now()
+	now := e.txNow()
 	spaceID := normalizeSpaceID(input.SpaceID)
 	id := input.ID
 	derived := id == ""
@@ -443,7 +444,7 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 		return nil, errorf(ErrInputInvalid, "supporting_episode_ids must contain at least one episode", map[string]any{"field": "supporting_episode_ids"}, nil)
 	}
 
-	now := e.now()
+	now := e.txNow()
 	id := input.ID
 	if id == "" {
 		id = e.newIDLocked("fact")
@@ -623,7 +624,7 @@ func (e *engine) RetractFact(ctx context.Context, factID string, reason string) 
 			return nil
 		}
 
-		now := e.now()
+		now := e.txNow()
 		fact.Status = factStatusRetracted
 		fact.RetractedAt = now
 		fact.RetractionReason = reason
@@ -849,6 +850,11 @@ func (e *engine) mutateLocked(ctx context.Context, fn func() error) error {
 	if err := e.ensureWritableLocked(); err != nil {
 		return err
 	}
+	// Pin one transaction time for the whole mutation so every record it creates
+	// shares a single commit instant. An atomic batch then becomes visible all at
+	// once: no historical cut can fall between the system times of its records.
+	e.txTime = e.now()
+	defer func() { e.txTime = time.Time{} }()
 	snapshot := e.snapshotLocked()
 	if err := fn(); err != nil {
 		e.restoreLocked(snapshot)
@@ -861,6 +867,18 @@ func (e *engine) mutateLocked(ctx context.Context, fn func() error) error {
 	// The save is the commit point: the context is not consulted again, so
 	// cancellation racing the commit cannot mislabel durable work as skipped.
 	return nil
+}
+
+// txNow returns the system time for records created by the current mutation.
+// mutateLocked pins one transaction time per mutation, so an atomic batch is
+// stamped as one commit. Outside a mutation there is no pinned time and callers
+// get the wall clock, which keeps ReadOnly queries and metadata timestamps
+// unchanged.
+func (e *engine) txNow() time.Time {
+	if !e.txTime.IsZero() {
+		return e.txTime
+	}
+	return e.now()
 }
 
 func (e *engine) restoreLocked(snapshot persistedState) {
