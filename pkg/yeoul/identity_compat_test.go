@@ -293,3 +293,46 @@ func TestEpisodeReplayReusesSpaceQualifiedLegacySourceID(t *testing.T) {
 		t.Fatalf("expected the base-version source ID %q, got %q", baseID, result.SourceID)
 	}
 }
+
+func TestBatchKeepsWhitespaceDistinctExplicitReferences(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	if _, err := e.IngestEpisode(ctx, EpisodeInput{
+		ID:      "ep-refs",
+		Kind:    "note",
+		Content: "refs",
+		Source:  SourceInput{Kind: "note", ExternalRef: "refs"},
+	}); err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	first, err := e.UpsertEntity(ctx, EntityInput{ID: "thing:key", Type: "Thing", CanonicalName: "Explicit A"})
+	if err != nil {
+		t.Fatalf("create first explicit entity: %v", err)
+	}
+	second, err := e.UpsertEntity(ctx, EntityInput{ID: "thing:key ", Type: "Thing", CanonicalName: "Explicit B"})
+	if err != nil {
+		t.Fatalf("create whitespace-distinct entity: %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("expected distinct explicit IDs, both are %q", first.ID)
+	}
+
+	if _, err := e.IngestBatch(ctx, BatchInput{
+		Entities: []EntityInput{{ID: "thing:key ", Type: "Thing", CanonicalName: "Explicit B"}},
+		Facts: []FactInput{{
+			ID:                   "fact-refs",
+			Predicate:            "HAS_SCOPE",
+			SubjectID:            "thing:key",
+			ObjectID:             "thing:key",
+			SupportingEpisodeIDs: []string{"ep-refs"},
+		}},
+	}); err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	fact, err := e.GetFact(ctx, "fact-refs")
+	if err != nil {
+		t.Fatalf("get fact: %v", err)
+	}
+	if fact.SubjectID != first.ID || fact.ObjectID != first.ID {
+		t.Fatalf("expected references to stay bound to %q, got subject %q object %q", first.ID, fact.SubjectID, fact.ObjectID)
+	}
+}

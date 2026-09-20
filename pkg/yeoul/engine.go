@@ -189,7 +189,9 @@ func (e *engine) IngestBatch(ctx context.Context, input BatchInput) (*BatchResul
 				return err
 			}
 			result.EntityIDs = append(result.EntityIDs, item.ID)
-			reference := strings.TrimSpace(entity.ID)
+			// Register explicit IDs verbatim: trimming them here would
+			// redirect references meant for a different entity.
+			reference := entity.ID
 			if reference == "" {
 				reference = EntityID(entity.Namespace, entity.Type, firstNonEmpty(entity.StableKey, entity.CanonicalName))
 			}
