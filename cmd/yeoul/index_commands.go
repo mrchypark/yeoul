@@ -95,6 +95,12 @@ type raxRuntime struct {
 const raxChunkMarker = "#chunk:"
 const projectionManifestVersion = 5
 
+// emptyRaxStoreMarker is the on-disk body of the supported empty derived rax
+// store. The pinned rax runtime rejects an empty document list, so Yeoul never
+// ingests zero projections: it writes this marker and search short-circuits on
+// an empty manifest instead of opening the native store.
+const emptyRaxStoreMarker = "yeoul-empty-rax-store\n"
+
 func (c cli) runIndex(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
@@ -315,6 +321,13 @@ Usage:
 	if len(projections) != manifest.ProjectionCount {
 		return fmt.Errorf("rax publish failed: projection count %d does not match manifest count %d", len(projections), manifest.ProjectionCount)
 	}
+	runtime, ok := lookupRaxRuntime(raxLib, raxBin)
+	if !ok {
+		return fmt.Errorf("rax publish failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
+	}
+	if len(projections) == 0 {
+		return c.finishEmptyRaxPublish(root, projectionPath, storePath, runtime, jsonOut)
+	}
 
 	rawDocsPath, err := writeTemporaryRaxRawDocuments(root, projections)
 	if err != nil {
@@ -322,10 +335,6 @@ Usage:
 	}
 	defer os.Remove(rawDocsPath)
 
-	runtime, ok := lookupRaxRuntime(raxLib, raxBin)
-	if !ok {
-		return fmt.Errorf("rax publish failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
-	}
 	if _, err := raxIngestDocs(ctx, runtime, storePath, rawDocsPath); err != nil {
 		return fmt.Errorf("rax publish failed: %w", err)
 	}
@@ -341,6 +350,28 @@ Usage:
 		return writeJSON(c.stdout, result)
 	}
 	_, err = fmt.Fprintf(c.stdout, "published %d projections to rax store %s\n", len(projections), storePath)
+	return err
+}
+
+// finishEmptyRaxPublish publishes an empty index without invoking the rax
+// runtime, which rejects an empty document list. It writes the supported empty
+// store marker so the publish has a real artifact, and reports zero documents.
+func (c cli) finishEmptyRaxPublish(root, projectionPath, storePath string, runtime raxRuntime, jsonOut bool) error {
+	if err := os.WriteFile(storePath, []byte(emptyRaxStoreMarker), 0o644); err != nil {
+		return fmt.Errorf("rax publish failed: %w", err)
+	}
+	result := indexPublishRaxResult{
+		Root:             root,
+		ProjectionPath:   projectionPath,
+		StorePath:        storePath,
+		RaxRuntime:       runtime.String(),
+		Published:        true,
+		RaxDocumentCount: 0,
+	}
+	if jsonOut {
+		return writeJSON(c.stdout, result)
+	}
+	_, err := fmt.Fprintf(c.stdout, "published 0 projections to rax store %s\n", storePath)
 	return err
 }
 
@@ -706,9 +737,12 @@ func raxCoreRerankScores(ctx context.Context, eng yeoul.Engine, req yeoul.Search
 }
 
 func runManagedRaxSearch(ctx context.Context, eng yeoul.Engine, dbPath, query string, limit int, runtime raxRuntime) ([]string, error) {
-	storePath, err := ensureManagedRaxStore(ctx, eng, dbPath, runtime)
+	storePath, empty, err := ensureManagedRaxStore(ctx, eng, dbPath, runtime)
 	if err != nil {
 		return nil, err
+	}
+	if empty {
+		return nil, nil
 	}
 	topK := limit
 	if topK <= 0 {
@@ -721,13 +755,17 @@ func runManagedRaxSearch(ctx context.Context, eng yeoul.Engine, dbPath, query st
 	return parseRaxDocIDs(output)
 }
 
-func ensureManagedRaxStore(ctx context.Context, eng yeoul.Engine, dbPath string, runtime raxRuntime) (string, error) {
+// ensureManagedRaxStore returns the managed store path and whether the store is
+// the supported empty representation. An empty database has no projections to
+// ingest, and the pinned rax runtime rejects an empty document list, so an
+// empty store is marked rather than ingested and searches short-circuit.
+func ensureManagedRaxStore(ctx context.Context, eng yeoul.Engine, dbPath string, runtime raxRuntime) (string, bool, error) {
 	root, storePath, err := managedRaxIndexPaths(dbPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if ok, err := managedRaxStoreFresh(root, storePath, dbPath, runtime); err != nil {
-		return "", err
+		return "", false, err
 	} else if !ok {
 		var payload *exportFile
 		if eng == nil {
@@ -736,14 +774,21 @@ func ensureManagedRaxStore(ctx context.Context, eng yeoul.Engine, dbPath string,
 			payload, err = exportDatabaseFromEngine(ctx, eng)
 		}
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		projections, manifest := buildProjectionArtifacts(dbPath, payload)
 		if err := rebuildManagedRaxStore(ctx, root, storePath, runtime, projections, manifest); err != nil {
-			return "", err
+			return "", false, err
+		}
+		if len(projections) == 0 {
+			return storePath, true, nil
 		}
 	}
-	return storePath, nil
+	manifest, err := readProjectionManifest(root)
+	if err != nil {
+		return storePath, false, nil
+	}
+	return storePath, manifest.ProjectionCount == 0, nil
 }
 
 func raxPrimaryFetchLimit(limit int) int {
@@ -856,7 +901,14 @@ func rebuildManagedRaxStore(ctx context.Context, root, storePath string, runtime
 			os.Remove(tempStorePath)
 		}
 	}()
-	if runtime.Kind == "ffi" {
+	if len(projections) == 0 {
+		// The pinned rax runtime rejects an empty document list. Write the
+		// supported empty store marker instead so the managed cache stays valid
+		// and empty searches can short-circuit without opening the runtime.
+		if err := os.WriteFile(tempStorePath, []byte(emptyRaxStoreMarker), 0o644); err != nil {
+			return err
+		}
+	} else if runtime.Kind == "ffi" {
 		jsonl, err := raxRawDocumentsJSONL(projections)
 		if err != nil {
 			return err

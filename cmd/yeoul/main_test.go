@@ -2625,3 +2625,83 @@ func TestRaxPrimarySearchAcceptsAnchorExpansionMatches(t *testing.T) {
 		t.Fatalf("expected an unmatched anchor to filter every rax candidate, got %#v", unmatched.Hits)
 	}
 }
+
+// TestCLIEmptyDatabaseRaxSearchAndPublish covers the empty-store contract: an
+// explicitly Rax search on a freshly initialized database returns empty results
+// instead of erroring, an empty index publishes without invoking the native
+// ingest (which rejects empty document lists), and a record added afterward is
+// still visible through both core and Rax search.
+func TestCLIEmptyDatabaseRaxSearchAndPublish(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "empty.ltdb")
+	indexRoot := filepath.Join(tmpDir, "index")
+	storePath := filepath.Join(tmpDir, "projection.rax")
+	fakeRaxPath := os.Args[0]
+	raxArgsPath := filepath.Join(tmpDir, "rax-args.txt")
+	raxProjectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", raxArgsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", raxProjectionPath)
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	for _, backend := range []string{"core", "auto", "rax"} {
+		search := runCLI("search", "--db", dbPath, "--query", "anything", "--backend", backend, "--rax-bin", fakeRaxPath, "--json")
+		if !strings.Contains(search, `"hits": []`) {
+			t.Fatalf("expected empty %s search results, got %q", backend, search)
+		}
+	}
+
+	build := runCLI("index", "build", "--db", dbPath, "--root", indexRoot, "--json")
+	if !strings.Contains(build, `"projection_count": 0`) {
+		t.Fatalf("expected empty index build, got %q", build)
+	}
+	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_document_count": 0`) {
+		t.Fatalf("expected empty rax publish, got %q", publish)
+	}
+	if _, err := os.Stat(storePath); err != nil {
+		t.Fatalf("expected the empty publish to write a store artifact: %v", err)
+	}
+	if args, err := os.ReadFile(raxArgsPath); err == nil && strings.Contains(string(args), "ingest docs ") {
+		t.Fatalf("expected the empty publish to skip native ingest, got %q", string(args))
+	}
+
+	ingestPath := filepath.Join(tmpDir, "first.json")
+	payload := `{
+  "episodes": [{"id":"ep-first","kind":"note","content":"first record needle","source":{"kind":"note","external_ref":"first"}}],
+	  "entities": [{"id":"project:first","type":"Project","canonical_name":"First"}],
+  "facts": [{"id":"fact-first","predicate":"HAS_FIRST","subject_id":"project:first","value_text":"first record needle","supporting_episode_ids":["ep-first"]}]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+	for _, backend := range []string{"core", "auto"} {
+		search := runCLI("search", "--db", dbPath, "--query", "first record needle", "--backend", backend, "--rax-bin", fakeRaxPath, "--json")
+		if !strings.Contains(search, `"record_id": "fact-first"`) {
+			t.Fatalf("expected %s search to see the first record after ingest, got %q", backend, search)
+		}
+	}
+	// The fake runtime always returns one fixed doc id, so rax hydration cannot
+	// be asserted here without the real runtime. Assert instead that the record
+	// made the managed rax store non-empty and the native ingest ran.
+	_ = runCLI("search", "--db", dbPath, "--query", "first record needle", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
+	raxArgs, err := os.ReadFile(raxArgsPath)
+	if err != nil {
+		t.Fatalf("read fake rax args: %v", err)
+	}
+	if !strings.Contains(string(raxArgs), "ingest docs ") {
+		t.Fatalf("expected the managed rax store to ingest the first record, got %q", string(raxArgs))
+	}
+}

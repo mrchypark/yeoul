@@ -211,15 +211,18 @@ Usage:
 		}
 		if benchRaxRuntime.Kind == "ffi" {
 			var err error
-			benchRaxStorePath, err = ensureManagedRaxStore(ctx, eng, dbPath, benchRaxRuntime)
+			var empty bool
+			benchRaxStorePath, empty, err = ensureManagedRaxStore(ctx, eng, dbPath, benchRaxRuntime)
 			if err != nil {
 				return err
 			}
-			benchRaxSearcher, err = openRaxFFISearcher(benchRaxRuntime.Path, benchRaxStorePath)
-			if err != nil {
-				return err
+			if !empty {
+				benchRaxSearcher, err = openRaxFFISearcher(benchRaxRuntime.Path, benchRaxStorePath)
+				if err != nil {
+					return err
+				}
+				defer benchRaxSearcher.close()
 			}
-			defer benchRaxSearcher.close()
 		}
 	}
 	for i := 0; i < iterations; i++ {
