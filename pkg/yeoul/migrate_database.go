@@ -443,6 +443,14 @@ func cleanupAbandonedMigrationStaging(marker databaseMigrationMarker, markerPath
 	if err != nil || !restored {
 		return
 	}
+	// The observed file set describes where the members are, not that those
+	// locations survive a power loss. A restoration whose rename was never
+	// flushed looks identical here, so flush the namespace before the marker is
+	// unlinked: otherwise a power loss could preserve the marker removal while
+	// reverting the restoration it depends on.
+	if err := syncMigrationDirectory(filepath.Dir(markerPath)); err != nil {
+		return
+	}
 	if err := removeDatabaseMigrationMarker(markerPath); err != nil {
 		return
 	}
@@ -546,7 +554,17 @@ func moveLegacyDatabaseFileSet(databasePath, backupPath string) error {
 				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore legacy database file %q: %w", applied[index].target, err))
 			}
 		}
-		return rollbackErr
+		if rollbackErr != nil {
+			return rollbackErr
+		}
+		// The restored names are only durable once the parent directory is
+		// flushed. Recovery treats the visible file set as a complete
+		// restoration and unlinks the marker, so an unsynced rollback could be
+		// reverted by a power loss after the marker removal was preserved.
+		if err := syncMigrationDirectory(parent); err != nil {
+			return fmt.Errorf("sync restored legacy database directory: %w", err)
+		}
+		return nil
 	}
 	for index, move := range moves {
 		if index > 0 && index == len(moves)-1 {
@@ -698,8 +716,15 @@ func recoverDatabaseMigration(databasePath string) error {
 			if partial {
 				return restoreLegacyDatabaseSet(marker, markerPath)
 			}
-			// Nothing was moved, so the live database is the original legacy
-			// database and the abandoned staging copy can be discarded.
+			// Nothing is left in the backup namespace, so the live database is
+			// the original legacy database and the abandoned staging copy can be
+			// discarded. The visible set may still be the product of an
+			// unsynced rollback from the previous process, so flush it before
+			// unlinking the marker: otherwise a power loss could preserve the
+			// marker removal while reverting the restoration it depends on.
+			if err := syncMigrationDirectory(filepath.Dir(marker.DatabasePath)); err != nil {
+				return fmt.Errorf("sync recovered migration namespace: %w", err)
+			}
 			return clearDatabaseMigrationState(marker, markerPath)
 		}
 		if _, err := os.Stat(marker.StagingPath); err == nil {

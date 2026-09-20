@@ -32,6 +32,13 @@ func migrationDirectorySyncFailure(t *testing.T, failure error) {
 	t.Cleanup(func() { syncMigrationDirectory = previous })
 }
 
+// restoreSyncHook puts the real directory durability hook back in place for the
+// rest of the test, so a recovery that must complete can flush for real.
+func restoreSyncHook(t *testing.T) {
+	t.Helper()
+	syncMigrationDirectory = syncDirectory
+}
+
 // enableInProcessLegacyMigration pins the reader version so MigrateDatabase runs
 // the in-process conversion instead of requiring the pinned external helper.
 func enableInProcessLegacyMigration(t *testing.T) {
@@ -105,6 +112,112 @@ func TestMigrateDatabaseSyncsDirectoryTransitions(t *testing.T) {
 	}
 }
 
+// TestRecoverPreparedMigrationFlushesBeforeClearingMarker covers the round-3
+// window that survives the previous fence: the visible namespace already looks
+// like a complete restoration (the original main database is in place and no
+// member is stranded in the backup namespace), but those names may be the
+// product of an unsynced rollback. Recovery must establish the namespace
+// barrier before it unlinks the prepared marker, and must preserve the marker
+// and staging copy when that barrier fails.
+func TestRecoverPreparedMigrationFlushesBeforeClearingMarker(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "prepared-restored.lbug")
+	writeLegacyDatabaseFixture(t, dbPath)
+
+	stagingPath := dbPath + ".lattice-migrate-0002"
+	staging, err := newLatticeStore(Config{Driver: StorageDriverLattice, DatabasePath: stagingPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatalf("create staging database: %v", err)
+	}
+	if err := staging.Close(); err != nil {
+		t.Fatalf("close staging database: %v", err)
+	}
+	if err := writeDatabaseMigrationMarker(databaseMigrationMarker{
+		Phase:        migrationPhasePrepared,
+		DatabasePath: dbPath,
+		BackupPath:   dbPath + ".ladybug-backup-0002",
+		StagingPath:  stagingPath,
+	}); err != nil {
+		t.Fatalf("write prepared marker: %v", err)
+	}
+
+	syncFailure := errors.New("injected directory sync failure")
+	migrationDirectorySyncFailure(t, syncFailure)
+
+	if err := recoverDatabaseMigration(dbPath); !errors.Is(err, syncFailure) {
+		t.Fatalf("expected the namespace barrier before the marker removal, got %v", err)
+	}
+	// The barrier failed, so nothing may have been discarded.
+	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); err != nil {
+		t.Fatalf("expected the prepared marker to survive a failed barrier: %v", err)
+	}
+	if _, err := os.Stat(stagingPath); err != nil {
+		t.Fatalf("expected the staging database to survive a failed barrier: %v", err)
+	}
+
+	restoreSyncHook(t)
+	if err := recoverDatabaseMigration(dbPath); err != nil {
+		t.Fatalf("recover the preserved prepared state: %v", err)
+	}
+	if _, err := os.Stat(databaseMigrationMarkerPath(dbPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected recovery to clear the marker, got %v", err)
+	}
+	legacy, err := Open(context.Background(), Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open the legacy database: %v", err)
+	}
+	defer func() { _ = legacy.Close(context.Background()) }()
+	if _, err := legacy.GetEpisode(context.Background(), "ep-durability"); err != nil {
+		t.Fatalf("expected the legacy episode: %v", err)
+	}
+}
+
+// TestMigrateDatabaseSyncsRollbackBeforeCleanupTrustsIt pins the durability
+// barrier on the backup rollback: the reverse renames must be flushed before
+// the deferred cleanup is allowed to discard the prepared marker, so a power
+// loss cannot preserve the marker removal while reverting the restoration.
+func TestMigrateDatabaseSyncsRollbackBeforeCleanupTrustsIt(t *testing.T) {
+	enableInProcessLegacyMigration(t)
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "rollback-barrier.lbug")
+	writeLegacyDatabaseFixture(t, dbPath)
+	backupPath := dbPath + ".ladybug-backup-0004"
+
+	// The main backup rename fails, so the move rolls the already-moved sidecar
+	// back. Only the rollback's durability barrier may fail here.
+	syncFailure := errors.New("injected directory sync failure")
+	previousRename := migrationRename
+	migrationRename = func(source, target string) error {
+		if filepath.Clean(source) == filepath.Clean(dbPath) {
+			return errors.New("injected main backup failure")
+		}
+		return previousRename(source, target)
+	}
+	previousSync := syncMigrationDirectory
+	var synced []string
+	syncMigrationDirectory = func(path string) error {
+		if len(synced) > 0 {
+			return syncFailure
+		}
+		synced = append(synced, path)
+		return previousSync(path)
+	}
+	t.Cleanup(func() {
+		migrationRename = previousRename
+		syncMigrationDirectory = previousSync
+	})
+
+	if err := moveLegacyDatabaseFileSet(dbPath, backupPath); !errors.Is(err, syncFailure) {
+		t.Fatalf("expected the rollback durability barrier to fail, got %v", err)
+	}
+	if _, err := os.Stat(dbPath + ".wal"); err != nil {
+		t.Fatalf("expected the sidecar to be restored at its original path: %v", err)
+	}
+	if _, err := os.Stat(backupPath + ".wal"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no sidecar left in the backup namespace, got %v", err)
+	}
+}
 func TestMigrateDatabaseSurfacesDirectorySyncFailure(t *testing.T) {
 	enableInProcessLegacyMigration(t)
 	syncFailure := errors.New("injected directory sync failure")
