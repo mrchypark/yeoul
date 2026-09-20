@@ -8,6 +8,13 @@ type Config struct {
 	ReadOnly        bool
 	CreateIfMissing bool
 
+	// AllowMigration lets a read-only open convert a legacy database with the
+	// default driver. A read-only open is otherwise a no-mutation open: a legacy
+	// database it cannot read is reported as requiring an explicit migration
+	// instead of being replaced in place. Writable opens convert automatically
+	// and do not consult this field.
+	AllowMigration bool
+
 	// legacyLadybugWrites enables the non-transactional legacy Ladybug write
 	// path. It exists only for in-repo tests that build legacy fixtures; the
 	// Ladybug driver is read-only for every other caller.

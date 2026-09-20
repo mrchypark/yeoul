@@ -58,6 +58,7 @@ Examples:
 - planned service-only feature in embedded mode
 - unsupported policy version
 - unsupported query operator
+- read-only open of a database that requires migration (`YEOUL_NOT_SUPPORTED`)
 
 ## Suggested error codes
 - `YEOUL_CONFIG_INVALID`

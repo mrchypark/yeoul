@@ -2,6 +2,7 @@ package yeoul
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -138,7 +139,9 @@ func TestDefaultOpenMigratesLadybugWithFullStateAndBackup(t *testing.T) {
 		t.Fatalf("close legacy baseline engine: %v", err)
 	}
 
-	migrated, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	// The conversion is an explicit opt-in for a read-only open, so this test
+	// asks for it instead of relying on the open to mutate the source.
+	migrated, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true, AllowMigration: true})
 	if err != nil {
 		t.Fatalf("auto-migrate default open: %v", err)
 	}
@@ -170,6 +173,98 @@ func TestDefaultOpenMigratesLadybugWithFullStateAndBackup(t *testing.T) {
 	if markers, _ := filepath.Glob(dbPath + ".yeoul-migration.json"); len(markers) != 0 {
 		t.Fatalf("migration marker was not cleaned up: %v", markers)
 	}
+}
+
+// TestReadOnlyOpenDoesNotMigrateLegacyDatabaseWithoutOptIn proves the default
+// read-only open is a no-mutation open: a legacy database it cannot read is
+// reported as requiring migration, and every source path and format stays
+// byte-for-byte unchanged. The same open with the explicit opt-in still
+// converts, so the gate is a permission boundary rather than a loss of the
+// migration path.
+func TestReadOnlyOpenDoesNotMigrateLegacyDatabaseWithoutOptIn(t *testing.T) {
+	useInProcessMigration(t)
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy-no-mutation.lbug")
+	legacy, err := Open(ctx, Config{
+		Driver:              StorageDriverLadybug,
+		DatabasePath:        dbPath,
+		legacyLadybugWrites: true,
+		CreateIfMissing:     true,
+	})
+	if err != nil {
+		t.Fatalf("open legacy engine: %v", err)
+	}
+	episode, err := legacy.IngestEpisode(ctx, EpisodeInput{
+		ID:      "ep-no-mutation",
+		Kind:    "note",
+		Content: "legacy source that must not be converted",
+		Source:  SourceInput{Kind: "test", ExternalRef: "no-mutation"},
+	})
+	if err != nil {
+		t.Fatalf("ingest legacy episode: %v", err)
+	}
+	if err := legacy.Close(ctx); err != nil {
+		t.Fatalf("close legacy engine: %v", err)
+	}
+
+	before := legacyDatabaseFileSet(t, dbPath)
+	if len(before) == 0 {
+		t.Fatal("expected the legacy fixture to write at least one data file")
+	}
+
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	if err == nil {
+		_ = eng.Close(ctx)
+		t.Fatal("expected a read-only open of a legacy database to report a migration requirement")
+	}
+	if !errors.Is(err, errMigrationRequired) {
+		t.Fatalf("expected the migration-required sentinel, got %v", err)
+	}
+	var yeoulErr *Error
+	if !errors.As(err, &yeoulErr) {
+		t.Fatalf("expected a typed yeoul error, got %T", err)
+	}
+	if yeoulErr.Code != ErrNotSupported {
+		t.Fatalf("unexpected error code: %v", yeoulErr.Code)
+	}
+	if detail, _ := yeoulErr.Details["database_path"].(string); filepath.Base(detail) != filepath.Base(dbPath) {
+		t.Fatalf("unexpected database_path detail: %v", yeoulErr.Details["database_path"])
+	}
+
+	// The refused open must leave every source path and format unchanged: the
+	// same files with the same bytes, no backup, no staging directory, no
+	// marker.
+	if after := legacyDatabaseFileSet(t, dbPath); !equalStringMaps(before, after) {
+		t.Fatalf("refused read-only open changed the database file set\nbefore: %v\nafter:  %v", before, after)
+	}
+	assertNoMigrationArtifacts(t, dbPath)
+
+	// The explicit opt-in keeps the migration path available to a caller that
+	// accepted the conversion.
+	migrated, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true, AllowMigration: true})
+	if err != nil {
+		t.Fatalf("read-only open with allow_migration: %v", err)
+	}
+	defer func() { _ = migrated.Close(ctx) }()
+	got, err := migrated.GetEpisode(ctx, episode.EpisodeID)
+	if err != nil {
+		t.Fatalf("read migrated episode: %v", err)
+	}
+	if got.Content != "legacy source that must not be converted" {
+		t.Fatalf("unexpected migrated episode content %q", got.Content)
+	}
+}
+
+func equalStringMaps(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func TestMigrateDatabaseFailsClosedWithoutLegacyHelper(t *testing.T) {

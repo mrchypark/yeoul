@@ -32,6 +32,12 @@ func Open(ctx context.Context, cfg Config) (Engine, error)
 
 `Config` owns embedded concerns such as database path, in-memory mode, read-only mode, and create-if-missing behavior.
 
+A read-only open (`ReadOnly: true`) is a no-mutation open: it never converts a
+legacy database. When the default driver cannot read the database it returns
+`YEOUL_NOT_SUPPORTED` and leaves the source unchanged. Set `Config.AllowMigration`
+to opt a read-only open into the same conversion a writable open performs, or run
+`yeoul admin migrate-db` first.
+
 ## Engine interface
 
 ```go
