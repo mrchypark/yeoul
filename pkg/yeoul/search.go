@@ -56,7 +56,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if matched {
 				score := baseScore + 0.4
 				reasons := []string{reason}
-				if anchorMatched {
+				if anchorMatched && len(req.AnchorIDs) > 0 {
 					score += 0.15
 					reasons = append(reasons, "anchor_match")
 				}
@@ -97,7 +97,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if matched {
 				score := baseScore + 0.2
 				reasons := []string{reason}
-				if anchorMatched {
+				if anchorMatched && len(req.AnchorIDs) > 0 {
 					score += 0.15
 					reasons = append(reasons, "anchor_match")
 				}
@@ -138,7 +138,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if matched {
 				score := baseScore
 				reasons := []string{reason}
-				if anchorMatched {
+				if anchorMatched && len(req.AnchorIDs) > 0 {
 					score += 0.15
 					reasons = append(reasons, "anchor_match")
 				}

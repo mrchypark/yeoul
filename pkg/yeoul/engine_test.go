@@ -2758,3 +2758,49 @@ func TestSearchIncludeFlagsAreIndependentAndDedupeSharedSupport(t *testing.T) {
 		t.Fatalf("expected snippets to select no included family, got %#v", snippetsOnly.Included)
 	}
 }
+
+// TestSearchUnanchoredHitsDoNotClaimAnchorMatch guards the anchor score bonus
+// and reason: matchesAnchors treats an empty filter as eligible, so callers
+// must require a supplied anchor before reporting anchor_match evidence.
+func TestSearchUnanchoredHitsDoNotClaimAnchorMatch(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-anchor", Kind: "note", Content: "anchor needle episode", Source: SourceInput{Kind: "note", ExternalRef: "anchor"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:anchor", Type: "Project", CanonicalName: "AnchorNeedle"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact-anchor", Predicate: "HAS_ANCHOR", SubjectID: entity.ID, ValueText: "anchor needle value", SupportingEpisodeIDs: []string{episode.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+
+	search := func(anchorIDs []string) *SearchResponse {
+		t.Helper()
+		resp, err := eng.Search(ctx, SearchRequest{QueryText: "anchor needle", AnchorIDs: anchorIDs})
+		if err != nil {
+			t.Fatalf("search anchors=%v: %v", anchorIDs, err)
+		}
+		return resp
+	}
+
+	unanchored := search(nil)
+	if len(unanchored.Hits) == 0 {
+		t.Fatal("expected unanchored hits")
+	}
+	for _, hit := range unanchored.Hits {
+		if slices.Contains(hit.Reasons, "anchor_match") {
+			t.Fatalf("unanchored hit %s claimed anchor_match: %#v", hit.RecordID, hit.Reasons)
+		}
+	}
+
+	anchored := search([]string{entity.ID})
+	if !searchHitHasReason(anchored.Hits, "fact-anchor", "anchor_match") {
+		t.Fatalf("expected supplied anchor to produce anchor_match, got %#v", anchored.Hits)
+	}
+}
