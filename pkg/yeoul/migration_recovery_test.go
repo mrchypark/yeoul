@@ -88,3 +88,28 @@ func TestOpenResumesInterruptedMigrationWithExplicitDriver(t *testing.T) {
 	defer func() { _ = eng.Close(ctx) }()
 	assertRecoveredDatabase(t, ctx, eng, dbPath)
 }
+
+func TestOpenResumesInterruptedMigrationWithTrailingSeparator(t *testing.T) {
+	ctx := context.Background()
+	dbPath := prepareInterruptedMigration(t)
+
+	eng, err := Open(ctx, Config{DatabasePath: dbPath + string(os.PathSeparator), ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open with a trailing separator after interrupted migration: %v", err)
+	}
+	defer func() { _ = eng.Close(ctx) }()
+	assertRecoveredDatabase(t, ctx, eng, dbPath)
+}
+
+func TestOpenResumesInterruptedMigrationWithRelativePath(t *testing.T) {
+	ctx := context.Background()
+	dbPath := prepareInterruptedMigration(t)
+	t.Chdir(filepath.Dir(dbPath))
+
+	eng, err := Open(ctx, Config{DatabasePath: filepath.Base(dbPath) + string(os.PathSeparator)})
+	if err != nil {
+		t.Fatalf("open with a relative path after interrupted migration: %v", err)
+	}
+	defer func() { _ = eng.Close(ctx) }()
+	assertRecoveredDatabase(t, ctx, eng, dbPath)
+}

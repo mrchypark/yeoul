@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 )
 
 type StorageDriver string
@@ -70,6 +71,18 @@ func openStateStore(cfg Config) (stateStore, error) {
 	// leaves the marker, the backup, and the staging database behind without
 	// the original path, and an open that creates a fresh database there would
 	// strand the only complete snapshot in staging.
+	//
+	// The path is normalized the same way MigrateDatabase normalizes it, so
+	// equivalent spellings (a trailing separator or a relative path) locate the
+	// same marker instead of bypassing recovery.
+	databasePath, err := filepath.Abs(cfg.DatabasePath)
+	if err != nil {
+		return nil, errorf(ErrConfigInvalid, "resolve database path", map[string]any{
+			"database_path": cfg.DatabasePath,
+		}, err)
+	}
+	cfg.DatabasePath = databasePath
+
 	if err := recoverDatabaseMigration(cfg.DatabasePath); err != nil {
 		return nil, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
 			"database_path": cfg.DatabasePath,
