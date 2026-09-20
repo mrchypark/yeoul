@@ -11,13 +11,17 @@ A temporal memory engine must preserve:
 Overwriting a fact in place destroys the history Yeoul is meant to preserve.
 
 ## Lifecycle states
-Recommended states:
+Implemented states:
 - `active`
 - `superseded`
 - `contradicted`
 - `retracted`
 - `uncertain`
 - `archived`
+
+Only `active`, `superseded`, and `retracted` exist in the implementation. The
+remaining entries below are future semantics; retrieval returns only the three
+implemented statuses. See `temporal-semantics.md` for the enforced set.
 
 ## Meaning of states
 

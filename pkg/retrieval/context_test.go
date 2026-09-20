@@ -1,10 +1,60 @@
 package retrieval
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
+
+func TestBuildContextBoundsCopiedHitText(t *testing.T) {
+	large := strings.Repeat("데이터", 50000) // 150000 multibyte runes
+	resp := yeoul.SearchResponse{
+		Hits: []yeoul.SearchHit{{HitType: "episode", RecordID: "ep-large", MatchedText: large}},
+		Included: yeoul.IncludedRecords{
+			Episodes: []yeoul.Episode{{ID: "ep-large", Kind: "note", Content: large}},
+		},
+	}
+	bundle := BuildContext(resp, ContextOptions{MaxBlocks: 1, MaxTextRunes: 8})
+
+	if !bundle.Truncated {
+		t.Fatal("expected truncation flag for clipped text")
+	}
+	if len(bundle.Hits) != 1 {
+		t.Fatalf("expected the hit metadata to be preserved, got %#v", bundle.Hits)
+	}
+	if got := len([]rune(bundle.Hits[0].MatchedText)); got != 8 {
+		t.Fatalf("expected copied hit text clipped to 8 runes, got %d", got)
+	}
+	if len(bundle.Blocks) != 1 || len([]rune(bundle.Blocks[0].Text)) != 8 {
+		t.Fatalf("expected one clipped block, got %#v", bundle.Blocks)
+	}
+
+	encoded, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal bundle: %v", err)
+	}
+	if len(encoded) > 4096 {
+		t.Fatalf("expected bounded bundle JSON, got %d bytes", len(encoded))
+	}
+	if strings.Contains(string(encoded), large) {
+		t.Fatal("expected no full hit text to survive serialization")
+	}
+}
+
+func TestBuildContextFlagsTextTruncationWithoutBlockOverflow(t *testing.T) {
+	resp := yeoul.SearchResponse{
+		Hits: []yeoul.SearchHit{{HitType: "fact", RecordID: "fact-1", MatchedText: "abcdefghij"}},
+	}
+	bundle := BuildContext(resp, ContextOptions{MaxBlocks: 16, MaxTextRunes: 4})
+	if !bundle.Truncated {
+		t.Fatal("expected truncation flag when only hit text is clipped")
+	}
+	if bundle.Hits[0].MatchedText != "abcd" {
+		t.Fatalf("expected clipped hit text, got %q", bundle.Hits[0].MatchedText)
+	}
+}
 
 func TestBuildContextBoundsAndClipsHits(t *testing.T) {
 	resp := yeoul.SearchResponse{Hits: []yeoul.SearchHit{

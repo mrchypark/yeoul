@@ -3138,3 +3138,243 @@ func TestTimelineLifecycleDerivationStaysLinearInRevisions(t *testing.T) {
 			factCount, revisionCount, allocated, budget, allocated/int64(unsafe.Sizeof(FactRevision{})))
 	}
 }
+
+func TestSearchPaginationBoundsIncludedRecords(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	epA, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-a", Kind: "note", Content: "unrelated note a", Source: SourceInput{Kind: "note", ExternalRef: "a"}})
+	if err != nil {
+		t.Fatalf("ingest ep-a: %v", err)
+	}
+	epB, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-b", Kind: "note", Content: "unrelated note b", Source: SourceInput{Kind: "note", ExternalRef: "b"}})
+	if err != nil {
+		t.Fatalf("ingest ep-b: %v", err)
+	}
+	projectA, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:alpha", Type: "Project", CanonicalName: "Alpha"})
+	if err != nil {
+		t.Fatalf("upsert alpha: %v", err)
+	}
+	projectB, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:beta", Type: "Project", CanonicalName: "Beta"})
+	if err != nil {
+		t.Fatalf("upsert beta: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact-a", Predicate: "HAS_NEEDLE", SubjectID: projectA.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epA.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact-a: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact-b", Predicate: "HAS_NEEDLE", SubjectID: projectB.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epB.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact-b: %v", err)
+	}
+
+	include := Include{Provenance: true, SupportingFacts: true, SupportingEpisodes: true, RelatedEntities: true}
+	page1, err := eng.Search(ctx, SearchRequest{
+		QueryText: "shared needle value",
+		Types:     []string{"fact"},
+		Include:   include,
+		Page:      Page{Limit: 1},
+	})
+	if err != nil {
+		t.Fatalf("search page1: %v", err)
+	}
+	if len(page1.Hits) != 1 || page1.Hits[0].RecordID != "fact-a" {
+		t.Fatalf("expected page1 to return fact-a, got %#v", page1.Hits)
+	}
+	if len(page1.Included.Facts) != 1 || page1.Included.Facts[0].ID != "fact-a" {
+		t.Fatalf("expected page1 includes to be bounded to fact-a, got %#v", page1.Included.Facts)
+	}
+	if len(page1.Included.Episodes) != 1 || page1.Included.Episodes[0].ID != "ep-a" {
+		t.Fatalf("expected page1 includes to carry only ep-a, got %#v", page1.Included.Episodes)
+	}
+	if len(page1.Included.Entities) != 1 || page1.Included.Entities[0].ID != "project:alpha" {
+		t.Fatalf("expected page1 includes to carry only project:alpha, got %#v", page1.Included.Entities)
+	}
+	if page1.Meta.NextCursor == "" {
+		t.Fatal("expected a next cursor for page1")
+	}
+
+	page2, err := eng.Search(ctx, SearchRequest{
+		QueryText: "shared needle value",
+		Types:     []string{"fact"},
+		Include:   include,
+		Page:      Page{Limit: 1, Cursor: page1.Meta.NextCursor},
+	})
+	if err != nil {
+		t.Fatalf("search page2: %v", err)
+	}
+	if len(page2.Hits) != 1 || page2.Hits[0].RecordID != "fact-b" {
+		t.Fatalf("expected page2 to return fact-b, got %#v", page2.Hits)
+	}
+	if len(page2.Included.Facts) != 1 || page2.Included.Facts[0].ID != "fact-b" {
+		t.Fatalf("expected page2 includes to be bounded to fact-b, got %#v", page2.Included.Facts)
+	}
+	if len(page2.Included.Episodes) != 1 || page2.Included.Episodes[0].ID != "ep-b" {
+		t.Fatalf("expected page2 includes to carry only ep-b, got %#v", page2.Included.Episodes)
+	}
+
+	emptyPage, err := eng.Search(ctx, SearchRequest{
+		QueryText: "shared needle value",
+		Types:     []string{"fact"},
+		Include:   include,
+		Page:      Page{Limit: 1, Cursor: "offset:50"},
+	})
+	if err != nil {
+		t.Fatalf("search empty page: %v", err)
+	}
+	if len(emptyPage.Hits) != 0 {
+		t.Fatalf("expected empty page hits, got %#v", emptyPage.Hits)
+	}
+	if len(emptyPage.Included.Facts) != 0 || len(emptyPage.Included.Episodes) != 0 || len(emptyPage.Included.Entities) != 0 || len(emptyPage.Included.Sources) != 0 {
+		t.Fatalf("expected empty page includes, got %#v", emptyPage.Included)
+	}
+
+	lookupPage1, err := eng.LookupFacts(ctx, FactLookupRequest{
+		SubjectIDs: []string{projectA.ID, projectB.ID},
+		Include:    Include{Provenance: true, SupportingFacts: true, SupportingEpisodes: true, RelatedEntities: true},
+		Page:       Page{Limit: 1},
+	})
+	if err != nil {
+		t.Fatalf("lookup facts page1: %v", err)
+	}
+	if len(lookupPage1.Facts) != 1 || lookupPage1.Facts[0].ID != "fact-a" {
+		t.Fatalf("expected lookup page1 to return fact-a, got %#v", lookupPage1.Facts)
+	}
+	if len(lookupPage1.Included.Episodes) != 1 || lookupPage1.Included.Episodes[0].ID != "ep-a" {
+		t.Fatalf("expected lookup page1 includes bounded to ep-a, got %#v", lookupPage1.Included.Episodes)
+	}
+	if len(lookupPage1.Included.Facts) != 1 || lookupPage1.Included.Facts[0].ID != "fact-a" {
+		t.Fatalf("expected lookup page1 to include only fact-a, got %#v", lookupPage1.Included.Facts)
+	}
+}
+
+func TestSearchIncludeFlagsAreIndependentAndDedupeSharedSupport(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	epShared, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-shared", Kind: "note", Content: "shared needle note", Source: SourceInput{Kind: "note", ExternalRef: "shared"}})
+	if err != nil {
+		t.Fatalf("ingest shared episode: %v", err)
+	}
+	project, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:alpha", Type: "Project", CanonicalName: "Alpha"})
+	if err != nil {
+		t.Fatalf("upsert project: %v", err)
+	}
+	database, err := eng.UpsertEntity(ctx, EntityInput{ID: "database:shared", Type: "Database", CanonicalName: "Shared"})
+	if err != nil {
+		t.Fatalf("upsert database: %v", err)
+	}
+	for _, id := range []string{"fact-a", "fact-b"} {
+		if _, err := eng.AssertFact(ctx, FactInput{ID: id, Predicate: "HAS_NEEDLE", SubjectID: project.ID, ObjectID: database.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epShared.EpisodeID}}); err != nil {
+			t.Fatalf("assert %s: %v", id, err)
+		}
+	}
+
+	search := func(t *testing.T, include Include) *SearchResponse {
+		t.Helper()
+		resp, err := eng.Search(ctx, SearchRequest{QueryText: "shared needle value", Types: []string{"fact"}, Include: include})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(resp.Hits) != 2 {
+			t.Fatalf("expected two fact hits, got %#v", resp.Hits)
+		}
+		return resp
+	}
+
+	noFlags := search(t, Include{})
+	if len(noFlags.Included.Facts) != 0 || len(noFlags.Included.Episodes) != 0 || len(noFlags.Included.Entities) != 0 || len(noFlags.Included.Sources) != 0 {
+		t.Fatalf("expected no includes without flags, got %#v", noFlags.Included)
+	}
+
+	factsOnly := search(t, Include{SupportingFacts: true})
+	if len(factsOnly.Included.Facts) != 2 {
+		t.Fatalf("expected supporting_facts to include both facts, got %#v", factsOnly.Included.Facts)
+	}
+	if len(factsOnly.Included.Episodes) != 0 || len(factsOnly.Included.Entities) != 0 || len(factsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected supporting_facts to exclude other families, got %#v", factsOnly.Included)
+	}
+
+	episodesOnly := search(t, Include{SupportingEpisodes: true})
+	if len(episodesOnly.Included.Episodes) != 1 || episodesOnly.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected shared support to dedupe to one episode, got %#v", episodesOnly.Included.Episodes)
+	}
+	if len(episodesOnly.Included.Sources) != 1 || episodesOnly.Included.Sources[0].Kind != "note" {
+		t.Fatalf("expected an included episode to carry its source once, got %#v", episodesOnly.Included.Sources)
+	}
+	if len(episodesOnly.Included.Facts) != 0 || len(episodesOnly.Included.Entities) != 0 {
+		t.Fatalf("expected supporting_episodes to exclude other families, got %#v", episodesOnly.Included)
+	}
+
+	provenance := search(t, Include{Provenance: true})
+	if len(provenance.Included.Episodes) != 1 || provenance.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected provenance to include the shared episode once, got %#v", provenance.Included.Episodes)
+	}
+	if len(provenance.Included.Sources) != 1 || provenance.Included.Sources[0].Kind != "note" {
+		t.Fatalf("expected provenance to imply the episode source, got %#v", provenance.Included.Sources)
+	}
+	if len(provenance.Included.Facts) != 0 || len(provenance.Included.Entities) != 0 {
+		t.Fatalf("expected provenance to exclude facts and entities, got %#v", provenance.Included)
+	}
+
+	entitiesOnly := search(t, Include{RelatedEntities: true})
+	if len(entitiesOnly.Included.Entities) != 2 {
+		t.Fatalf("expected related_entities to include the deduped subject and object, got %#v", entitiesOnly.Included.Entities)
+	}
+	if len(entitiesOnly.Included.Facts) != 0 || len(entitiesOnly.Included.Episodes) != 0 || len(entitiesOnly.Included.Sources) != 0 {
+		t.Fatalf("expected related_entities to exclude other families, got %#v", entitiesOnly.Included)
+	}
+
+	snippetsOnly := search(t, Include{Snippets: true})
+	if len(snippetsOnly.Included.Facts) != 0 || len(snippetsOnly.Included.Episodes) != 0 || len(snippetsOnly.Included.Entities) != 0 || len(snippetsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected snippets to select no included family, got %#v", snippetsOnly.Included)
+	}
+}
+
+// TestSearchUnanchoredHitsDoNotClaimAnchorMatch guards the anchor score bonus
+// and reason: matchesAnchors treats an empty filter as eligible, so callers
+// must require a supplied anchor before reporting anchor_match evidence.
+func TestSearchUnanchoredHitsDoNotClaimAnchorMatch(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-anchor", Kind: "note", Content: "anchor needle episode", Source: SourceInput{Kind: "note", ExternalRef: "anchor"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "project:anchor", Type: "Project", CanonicalName: "AnchorNeedle"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact-anchor", Predicate: "HAS_ANCHOR", SubjectID: entity.ID, ValueText: "anchor needle value", SupportingEpisodeIDs: []string{episode.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+
+	search := func(anchorIDs []string) *SearchResponse {
+		t.Helper()
+		resp, err := eng.Search(ctx, SearchRequest{QueryText: "anchor needle", AnchorIDs: anchorIDs})
+		if err != nil {
+			t.Fatalf("search anchors=%v: %v", anchorIDs, err)
+		}
+		return resp
+	}
+
+	unanchored := search(nil)
+	if len(unanchored.Hits) == 0 {
+		t.Fatal("expected unanchored hits")
+	}
+	for _, hit := range unanchored.Hits {
+		if slices.Contains(hit.Reasons, "anchor_match") {
+			t.Fatalf("unanchored hit %s claimed anchor_match: %#v", hit.RecordID, hit.Reasons)
+		}
+	}
+
+	anchored := search([]string{entity.ID})
+	if !searchHitHasReason(anchored.Hits, "fact-anchor", "anchor_match") {
+		t.Fatalf("expected supplied anchor to produce anchor_match, got %#v", anchored.Hits)
+	}
+}

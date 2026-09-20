@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -47,6 +48,15 @@ func runFakeRax() int {
 		return 2
 	}
 	if len(args) > 0 && args[0] == "search" {
+		if idsPath := os.Getenv("YEOUL_FAKE_RAX_SEARCH_IDS"); idsPath != "" {
+			data, err := os.ReadFile(idsPath)
+			if err != nil {
+				_, _ = os.Stderr.WriteString(err.Error() + "\n")
+				return 2
+			}
+			_, _ = os.Stdout.Write(data)
+			return 0
+		}
 		_, _ = os.Stdout.WriteString(`[{"doc_id":"fact:fact-index"}]`)
 		return 0
 	}
@@ -551,6 +561,45 @@ func TestRaxProjectionChunkIDsMapBackToRecords(t *testing.T) {
 	}
 }
 
+// TestRaxProjectionIDsRoundTripChunkMarker verifies that record IDs which
+// themselves contain the native chunk marker survive the projection identity
+// round trip, that a native chunk suffix is still stripped, and that the
+// shortened ID stays a distinct record.
+func TestRaxProjectionIDsRoundTripChunkMarker(t *testing.T) {
+	for _, kind := range []string{"fact", "episode", "entity"} {
+		id := "project" + raxChunkMarker + "notes"
+		docID := raxProjectionRecordID(kind, id)
+		gotKind, gotID, ok := raxRecordKindID(docID)
+		if !ok || gotKind != kind || gotID != id {
+			t.Fatalf("expected %s identity round trip, got kind=%q id=%q ok=%v from %q", kind, gotKind, gotID, ok, docID)
+		}
+		if projectionID, ok := raxRecordProjectionID(docID); !ok || projectionID != kind+":"+id {
+			t.Fatalf("expected %s projection id %q, got %q ok=%v", kind, kind+":"+id, projectionID, ok)
+		}
+		// A native chunk suffix appended to the escaped identity must still map
+		// back to the marker-containing record, not the shortened one.
+		gotKind, gotID, ok = raxRecordKindID(docID + raxChunkMarker + "3")
+		if !ok || gotKind != kind || gotID != id {
+			t.Fatalf("expected %s chunked identity to keep marker id, got kind=%q id=%q ok=%v", kind, gotKind, gotID, ok)
+		}
+	}
+
+	// The shortened ID must remain a distinct record from the marker-containing
+	shortened := raxProjectionRecordID("fact", "project")
+	marker := raxProjectionRecordID("fact", "project"+raxChunkMarker+"notes")
+	if shortened == marker {
+		t.Fatalf("expected shortened and marker ids to stay distinct, both %q", shortened)
+	}
+	if _, id, ok := raxRecordKindID(shortened); !ok || id != "project" {
+		t.Fatalf("expected shortened id to decode to project, got id=%q ok=%v", id, ok)
+	}
+
+	// Legacy unescaped identities (pre-version-bump) must still decode.
+	if _, id, ok := raxRecordKindID("fact:fact-legacy"); !ok || id != "fact-legacy" {
+		t.Fatalf("expected unescaped legacy id preserved, got id=%q ok=%v", id, ok)
+	}
+}
+
 func TestRaxProjectionIncludesRevisionText(t *testing.T) {
 	projections, manifest := buildProjectionArtifacts("test.ltdb", &exportFile{
 		Entities: []yeoul.EntityInput{{
@@ -1022,7 +1071,7 @@ func TestCLIPolicyDrivenSearchAndIngestDrop(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dropPack, "ontology.yaml"), []byte("version: 1\n"), 0o644); err != nil {
 		t.Fatalf("write ontology: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dropPack, "episode_rules.yaml"), []byte("version: 1\ndrop:\n  - name: drop_me\n    when:\n      contains_any: [\"ignore me\"]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dropPack, "episode_rules.yaml"), []byte("version: 1\ndrop:\n  - name: drop_me\n    when:\n      contains_substring: [\"ignore me\"]\n"), 0o644); err != nil {
 		t.Fatalf("write episode rules: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dropPack, "search_recipes.yaml"), []byte("version: 1\nrecipes: {}\n"), 0o644); err != nil {
@@ -1041,6 +1090,71 @@ func TestCLIPolicyDrivenSearchAndIngestDrop(t *testing.T) {
 	)
 	if !strings.Contains(drop, `"skipped": true`) {
 		t.Fatalf("expected policy drop output, got %q", drop)
+	}
+}
+
+func TestCLIPolicyDropRuleKeepsSubstantiveDecisions(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "drop-decisions.ltdb")
+	packPath, err := filepath.Abs(filepath.Join("..", "..", "agent-pack"))
+	if err != nil {
+		t.Fatalf("resolve pack path: %v", err)
+	}
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+
+	cases := []struct {
+		id      string
+		content string
+		dropped bool
+	}{
+		{id: "ep-ack-exact", content: "ok", dropped: true},
+		{id: "ep-ack-punct", content: "OK.", dropped: true},
+		{id: "ep-ack-thanks", content: "thanks", dropped: true},
+		{id: "ep-decision", content: "We decided to rotate tokens every hour.", dropped: false},
+		{id: "ep-broken", content: "The deployment is broken and needs a rollback.", dropped: false},
+		{id: "ep-book", content: "Return the book to the shelf.", dropped: false},
+		{id: "ep-thanks-decision", content: "thanks - we decided to ship on Friday.", dropped: false},
+		{id: "ep-ack-decision", content: "ok, but we decided to keep LatticeDB as canonical.", dropped: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			out := runCLI(
+				"ingest", "episode",
+				"--db", dbPath,
+				"--id", tc.id,
+				"--kind", "note",
+				"--content", tc.content,
+				"--source-kind", "note",
+				"--source-external-ref", tc.id,
+				"--policy-path", packPath,
+				"--json",
+			)
+			if tc.dropped {
+				if !strings.Contains(out, `"skipped": true`) {
+					t.Fatalf("expected %q to be dropped, got %q", tc.content, out)
+				}
+				return
+			}
+			if strings.Contains(out, `"skipped": true`) {
+				t.Fatalf("expected %q to be retained, got %q", tc.content, out)
+			}
+			stored := runCLI("get", "--db", dbPath, "--kind", "episode", "--id", tc.id, "--json")
+			if !strings.Contains(stored, tc.content) {
+				t.Fatalf("expected stored episode %s to contain %q, got %q", tc.id, tc.content, stored)
+			}
+		})
 	}
 }
 
@@ -1203,18 +1317,18 @@ func TestRaxPrimaryFallbackDecisionForFilteredTruncation(t *testing.T) {
 		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
 		Page:      yeoul.Page{Limit: 1},
 	}
-	if !raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+	if !raxPrimaryShouldFallbackToCore(req, 0, 1001, 1001) {
 		t.Fatal("expected filtered full fetch to fall back to core")
 	}
-	if raxPrimaryShouldFallbackToCore(req, 20, 1001) {
+	if raxPrimaryShouldFallbackToCore(req, 1, 20, 1001) {
 		t.Fatal("did not expect fallback when rax did not hit fetch cap")
 	}
 	req.Page.Cursor = "key:1:fact:fact-1"
-	if !raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+	if !raxPrimaryShouldFallbackToCore(req, 0, 1001, 1001) {
 		t.Fatal("expected filtered cursor page at fetch cap to fall back to core")
 	}
 	req = yeoul.SearchRequest{QueryText: "needle", Page: yeoul.Page{Limit: 1}}
-	if raxPrimaryShouldFallbackToCore(req, 1001, 1001) {
+	if raxPrimaryShouldFallbackToCore(req, 0, 1001, 1001) {
 		t.Fatal("did not expect fallback without post-filters")
 	}
 }
@@ -1804,6 +1918,80 @@ func TestCLIBenchQueryAndLifecycle(t *testing.T) {
 	}
 }
 
+// TestCLIBenchQueryMatchesProductionRaxSearch checks that `bench query` measures
+// the production planner instead of a differently filtered query. The benchmark
+// used to inject the first entity as an unrequested anchor, so an eligible
+// episode hit was filtered out and the reported latency measured empty work.
+func TestCLIBenchQueryMatchesProductionRaxSearch(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "bench-rax.ltdb")
+	ingestPath := filepath.Join(tmpDir, "seed.json")
+	fakeRaxPath := os.Args[0]
+	argsPath := filepath.Join(tmpDir, "rax-args.txt")
+	projectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	idsPath := filepath.Join(tmpDir, "rax-search-ids.json")
+
+	// The only eligible hit is an episode. An injected entity anchor can never
+	// match it, so the benchmark must not add one.
+	payload := `{
+  "episodes": [
+    {"id":"ep-eligible","kind":"note","content":"needle episode","source":{"kind":"note","external_ref":"eligible"}}
+  ],
+  "entities": [
+    {"id":"project:first","type":"Project","canonical_name":"First"}
+  ]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+	if err := os.WriteFile(idsPath, []byte(`[{"doc_id":"episode:ep-eligible"}]`), 0o644); err != nil {
+		t.Fatalf("write fake search ids: %v", err)
+	}
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", argsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", projectionPath)
+	t.Setenv("YEOUL_FAKE_RAX_SEARCH_IDS", idsPath)
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+	runCLI("init", "--db", dbPath)
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+
+	var bench struct {
+		SearchHits int      `json:"search_hits"`
+		RecordIDs  []string `json:"record_ids"`
+	}
+	benchOut := runCLI("bench", "query", "--db", dbPath, "--query", "needle", "--backend", "rax", "--rax-bin", fakeRaxPath, "--iterations", "1", "--json")
+	if err := json.Unmarshal([]byte(benchOut), &bench); err != nil {
+		t.Fatalf("decode bench output %q: %v", benchOut, err)
+	}
+	var search struct {
+		Hits []struct {
+			RecordID string `json:"record_id"`
+		} `json:"hits"`
+	}
+	searchOut := runCLI("search", "--db", dbPath, "--query", "needle", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
+	if err := json.Unmarshal([]byte(searchOut), &search); err != nil {
+		t.Fatalf("decode search output %q: %v", searchOut, err)
+	}
+	if len(search.Hits) != 1 || search.Hits[0].RecordID != "ep-eligible" {
+		t.Fatalf("expected the ordinary rax search to find ep-eligible, got %#v", search.Hits)
+	}
+	if bench.SearchHits != len(search.Hits) {
+		t.Fatalf("expected bench search_hits=%d to match the ordinary search, got %d", len(search.Hits), bench.SearchHits)
+	}
+	if !slices.Equal(bench.RecordIDs, []string{"ep-eligible"}) {
+		t.Fatalf("expected bench to measure the same hit as the ordinary search, got %#v", bench.RecordIDs)
+	}
+}
 func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
 	ctx := context.Background()
 	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
@@ -2034,6 +2222,372 @@ func TestRaxPrimarySearchAppliesSourceScope(t *testing.T) {
 	}
 }
 
+// TestRaxPrimarySearchTruncationContract pins how a saturated native candidate
+// window is surfaced. The window is bounded by fetchLimit, so a query that does
+// not fall back to core must report the horizon instead of ending pagination
+// silently, and a filtered query whose eligible records sit beyond the window
+// must fall back to a complete core result set.
+func TestRaxPrimarySearchTruncationContract(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "thing:window", Type: "Thing", CanonicalName: "window"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-window", Kind: "note", Content: "window needle", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "window"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("fact-window-%d", i)
+		if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: id, Predicate: "HAS_WINDOW", SubjectID: entity.ID, ValueText: "window needle", SupportingEpisodeIDs: []string{episode.EpisodeID}}); err != nil {
+			t.Fatalf("assert fact %s: %v", id, err)
+		}
+	}
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "projection.rax")
+	argsPath := filepath.Join(tmpDir, "rax-args.txt")
+	projectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	idsPath := filepath.Join(tmpDir, "rax-search-ids.json")
+	fetchLimit := raxPrimaryFetchLimit(10)
+	// The fake runtime ignores top-k and returns this fixed list, so it must
+	// saturate the native window to exercise the truncation contract.
+	var idsJSON strings.Builder
+	idsJSON.WriteString("[")
+	for i := 0; i < fetchLimit; i++ {
+		fmt.Fprintf(&idsJSON, `{"doc_id":"fact:fact-missing-%d"},`, i)
+	}
+	idsJSON.WriteString(`{"doc_id":"fact:fact-window-0"},{"doc_id":"fact:fact-window-1"}]`)
+	if err := os.WriteFile(idsPath, []byte(idsJSON.String()), 0o644); err != nil {
+		t.Fatalf("write fake search ids: %v", err)
+	}
+	if err := os.WriteFile(storePath, []byte("store"), 0o644); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	manifest := projectionManifest{Version: projectionManifestVersion, ProjectionCount: 3, RaxRuntime: "cli:" + os.Args[0], BuiltAt: time.Now().UTC()}
+	if _, err := writeProjectionManifest(tmpDir, manifest); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", argsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", projectionPath)
+	t.Setenv("YEOUL_FAKE_RAX_SEARCH_IDS", idsPath)
+
+	query := yeoul.SearchRequest{QueryText: "window needle", Types: []string{"fact"}, Page: yeoul.Page{Limit: 10}}
+	saturated := make([]string, 0, fetchLimit+2)
+	for i := 0; i < fetchLimit; i++ {
+		saturated = append(saturated, "fact:fact-missing")
+	}
+	saturated = append(saturated, "fact:fact-window-0", "fact:fact-window-1")
+	resp, err := buildRaxPrimarySearchResponse(ctx, eng, query, saturated)
+	if err != nil {
+		t.Fatalf("build saturated response: %v", err)
+	}
+	if len(resp.Hits) != 2 {
+		t.Fatalf("expected two eligible hits, got %#v", resp.Hits)
+	}
+	if !raxPrimaryShouldFallbackToCore(query, raxPrimaryEligibleCount(resp), len(saturated), fetchLimit) {
+		t.Fatal("expected fallback when the saturated window cannot fill the requested page")
+	}
+	if raxPrimaryShouldFallbackToCore(query, 10, fetchLimit, fetchLimit) {
+		t.Fatal("did not expect fallback when the saturated window fills the requested page")
+	}
+	if !raxPrimaryShouldFallbackToCore(query, 0, fetchLimit, fetchLimit) {
+		t.Fatal("expected fallback when the saturated window yields no eligible hits")
+	}
+
+	// A filtered query whose eligible records sit beyond the window must return
+	// the complete core result set instead of an empty truncated page.
+	fallback, err := runRaxPrimarySearch(ctx, eng, tmpDir, yeoul.SearchRequest{
+		QueryText: "window needle",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{SourceKinds: []string{"note"}},
+		Page:      yeoul.Page{Limit: 10},
+	}, "", os.Args[0])
+	if err != nil {
+		t.Fatalf("filtered rax search: %v", err)
+	}
+	if len(fallback.Hits) != 3 {
+		t.Fatalf("expected core fallback to return every eligible fact, got %#v", fallback.Hits)
+	}
+	if fallback.Meta.TotalApprox != nil {
+		t.Fatalf("did not expect a truncation horizon after core fallback, got %d", *fallback.Meta.TotalApprox)
+	}
+
+	// An unfiltered query that saturates the window must surface the horizon so
+	// callers can detect that pagination is bounded.
+	truncated, err := runRaxPrimarySearch(ctx, eng, tmpDir, yeoul.SearchRequest{QueryText: "window needle", Page: yeoul.Page{Limit: 10}}, "", os.Args[0])
+	if err != nil {
+		t.Fatalf("unfiltered rax search: %v", err)
+	}
+	if truncated.Meta.TotalApprox == nil || *truncated.Meta.TotalApprox != int64(fetchLimit) {
+		t.Fatalf("expected the saturated window to report a truncation horizon of %d, got %#v", fetchLimit, truncated.Meta.TotalApprox)
+	}
+	if len(truncated.Hits) != 2 {
+		t.Fatalf("expected the unfiltered page to keep its eligible hits, got %#v", truncated.Hits)
+	}
+}
+
+// TestRaxPrimarySearchIncludeFlagsAreIndependent mirrors the core flag-shaping
+// contract on the Rax path and checks that support shared by multiple hits is
+// deduplicated rather than repeated per hit.
+func TestRaxPrimarySearchIncludeFlagsAreIndependent(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	epShared, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-shared", Kind: "note", Content: "shared needle note", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "shared"}})
+	if err != nil {
+		t.Fatalf("ingest shared episode: %v", err)
+	}
+	project, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:alpha", Type: "Project", CanonicalName: "Alpha"})
+	if err != nil {
+		t.Fatalf("upsert project: %v", err)
+	}
+	database, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "database:shared", Type: "Database", CanonicalName: "Shared"})
+	if err != nil {
+		t.Fatalf("upsert database: %v", err)
+	}
+	for _, id := range []string{"fact-a", "fact-b"} {
+		if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: id, Predicate: "HAS_NEEDLE", SubjectID: project.ID, ObjectID: database.ID, ValueText: "shared needle value", SupportingEpisodeIDs: []string{epShared.EpisodeID}}); err != nil {
+			t.Fatalf("assert %s: %v", id, err)
+		}
+	}
+
+	search := func(t *testing.T, include yeoul.Include) *yeoul.SearchResponse {
+		t.Helper()
+		resp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+			QueryText: "shared needle value",
+			Types:     []string{"fact"},
+			Include:   include,
+		}, []string{"fact:fact-a", "fact:fact-b"})
+		if err != nil {
+			t.Fatalf("build rax response: %v", err)
+		}
+		if len(resp.Hits) != 2 {
+			t.Fatalf("expected two fact hits, got %#v", resp.Hits)
+		}
+		return resp
+	}
+
+	noFlags := search(t, yeoul.Include{})
+	if len(noFlags.Included.Facts) != 0 || len(noFlags.Included.Episodes) != 0 || len(noFlags.Included.Entities) != 0 || len(noFlags.Included.Sources) != 0 {
+		t.Fatalf("expected no includes without flags, got %#v", noFlags.Included)
+	}
+
+	factsOnly := search(t, yeoul.Include{SupportingFacts: true})
+	if len(factsOnly.Included.Facts) != 2 {
+		t.Fatalf("expected supporting_facts to include both facts, got %#v", factsOnly.Included.Facts)
+	}
+	if len(factsOnly.Included.Episodes) != 0 || len(factsOnly.Included.Entities) != 0 || len(factsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected supporting_facts to exclude other families, got %#v", factsOnly.Included)
+	}
+
+	episodesOnly := search(t, yeoul.Include{SupportingEpisodes: true})
+	if len(episodesOnly.Included.Episodes) != 1 || episodesOnly.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected shared support to dedupe to one episode, got %#v", episodesOnly.Included.Episodes)
+	}
+	if len(episodesOnly.Included.Facts) != 0 || len(episodesOnly.Included.Entities) != 0 {
+		t.Fatalf("expected supporting_episodes to exclude other families, got %#v", episodesOnly.Included)
+	}
+
+	provenance := search(t, yeoul.Include{Provenance: true})
+	if len(provenance.Included.Episodes) != 1 || provenance.Included.Episodes[0].ID != "ep-shared" {
+		t.Fatalf("expected provenance to include the shared episode once, got %#v", provenance.Included.Episodes)
+	}
+	if len(provenance.Included.Sources) != 1 || provenance.Included.Sources[0].Kind != "note" {
+		t.Fatalf("expected provenance to imply the episode source, got %#v", provenance.Included.Sources)
+	}
+
+	entitiesOnly := search(t, yeoul.Include{RelatedEntities: true})
+	if len(entitiesOnly.Included.Entities) != 2 {
+		t.Fatalf("expected related_entities to include the deduped subject and object, got %#v", entitiesOnly.Included.Entities)
+	}
+	if len(entitiesOnly.Included.Facts) != 0 || len(entitiesOnly.Included.Episodes) != 0 || len(entitiesOnly.Included.Sources) != 0 {
+		t.Fatalf("expected related_entities to exclude other families, got %#v", entitiesOnly.Included)
+	}
+
+	snippetsOnly := search(t, yeoul.Include{Snippets: true})
+	if len(snippetsOnly.Included.Facts) != 0 || len(snippetsOnly.Included.Episodes) != 0 || len(snippetsOnly.Included.Entities) != 0 || len(snippetsOnly.Included.Sources) != 0 {
+		t.Fatalf("expected snippets to select no included family, got %#v", snippetsOnly.Included)
+	}
+}
+
+// TestRaxPrimarySearchKeepsProvenanceUnderHitFilters checks that predicate and
+// anchor filters select hits without also suppressing the supporting episodes
+// that explain them, matching what the core engine returns.
+func TestRaxPrimarySearchKeepsProvenanceUnderHitFilters(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	ep, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-prov", Kind: "note", Content: "provenance episode", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "prov"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	subject, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:prov", Type: "Project", CanonicalName: "Provenance"})
+	if err != nil {
+		t.Fatalf("upsert subject: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-prov", Predicate: "HAS_PROVENANCE", SubjectID: subject.ID, ValueText: "provenance needle", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert fact: %v", err)
+	}
+	object, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "database:prov", Type: "Database", CanonicalName: "ProvStore"})
+	if err != nil {
+		t.Fatalf("upsert object: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-typed", Predicate: "HAS_PROVENANCE", SubjectID: subject.ID, ObjectID: object.ID, ValueText: "typed provenance needle", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert typed fact: %v", err)
+	}
+
+	coreResp, err := eng.Search(ctx, yeoul.SearchRequest{
+		QueryText:  "provenance needle",
+		Types:      []string{"fact"},
+		Predicates: []string{"HAS_PROVENANCE"},
+		Include:    yeoul.Include{Provenance: true},
+	})
+	if err != nil {
+		t.Fatalf("core search: %v", err)
+	}
+	if len(coreResp.Included.Episodes) != 1 || coreResp.Included.Episodes[0].ID != ep.EpisodeID {
+		t.Fatalf("expected core to keep provenance under predicate filter, got %#v", coreResp.Included.Episodes)
+	}
+
+	raxResp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText:  "provenance needle",
+		Types:      []string{"fact"},
+		Predicates: []string{"HAS_PROVENANCE"},
+		Include:    yeoul.Include{Provenance: true},
+	}, []string{"fact:fact-prov"})
+	if err != nil {
+		t.Fatalf("build rax response: %v", err)
+	}
+	if len(raxResp.Hits) != 1 {
+		t.Fatalf("expected rax fact hit, got %#v", raxResp.Hits)
+	}
+	if len(raxResp.Included.Episodes) != 1 || raxResp.Included.Episodes[0].ID != ep.EpisodeID {
+		t.Fatalf("expected rax to keep provenance under predicate filter, got %#v", raxResp.Included.Episodes)
+	}
+	if len(raxResp.Included.Sources) != 1 {
+		t.Fatalf("expected rax to keep the episode source, got %#v", raxResp.Included.Sources)
+	}
+
+	anchorResp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "provenance needle",
+		Types:     []string{"fact"},
+		AnchorIDs: []string{subject.ID},
+		Include:   yeoul.Include{Provenance: true},
+	}, []string{"fact:fact-prov"})
+	if err != nil {
+		t.Fatalf("build rax anchor response: %v", err)
+	}
+	if len(anchorResp.Hits) != 1 {
+		t.Fatalf("expected rax anchor-matched fact hit, got %#v", anchorResp.Hits)
+	}
+	if len(anchorResp.Included.Episodes) != 1 || anchorResp.Included.Episodes[0].ID != ep.EpisodeID {
+		t.Fatalf("expected rax to keep provenance under anchor filter, got %#v", anchorResp.Included.Episodes)
+	}
+
+	coreScopeResp, err := eng.Search(ctx, yeoul.SearchRequest{
+		QueryText: "typed provenance needle",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{EntityTypes: []string{"Project"}},
+		Include:   yeoul.Include{RelatedEntities: true},
+	})
+	if err != nil {
+		t.Fatalf("core scoped search: %v", err)
+	}
+	if len(coreScopeResp.Included.Entities) != 1 || coreScopeResp.Included.Entities[0].ID != subject.ID {
+		t.Fatalf("expected core to keep only the in-scope related entity, got %#v", coreScopeResp.Included.Entities)
+	}
+	raxScopeResp, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "typed provenance needle",
+		Types:     []string{"fact"},
+		Scope:     yeoul.ScopeFilter{EntityTypes: []string{"Project"}},
+		Include:   yeoul.Include{RelatedEntities: true},
+	}, []string{"fact:fact-typed"})
+	if err != nil {
+		t.Fatalf("build rax scoped response: %v", err)
+	}
+	if len(raxScopeResp.Included.Entities) != 1 || raxScopeResp.Included.Entities[0].ID != subject.ID {
+		t.Fatalf("expected rax to keep only the in-scope related entity, got %#v", raxScopeResp.Included.Entities)
+	}
+}
+
+// TestRaxPrimarySearchUsesCoreKeywordSemantics checks that native candidates are
+// validated with the core matcher: keyword mode rejects a record that only
+// partially matches, and matches against aliases and fact predicate/endpoint
+// text are admitted even when the record is outside the core rerank subset.
+func TestRaxPrimarySearchUsesCoreKeywordSemantics(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	subject, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:keyword", Type: "Project", CanonicalName: "Keyword"})
+	if err != nil {
+		t.Fatalf("upsert subject: %v", err)
+	}
+	ep, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-keyword", Kind: "note", Content: "keyword semantics episode", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "keyword"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-alpha", Predicate: "HAS_ALPHA", SubjectID: subject.ID, ValueText: "alpha only value", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert alpha fact: %v", err)
+	}
+	aliased, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "project:aliased", Type: "Project", CanonicalName: "Canonical", Aliases: []string{"betaname"}})
+	if err != nil {
+		t.Fatalf("upsert aliased: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-predicate", Predicate: "ALPHA_BETA", SubjectID: aliased.ID, ValueText: "unrelated value", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert predicate fact: %v", err)
+	}
+
+	// Keyword "alpha beta" must not admit a record containing only "alpha".
+	partial, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "alpha beta",
+		Mode:      yeoul.SearchModeKeyword,
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-alpha"})
+	if err != nil {
+		t.Fatalf("build partial response: %v", err)
+	}
+	if len(partial.Hits) != 0 {
+		t.Fatalf("expected keyword mode to reject partial-token candidate, got %#v", partial.Hits)
+	}
+
+	// Predicate-only match must be admitted: core matches fact predicate text.
+	predicate, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "alpha_beta",
+		Mode:      yeoul.SearchModeKeyword,
+		Types:     []string{"fact"},
+	}, []string{"fact:fact-predicate"})
+	if err != nil {
+		t.Fatalf("build predicate response: %v", err)
+	}
+	if len(predicate.Hits) != 1 || predicate.Hits[0].RecordID != "fact-predicate" {
+		t.Fatalf("expected predicate-only match to be admitted, got %#v", predicate.Hits)
+	}
+
+	// Alias-only entity match must be admitted even outside the core rerank subset.
+	alias, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "betaname",
+		Mode:      yeoul.SearchModeKeyword,
+		Types:     []string{"entity"},
+	}, []string{"entity:project:aliased"})
+	if err != nil {
+		t.Fatalf("build alias response: %v", err)
+	}
+	if len(alias.Hits) != 1 || alias.Hits[0].RecordID != "project:aliased" {
+		t.Fatalf("expected alias-only match to be admitted, got %#v", alias.Hits)
+	}
+}
+
 func TestCLISearchRejectsAmbiguousTemporalFlags(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -2238,5 +2792,174 @@ func TestCLIAdminExportRefusesUnsupportedPlatform(t *testing.T) {
 	}
 	if _, statErr := os.Stat(exportPath); statErr == nil {
 		t.Fatal("expected the refused export to create no file")
+	}
+}
+
+// TestRaxPrimarySearchAcceptsAnchorExpansionMatches mirrors core anchor
+// semantics: an anchor constrains the seeds, and core may then rank facts that
+// reach the anchor through a bounded expansion. A Rax candidate that core
+// ranked through expansion must therefore stay visible instead of being dropped
+// for not matching the anchor directly, while an anchor matching no seed still
+// filters every candidate.
+func TestRaxPrimarySearchAcceptsAnchorExpansionMatches(t *testing.T) {
+	ctx := context.Background()
+	eng, err := yeoul.Open(ctx, yeoul.Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	ep, err := eng.IngestEpisode(ctx, yeoul.EpisodeInput{ID: "ep-anchor", Kind: "note", Content: "anchor expansion episode", Source: yeoul.SourceInput{Kind: "note", ExternalRef: "anchor"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entityA, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "node:a", Type: "Node", CanonicalName: "AnchorNeedleA"})
+	if err != nil {
+		t.Fatalf("upsert A: %v", err)
+	}
+	entityB, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "node:b", Type: "Node", CanonicalName: "NodeB"})
+	if err != nil {
+		t.Fatalf("upsert B: %v", err)
+	}
+	entityC, err := eng.UpsertEntity(ctx, yeoul.EntityInput{ID: "node:c", Type: "Node", CanonicalName: "NodeC"})
+	if err != nil {
+		t.Fatalf("upsert C: %v", err)
+	}
+	// A-B fact seeds from the anchor match; B-C does not match the query text
+	// directly and is only reachable by bounded graph expansion.
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-ab", Predicate: "LINKS", SubjectID: entityA.ID, ObjectID: entityB.ID, ValueText: "anchor needle bridge", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert A-B: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, yeoul.FactInput{ID: "fact-bc", Predicate: "LINKS", SubjectID: entityB.ID, ObjectID: entityC.ID, ValueText: "distant link", SupportingEpisodeIDs: []string{ep.EpisodeID}}); err != nil {
+		t.Fatalf("assert B-C: %v", err)
+	}
+
+	req := yeoul.SearchRequest{
+		QueryText: "anchor needle",
+		Types:     []string{"fact"},
+		AnchorIDs: []string{entityA.ID},
+	}
+	hasReason := func(hits []yeoul.SearchHit, recordID, reason string) bool {
+		for _, hit := range hits {
+			if hit.RecordID == recordID {
+				return slices.Contains(hit.Reasons, reason)
+			}
+		}
+		return false
+	}
+	hasHit := func(hits []yeoul.SearchHit, recordID string) bool {
+		for _, hit := range hits {
+			if hit.RecordID == recordID {
+				return true
+			}
+		}
+		return false
+	}
+	coreResp, err := eng.Search(ctx, req)
+	if err != nil {
+		t.Fatalf("core search: %v", err)
+	}
+	if !hasReason(coreResp.Hits, "fact-bc", "graph_expansion") {
+		t.Fatalf("expected core to rank the two-hop fact through expansion, got %#v", coreResp.Hits)
+	}
+
+	// Rax sees both facts as native candidates; the two-hop fact must survive.
+	raxResp, err := buildRaxPrimarySearchResponse(ctx, eng, req, []string{"fact:fact-ab", "fact:fact-bc"})
+	if err != nil {
+		t.Fatalf("build rax response: %v", err)
+	}
+	if !hasHit(raxResp.Hits, "fact-bc") {
+		t.Fatalf("expected rax to keep the anchor-reachable two-hop fact, got %#v", raxResp.Hits)
+	}
+
+	// An anchor matching no seed still filters every candidate.
+	unmatched, err := buildRaxPrimarySearchResponse(ctx, eng, yeoul.SearchRequest{
+		QueryText: "anchor needle",
+		Types:     []string{"fact"},
+		AnchorIDs: []string{"node:missing"},
+	}, []string{"fact:fact-ab", "fact:fact-bc"})
+	if err != nil {
+		t.Fatalf("build rax unmatched response: %v", err)
+	}
+	if len(unmatched.Hits) != 0 {
+		t.Fatalf("expected an unmatched anchor to filter every rax candidate, got %#v", unmatched.Hits)
+	}
+}
+
+// TestCLIEmptyDatabaseRaxSearchAndPublish covers the empty-store contract: an
+// explicitly Rax search on a freshly initialized database returns empty results
+// instead of erroring, an empty index publishes without invoking the native
+// ingest (which rejects empty document lists), and a record added afterward is
+// still visible through both core and Rax search.
+func TestCLIEmptyDatabaseRaxSearchAndPublish(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "empty.ltdb")
+	indexRoot := filepath.Join(tmpDir, "index")
+	storePath := filepath.Join(tmpDir, "projection.rax")
+	fakeRaxPath := os.Args[0]
+	raxArgsPath := filepath.Join(tmpDir, "rax-args.txt")
+	raxProjectionPath := filepath.Join(tmpDir, "rax-projection.jsonl")
+	t.Setenv("YEOUL_FAKE_RAX", "1")
+	t.Setenv("YEOUL_FAKE_RAX_ARGS", raxArgsPath)
+	t.Setenv("YEOUL_FAKE_RAX_PROJECTION", raxProjectionPath)
+
+	runCLI := func(args ...string) string {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		if err := run(ctx, args, &stdout, &stderr); err != nil {
+			t.Fatalf("run %v: %v\nstderr=%s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	runCLI("init", "--db", dbPath)
+	for _, backend := range []string{"core", "auto", "rax"} {
+		search := runCLI("search", "--db", dbPath, "--query", "anything", "--backend", backend, "--rax-bin", fakeRaxPath, "--json")
+		if !strings.Contains(search, `"hits": []`) {
+			t.Fatalf("expected empty %s search results, got %q", backend, search)
+		}
+	}
+
+	build := runCLI("index", "build", "--db", dbPath, "--root", indexRoot, "--json")
+	if !strings.Contains(build, `"projection_count": 0`) {
+		t.Fatalf("expected empty index build, got %q", build)
+	}
+	publish := runCLI("index", "publish-rax", "--root", indexRoot, "--store", storePath, "--rax-bin", fakeRaxPath, "--json")
+	if !strings.Contains(publish, `"published": true`) || !strings.Contains(publish, `"rax_document_count": 0`) {
+		t.Fatalf("expected empty rax publish, got %q", publish)
+	}
+	if _, err := os.Stat(storePath); err != nil {
+		t.Fatalf("expected the empty publish to write a store artifact: %v", err)
+	}
+	if args, err := os.ReadFile(raxArgsPath); err == nil && strings.Contains(string(args), "ingest docs ") {
+		t.Fatalf("expected the empty publish to skip native ingest, got %q", string(args))
+	}
+
+	ingestPath := filepath.Join(tmpDir, "first.json")
+	payload := `{
+  "episodes": [{"id":"ep-first","kind":"note","content":"first record needle","source":{"kind":"note","external_ref":"first"}}],
+	  "entities": [{"id":"project:first","type":"Project","canonical_name":"First"}],
+  "facts": [{"id":"fact-first","predicate":"HAS_FIRST","subject_id":"project:first","value_text":"first record needle","supporting_episode_ids":["ep-first"]}]
+}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+	runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath)
+	for _, backend := range []string{"core", "auto"} {
+		search := runCLI("search", "--db", dbPath, "--query", "first record needle", "--backend", backend, "--rax-bin", fakeRaxPath, "--json")
+		if !strings.Contains(search, `"record_id": "fact-first"`) {
+			t.Fatalf("expected %s search to see the first record after ingest, got %q", backend, search)
+		}
+	}
+	// The fake runtime always returns one fixed doc id, so rax hydration cannot
+	// be asserted here without the real runtime. Assert instead that the record
+	// made the managed rax store non-empty and the native ingest ran.
+	_ = runCLI("search", "--db", dbPath, "--query", "first record needle", "--backend", "rax", "--rax-bin", fakeRaxPath, "--json")
+	raxArgs, err := os.ReadFile(raxArgsPath)
+	if err != nil {
+		t.Fatalf("read fake rax args: %v", err)
+	}
+	if !strings.Contains(string(raxArgs), "ingest docs ") {
+		t.Fatalf("expected the managed rax store to ingest the first record, got %q", string(raxArgs))
 	}
 }
