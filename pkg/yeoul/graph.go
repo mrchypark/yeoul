@@ -125,7 +125,7 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 		}
 		addNode(GraphNode{ID: episode.ID, Type: "Episode", Label: episode.Kind})
 		if episode.SourceID != "" {
-			addEdge(GraphEdge{ID: "edge:" + episode.ID + ":source", Type: "FROM_SOURCE", FromID: episode.ID, ToID: episode.SourceID})
+			addEdge(GraphEdge{ID: compositeID("edge", "FROM_SOURCE", episode.ID, episode.SourceID), Type: "FROM_SOURCE", FromID: episode.ID, ToID: episode.SourceID})
 		}
 	}
 	for _, fact := range e.facts {
@@ -134,12 +134,14 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 			continue
 		}
 		addNode(GraphNode{ID: factRecord.ID, Type: "Fact", Label: factRecord.Predicate})
-		addEdge(GraphEdge{ID: "edge:" + factRecord.ID + ":subject", Type: "SUBJECT", FromID: factRecord.ID, ToID: factRecord.SubjectID})
+		addEdge(GraphEdge{ID: compositeID("edge", "SUBJECT", factRecord.ID, factRecord.SubjectID), Type: "SUBJECT", FromID: factRecord.ID, ToID: factRecord.SubjectID})
 		if factRecord.ObjectID != "" {
-			addEdge(GraphEdge{ID: "edge:" + factRecord.ID + ":object", Type: "OBJECT", FromID: factRecord.ID, ToID: factRecord.ObjectID})
+			addEdge(GraphEdge{ID: compositeID("edge", "OBJECT", factRecord.ID, factRecord.ObjectID), Type: "OBJECT", FromID: factRecord.ID, ToID: factRecord.ObjectID})
 		}
 		for _, episodeID := range factRecord.SupportingEpisodeIDs {
-			addEdge(GraphEdge{ID: "edge:" + factRecord.ID + ":" + episodeID, Type: "ASSERTS", FromID: episodeID, ToID: factRecord.ID})
+			if _, ok := e.episodes[episodeID]; ok {
+				addEdge(GraphEdge{ID: compositeID("edge", "ASSERTS", episodeID, factRecord.ID), Type: "ASSERTS", FromID: episodeID, ToID: factRecord.ID})
+			}
 		}
 	}
 
@@ -450,7 +452,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 			if !addNode(ProvenanceNode{ID: episode.ID, Type: "Episode", Label: episode.Kind}, 1) {
 				continue
 			}
-			addEdge(ProvenanceEdge{ID: "prov:" + episode.ID + ":" + fact.ID, Type: "ASSERTS", FromID: episode.ID, ToID: fact.ID}, 1)
+			addEdge(ProvenanceEdge{ID: compositeID("prov", "ASSERTS", episode.ID, fact.ID), Type: "ASSERTS", FromID: episode.ID, ToID: fact.ID}, 1)
 			if maxDepth < 2 {
 				continue
 			}
@@ -459,7 +461,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 					continue
 				}
 				if addNode(ProvenanceNode{ID: source.ID, Type: "Source", Label: source.Kind}, 2) {
-					addEdge(ProvenanceEdge{ID: "prov:" + source.ID + ":" + episode.ID, Type: "FROM_SOURCE", FromID: episode.ID, ToID: source.ID}, 2)
+					addEdge(ProvenanceEdge{ID: compositeID("prov", "FROM_SOURCE", episode.ID, source.ID), Type: "FROM_SOURCE", FromID: episode.ID, ToID: source.ID}, 2)
 				}
 			}
 		}
@@ -467,7 +469,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 			if nextFact, ok := e.facts[nextID]; ok && nextFact.SpaceID == spaceID {
 				nextRecord := e.factVersionAt(nextFact, req.Temporal, index)
 				if nextRecord != nil && addNode(ProvenanceNode{ID: nextRecord.ID, Type: "Fact", Label: nextRecord.Predicate, Meta: factProvenanceMeta(*nextRecord)}, 1) {
-					addEdge(ProvenanceEdge{ID: "prov:" + nextFact.ID + ":" + fact.ID + ":supersedes", Type: "SUPERSEDES", FromID: nextFact.ID, ToID: fact.ID}, 1)
+					addEdge(ProvenanceEdge{ID: compositeID("prov", "SUPERSEDES", nextFact.ID, fact.ID), Type: "SUPERSEDES", FromID: nextFact.ID, ToID: fact.ID}, 1)
 				}
 			}
 		}
@@ -485,7 +487,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 				if previousFact, ok := e.facts[previousID]; ok && previousFact.SpaceID == spaceID {
 					previousRecord := e.factVersionAt(previousFact, req.Temporal, index)
 					if previousRecord != nil && addNode(ProvenanceNode{ID: previousRecord.ID, Type: "Fact", Label: previousRecord.Predicate, Meta: factProvenanceMeta(*previousRecord)}, 1) {
-						addEdge(ProvenanceEdge{ID: "prov:" + fact.ID + ":" + previousFact.ID + ":supersedes", Type: "SUPERSEDES", FromID: fact.ID, ToID: previousFact.ID}, 1)
+						addEdge(ProvenanceEdge{ID: compositeID("prov", "SUPERSEDES", fact.ID, previousFact.ID), Type: "SUPERSEDES", FromID: fact.ID, ToID: previousFact.ID}, 1)
 					}
 				}
 			}
@@ -510,7 +512,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 			if factRecord.ObjectID == entityRecord.ID {
 				edgeType = "OBJECT"
 			}
-			addEdge(ProvenanceEdge{ID: "prov:" + factRecord.ID + ":" + entityRecord.ID, Type: edgeType, FromID: factRecord.ID, ToID: entityRecord.ID}, 1)
+			addEdge(ProvenanceEdge{ID: compositeID("prov", edgeType, factRecord.ID, entityRecord.ID), Type: edgeType, FromID: factRecord.ID, ToID: entityRecord.ID}, 1)
 			if maxDepth < 2 {
 				continue
 			}
@@ -520,14 +522,14 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 					continue
 				}
 				if addNode(ProvenanceNode{ID: episode.ID, Type: "Episode", Label: episode.Kind}, 2) {
-					addEdge(ProvenanceEdge{ID: "prov:" + episode.ID + ":" + factRecord.ID, Type: "ASSERTS", FromID: episode.ID, ToID: factRecord.ID}, 2)
+					addEdge(ProvenanceEdge{ID: compositeID("prov", "ASSERTS", episode.ID, factRecord.ID), Type: "ASSERTS", FromID: episode.ID, ToID: factRecord.ID}, 2)
 				}
 			}
 			if nextID, _ := factRecord.Metadata["superseded_by"].(string); nextID != "" && maxDepth >= 2 {
 				nextFact, ok := e.facts[nextID]
 				nextRecord := e.factVersionAt(nextFact, req.Temporal, index)
 				if ok && nextRecord != nil && nextRecord.SpaceID == spaceID && addNode(ProvenanceNode{ID: nextRecord.ID, Type: "Fact", Label: nextRecord.Predicate, Meta: factProvenanceMeta(*nextRecord)}, 2) {
-					addEdge(ProvenanceEdge{ID: "prov:" + nextFact.ID + ":" + fact.ID + ":supersedes", Type: "SUPERSEDES", FromID: nextFact.ID, ToID: fact.ID}, 2)
+					addEdge(ProvenanceEdge{ID: compositeID("prov", "SUPERSEDES", nextFact.ID, fact.ID), Type: "SUPERSEDES", FromID: nextFact.ID, ToID: fact.ID}, 2)
 				}
 			}
 		}
@@ -540,7 +542,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		nodes = append(nodes, root)
 		if source, ok := e.sources[episode.SourceID]; ok {
 			if source.SpaceID == spaceID && addNode(ProvenanceNode{ID: source.ID, Type: "Source", Label: source.Kind}, 1) {
-				addEdge(ProvenanceEdge{ID: "prov:" + episode.ID + ":" + source.ID, Type: "FROM_SOURCE", FromID: episode.ID, ToID: source.ID}, 1)
+				addEdge(ProvenanceEdge{ID: compositeID("prov", "FROM_SOURCE", episode.ID, source.ID), Type: "FROM_SOURCE", FromID: episode.ID, ToID: source.ID}, 1)
 			}
 		}
 		if maxDepth >= 1 {
@@ -550,7 +552,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 					continue
 				}
 				if addNode(ProvenanceNode{ID: factRecord.ID, Type: "Fact", Label: factRecord.Predicate}, 1) {
-					addEdge(ProvenanceEdge{ID: "prov:" + episode.ID + ":" + factRecord.ID, Type: "ASSERTS", FromID: episode.ID, ToID: factRecord.ID}, 1)
+					addEdge(ProvenanceEdge{ID: compositeID("prov", "ASSERTS", episode.ID, factRecord.ID), Type: "ASSERTS", FromID: episode.ID, ToID: factRecord.ID}, 1)
 				}
 			}
 		}
@@ -589,6 +591,10 @@ func (e *engine) addFactSupport(included *IncludedRecords, fact Fact, scope Scop
 	}
 }
 
+// dedupeIncluded collapses duplicate included records and deep-copies every
+// record it emits. The clone is what keeps engine-owned metadata maps from
+// escaping the engine lock: callers receive fresh copies, so mutating a
+// response can never mutate stored state without revisions or persistence.
 func dedupeIncluded(in IncludedRecords) IncludedRecords {
 	return IncludedRecords{
 		Episodes: dedupeEpisodes(in.Episodes),
@@ -601,7 +607,7 @@ func dedupeIncluded(in IncludedRecords) IncludedRecords {
 func dedupeEpisodes(items []Episode) []Episode {
 	seen := make(map[string]Episode)
 	for _, item := range items {
-		seen[item.ID] = item
+		seen[item.ID] = *cloneEpisode(item)
 	}
 	out := make([]Episode, 0, len(seen))
 	for _, item := range seen {
@@ -614,7 +620,7 @@ func dedupeEpisodes(items []Episode) []Episode {
 func dedupeEntities(items []Entity) []Entity {
 	seen := make(map[string]Entity)
 	for _, item := range items {
-		seen[item.ID] = item
+		seen[item.ID] = *cloneEntity(item)
 	}
 	out := make([]Entity, 0, len(seen))
 	for _, item := range seen {
@@ -627,7 +633,7 @@ func dedupeEntities(items []Entity) []Entity {
 func dedupeFacts(items []Fact) []Fact {
 	seen := make(map[string]Fact)
 	for _, item := range items {
-		seen[item.ID] = item
+		seen[item.ID] = *cloneFact(item)
 	}
 	out := make([]Fact, 0, len(seen))
 	for _, item := range seen {
@@ -640,7 +646,7 @@ func dedupeFacts(items []Fact) []Fact {
 func dedupeSources(items []Source) []Source {
 	seen := make(map[string]Source)
 	for _, item := range items {
-		seen[item.ID] = item
+		seen[item.ID] = *cloneSource(item)
 	}
 	out := make([]Source, 0, len(seen))
 	for _, item := range seen {

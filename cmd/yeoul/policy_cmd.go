@@ -204,17 +204,29 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	}
 	// Scope must be populated before the strategy switch: the
 	// predicate_subject_lookup strategy narrows the hit types below.
-	if status, ok := recipe.Filters["fact_status"]; ok {
-		req.Scope.FactStatus = mergeStringSlices(req.Scope.FactStatus, splitCSV(fmt.Sprint(status)))
+	//
+	// Each recognized control is extracted through the same shape helpers the
+	// validator uses. A key that is present but malformed is an error here, so
+	// a control can never be accepted and then silently skipped.
+	statuses, hasStatus, err := policy.RecipeFactStatuses(recipe)
+	if err != nil {
+		return req, fmt.Errorf("search recipe %q filter fact_status is not executable: %w", recipeName, err)
 	}
-	if predicates, ok := recipe.Filters["predicate"]; ok {
-		values, isList := stringSliceFromAny(predicates)
-		if !isList {
-			values = splitCSV(fmt.Sprint(predicates))
-		}
-		req.Predicates = mergeStringSlices(req.Predicates, values)
+	if hasStatus {
+		req.Scope.FactStatus = mergeStringSlices(req.Scope.FactStatus, statuses)
 	}
-	if windowDays, ok := intFromAny(recipe.Filters["window_days"]); ok {
+	predicates, hasPredicates, err := policy.RecipePredicates(recipe)
+	if err != nil {
+		return req, fmt.Errorf("search recipe %q filter predicate is not executable: %w", recipeName, err)
+	}
+	if hasPredicates {
+		req.Predicates = mergeStringSlices(req.Predicates, predicates)
+	}
+	windowDays, hasWindow, err := policy.RecipeWindowDays(recipe)
+	if err != nil {
+		return req, fmt.Errorf("search recipe %q filter window_days is not executable: %w", recipeName, err)
+	}
+	if hasWindow {
 		from := time.Now().UTC().Add(-time.Duration(windowDays) * 24 * time.Hour)
 		if req.Temporal.ObservedFrom == nil || req.Temporal.ObservedFrom.Before(from) {
 			req.Temporal.ObservedFrom = &from
@@ -227,8 +239,12 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	case "neighborhood":
 		req.Include.RelatedEntities = true
 		req.Include.Provenance = true
-		if types, ok := stringSliceFromAny(recipe.Expand["entity_types"]); ok {
-			req.Scope.EntityTypes = mergeStringSlices(req.Scope.EntityTypes, types)
+		entityTypes, hasEntityTypes, err := policy.RecipeEntityTypes(recipe)
+		if err != nil {
+			return req, fmt.Errorf("search recipe %q expand entity_types is not executable: %w", recipeName, err)
+		}
+		if hasEntityTypes {
+			req.Scope.EntityTypes = mergeStringSlices(req.Scope.EntityTypes, entityTypes)
 		}
 	case "predicate_subject_lookup":
 		req.Types = []string{"fact"}

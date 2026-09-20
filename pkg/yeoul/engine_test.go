@@ -1343,6 +1343,122 @@ func TestAssertFactRequiresSupportingEpisode(t *testing.T) {
 	}
 }
 
+// TestFactSupportValidationCoversEveryPath pins the shared required-input check
+// in assertFactLocked, so SupersedeFact cannot create an unsupported replacement
+// and IngestBatch cannot skip the same check the public wrappers enforce.
+func TestFactSupportValidationCoversEveryPath(t *testing.T) {
+	ctx := context.Background()
+
+	assertInvalid := func(t *testing.T, err error) {
+		t.Helper()
+		var yeErr *Error
+		if !errors.As(err, &yeErr) {
+			t.Fatalf("expected structured error, got %v", err)
+		}
+		if yeErr.Code != ErrInputInvalid {
+			t.Fatalf("expected %s, got %s", ErrInputInvalid, yeErr.Code)
+		}
+		if yeErr.Details["field"] != "supporting_episode_ids" {
+			t.Fatalf("expected supporting_episode_ids field, got %#v", yeErr.Details)
+		}
+	}
+
+	seed := func(t *testing.T) (*engine, Entity) {
+		t.Helper()
+		eng, err := Open(ctx, Config{InMemory: true})
+		if err != nil {
+			t.Fatalf("open engine: %v", err)
+		}
+		entity, err := eng.UpsertEntity(ctx, EntityInput{
+			ID:            "entity:support",
+			SpaceID:       "default",
+			Type:          "Project",
+			CanonicalName: "Support",
+		})
+		if err != nil {
+			t.Fatalf("upsert entity: %v", err)
+		}
+		return eng.(*engine), *entity
+	}
+
+	t.Run("public assert", func(t *testing.T) {
+		eng, entity := seed(t)
+		_, err := eng.AssertFact(ctx, FactInput{SpaceID: "default", Predicate: "HAS_STATE", SubjectID: entity.ID})
+		assertInvalid(t, err)
+	})
+
+	t.Run("batch ingest", func(t *testing.T) {
+		eng, _ := seed(t)
+		_, err := eng.IngestBatch(ctx, BatchInput{
+			Entities: []EntityInput{{ID: "entity:batch-support", SpaceID: "default", Type: "Project", CanonicalName: "Batch"}},
+			Facts:    []FactInput{{ID: "fact:batch-support", SpaceID: "default", Predicate: "HAS_STATE", SubjectID: "entity:batch-support"}},
+		})
+		assertInvalid(t, err)
+		if _, lookupErr := eng.GetFact(ctx, "fact:batch-support"); lookupErr == nil {
+			t.Fatal("expected the rejected batch fact to be absent")
+		}
+	})
+
+	t.Run("blank support is empty", func(t *testing.T) {
+		eng, entity := seed(t)
+		_, err := eng.AssertFact(ctx, FactInput{SpaceID: "default", Predicate: "HAS_STATE", SubjectID: entity.ID, SupportingEpisodeIDs: []string{"  ", ""}})
+		assertInvalid(t, err)
+	})
+
+	t.Run("supersede replacement", func(t *testing.T) {
+		eng, entity := seed(t)
+		episode, err := eng.IngestEpisode(ctx, EpisodeInput{
+			ID:      "ep-support",
+			SpaceID: "default",
+			Kind:    "note",
+			Content: "support validation",
+			Source:  SourceInput{Kind: "note", ExternalRef: "support"},
+		})
+		if err != nil {
+			t.Fatalf("ingest episode: %v", err)
+		}
+		oldFact, err := eng.AssertFact(ctx, FactInput{
+			ID:                   "fact:support-old",
+			SpaceID:              "default",
+			Predicate:            "HAS_STATE",
+			SubjectID:            entity.ID,
+			ValueText:            "old",
+			SupportingEpisodeIDs: []string{episode.EpisodeID},
+		})
+		if err != nil {
+			t.Fatalf("assert old fact: %v", err)
+		}
+		factsBefore := len(eng.facts)
+		revisionsBefore := len(eng.factRevisions)
+
+		_, err = eng.SupersedeFact(ctx, oldFact.ID, FactInput{
+			ID:        "fact:support-new",
+			SpaceID:   "default",
+			Predicate: "HAS_STATE",
+			SubjectID: entity.ID,
+			ValueText: "new without support",
+		}, "unsupported replacement")
+		assertInvalid(t, err)
+
+		if _, ok := eng.facts["fact:support-new"]; ok {
+			t.Fatal("expected no replacement fact to be stored")
+		}
+		if len(eng.facts) != factsBefore {
+			t.Fatalf("expected no new fact, got %d (was %d)", len(eng.facts), factsBefore)
+		}
+		if len(eng.factRevisions) != revisionsBefore {
+			t.Fatalf("expected no new revisions, got %d (was %d)", len(eng.factRevisions), revisionsBefore)
+		}
+		storedOld, ok := eng.facts[oldFact.ID]
+		if !ok {
+			t.Fatal("expected the previously active fact to remain")
+		}
+		if storedOld.Status != factStatusActive {
+			t.Fatalf("expected the old fact to stay active, got %q", storedOld.Status)
+		}
+	})
+}
+
 func TestEpisodeConflictingReplayIsRejected(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})

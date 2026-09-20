@@ -7,6 +7,26 @@ version="${YEOUL_VERSION:-latest}"
 install_root="${YEOUL_INSTALL_ROOT:-${HOME}/.local/share/yeoul}"
 bin_dir="${YEOUL_BIN_DIR:-${HOME}/.local/bin}"
 
+# The version-pinned Ladybug migration helper first shipped inside the v0.5.1
+# archives. Older tags only carry the binaries, so requiring the helper for
+# them would reject supported historical installs.
+migration_helper_min_version="v0.5.1"
+
+absolute_path() {
+  # Resolve "$1" against the current directory so generated wrappers keep
+  # working when they are invoked from an unrelated working directory.
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s\n' "${PWD}/$1" ;;
+  esac
+}
+
+shell_quote() {
+  # Serialize "$1" as a single-quoted shell word so literal expansion
+  # characters in install paths stay data inside the generated wrappers.
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -45,6 +65,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+install_root="$(absolute_path "${install_root}")"
+bin_dir="$(absolute_path "${bin_dir}")"
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -91,6 +114,27 @@ resolve_tag() {
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1
 }
 
+# version_at_least <tag> <minimum-tag>
+# Compares dotted release tags like v0.5.1 without relying on "sort -V", which
+# BusyBox sort does not implement.
+version_at_least() {
+  awk -v have="$1" -v want="$2" 'BEGIN {
+    sub(/^v/, "", have)
+    sub(/^v/, "", want)
+    n = split(have, h, ".")
+    m = split(want, w, ".")
+    count = (n > m) ? n : m
+    for (i = 1; i <= count; i++) {
+      a = (i <= n) ? h[i] + 0 : 0
+      b = (i <= m) ? w[i] + 0 : 0
+      if (a != b) {
+        if (a > b) { exit 0 } else { exit 1 }
+      }
+    }
+    exit 0
+  }'
+}
+
 tag="$(resolve_tag)"
 if [[ -z "${tag}" ]]; then
   echo "failed to resolve release tag" >&2
@@ -131,8 +175,8 @@ verify_checksum() {
   elif command -v shasum >/dev/null 2>&1; then
     actual="$(shasum -a 256 "${archive_path}" | awk '{print $1}')"
   else
-    echo "warning: sha256 verifier not found; skipping checksum verification" >&2
-    return
+    echo "missing required command: sha256sum or shasum; cannot verify ${archive_name}" >&2
+    exit 1
   fi
 
   if [[ "${actual}" != "${expected}" ]]; then
@@ -166,9 +210,11 @@ for executable in yeoul yeould; do
   fi
 done
 
-if [[ ! -x "${staging_dir}/libexec/ladybug-v0131/yeoul-migrate-v0131" ]]; then
-  echo "archive is missing the version-pinned Ladybug migration helper" >&2
-  exit 1
+if version_at_least "${tag}" "${migration_helper_min_version}"; then
+  if [[ ! -x "${staging_dir}/libexec/ladybug-v0131/yeoul-migrate-v0131" ]]; then
+    echo "archive is missing the version-pinned Ladybug migration helper" >&2
+    exit 1
+  fi
 fi
 
 if [[ -e "${target_dir}" || -L "${target_dir}" ]]; then
@@ -186,12 +232,12 @@ rm -rf "${backup_dir}"
 
 cat > "${bin_dir}/yeoul" <<EOF
 #!/usr/bin/env bash
-exec "${target_dir}/bin/yeoul" "\$@"
+exec $(shell_quote "${target_dir}/bin/yeoul") "\$@"
 EOF
 
 cat > "${bin_dir}/yeould" <<EOF
 #!/usr/bin/env bash
-exec "${target_dir}/bin/yeould" "\$@"
+exec $(shell_quote "${target_dir}/bin/yeould") "\$@"
 EOF
 
 chmod +x "${bin_dir}/yeoul" "${bin_dir}/yeould"

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -319,36 +318,4 @@ func fallbackString(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func intFromAny(value any) (int, bool) {
-	switch v := value.(type) {
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case float64:
-		return int(v), true
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(v))
-		if err == nil {
-			return parsed, true
-		}
-	}
-	return 0, false
-}
-
-func stringSliceFromAny(value any) ([]string, bool) {
-	switch v := value.(type) {
-	case []string:
-		return append([]string(nil), v...), true
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			out = append(out, fmt.Sprint(item))
-		}
-		return out, true
-	default:
-		return nil, false
-	}
 }

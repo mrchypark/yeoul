@@ -67,6 +67,33 @@ func TestCLIPolicyValidateWarningsStillSucceed(t *testing.T) {
 	}
 }
 
+// A pack whose recipe control values cannot be executed must fail
+// `policy validate`, not only recipe use, so shipped or user packs cannot
+// report valid: true while declaring inert behavior.
+func TestCLIPolicyValidateRejectsMalformedRecipeValues(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	writePolicyFile(t, filepath.Join(dir, "SKILL.md"), "# Skill\n")
+	writePolicyFile(t, filepath.Join(dir, "ontology.yaml"), "version: 1\n")
+	writePolicyFile(t, filepath.Join(dir, "episode_rules.yaml"), "version: 1\n")
+	writePolicyFile(t, filepath.Join(dir, "search_recipes.yaml"), "version: 1\nrecipes:\n  window_days_bogus:\n    strategy: hybrid\n    filters:\n      window_days: bogus\n  window_days_object:\n    strategy: hybrid\n    filters:\n      window_days: {}\n  entity_types_object:\n    strategy: neighborhood\n    expand:\n      entity_types: {}\n")
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	err := run(ctx, []string{"policy", "validate", "--path", dir}, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected malformed recipe values to fail validation, stdout=%q", stdout.String())
+	}
+	if code := exitCode(err); code == 0 {
+		t.Fatalf("expected a nonzero exit code, got %d for %v", code, err)
+	}
+	for _, want := range []string{"valid: false", `invalid filter "window_days"`, `invalid expand setting "entity_types"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("expected output containing %q, got %q", want, stdout.String())
+		}
+	}
+}
+
 func writePolicyFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
