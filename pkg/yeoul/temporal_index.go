@@ -59,7 +59,7 @@ func (idx *temporalIndex) rebuildFacts(at time.Time) {
 			continue
 		}
 		latest, ok := facts[revision.FactID]
-		if !ok || revisionNewerThan(revision.TxTime, revision.ID, latest.TxTime, latest.ID) {
+		if !ok || revisionComesAfter(revision.ID, revision.TxTime, latest.ID, latest.TxTime) {
 			facts[revision.FactID] = revision
 		}
 	}
@@ -80,7 +80,7 @@ func (idx *temporalIndex) rebuildEntities(at time.Time) {
 			continue
 		}
 		latest, ok := entities[revision.EntityID]
-		if !ok || revisionNewerThan(revision.TxTime, revision.ID, latest.TxTime, latest.ID) {
+		if !ok || revisionComesAfter(revision.ID, revision.TxTime, latest.ID, latest.TxTime) {
 			entities[revision.EntityID] = revision
 		}
 	}
@@ -96,16 +96,6 @@ func (idx *temporalIndex) observeRebuild(kind string) {
 	if temporalIndexKindObserver != nil {
 		temporalIndexKindObserver(kind)
 	}
-}
-
-// revisionNewerThan applies the revision ordering used by the engine: the later
-// transaction time wins, and equal transaction times break toward the larger
-// revision ID so the result does not depend on map iteration order.
-func revisionNewerThan(candidateTime time.Time, candidateID string, currentTime time.Time, currentID string) bool {
-	if candidateTime.Equal(currentTime) {
-		return candidateID > currentID
-	}
-	return candidateTime.After(currentTime)
 }
 
 func (idx *temporalIndex) latestFactRevisionAt(factID string, at time.Time) (FactRevision, bool) {
