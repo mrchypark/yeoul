@@ -19,9 +19,15 @@ const (
 	migrationPhasePrepared  = "prepared"
 	migrationPhaseBackedUp  = "backed_up"
 	migrationPhaseInstalled = "installed"
+	migrationPhaseRestoring = "restoring"
 
 	legacyMigrationHelperEnv = "YEOUL_LEGACY_MIGRATION_HELPER"
 )
+
+// legacyMigrationSidecarSuffixes lists the native Ladybug sidecars that belong
+// to one database file. Arbitrary dotted siblings (for example
+// "memory.archive") are independent data and are never moved.
+var legacyMigrationSidecarSuffixes = []string{".wal", ".shadow", ".tmp"}
 
 // Set only on the version-pinned migration helper with go build -ldflags -X.
 var legacyMigrationReaderVersion string
@@ -223,20 +229,21 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 	if err := writeDatabaseMigrationMarker(marker); err != nil {
 		return nil, err
 	}
-	if err := os.Rename(databasePath, backupPath); err != nil {
-		return nil, fmt.Errorf("back up legacy database: %w", err)
+	if err := moveLegacyDatabaseFileSet(databasePath, backupPath); err != nil {
+		return nil, err
 	}
 	marker.Phase = migrationPhaseBackedUp
 	if err := writeDatabaseMigrationMarker(marker); err != nil {
-		_ = os.Rename(backupPath, databasePath)
+		if restoreErr := restoreLegacyDatabaseSet(marker, databaseMigrationMarkerPath(databasePath)); restoreErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("restore legacy database backup: %w", restoreErr))
+		}
 		return nil, err
 	}
 	if err := os.Rename(stagingPath, databasePath); err != nil {
-		rollbackErr := os.Rename(backupPath, databasePath)
+		rollbackErr := restoreLegacyDatabaseSet(marker, databaseMigrationMarkerPath(databasePath))
 		if rollbackErr != nil {
-			return nil, errors.Join(fmt.Errorf("install lattice database: %w", err), fmt.Errorf("restore legacy database: %w", rollbackErr))
+			return nil, errors.Join(fmt.Errorf("install lattice database: %w", err), fmt.Errorf("restore legacy database backup: %w", rollbackErr))
 		}
-		_ = os.Remove(databaseMigrationMarkerPath(databasePath))
 		return nil, fmt.Errorf("install lattice database: %w", err)
 	}
 	marker.Phase = migrationPhaseInstalled
@@ -253,6 +260,144 @@ func migrateLegacyDatabaseInProcess(databasePath string) (*DatabaseMigrationResu
 		TargetDriver: string(StorageDriverLattice),
 		Migrated:     true,
 	}, nil
+}
+
+type migrationFileMove struct {
+	source string
+	target string
+}
+
+// legacyMigrationFileMoves lists the native Ladybug file set that must move
+// with the database: the main path plus the engine's sidecar files. The
+// migration marker, staging database, backup namespace, and unrelated dotted
+// siblings are never part of the set.
+func legacyMigrationFileMoves(databasePath, backupPath string) ([]migrationFileMove, error) {
+	parent := filepath.Dir(databasePath)
+	backupBase := filepath.Base(backupPath)
+	sidecars := make([]migrationFileMove, 0, len(legacyMigrationSidecarSuffixes))
+	for _, suffix := range legacyMigrationSidecarSuffixes {
+		source := databasePath + suffix
+		if _, err := os.Stat(source); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("stat legacy database sidecar %q: %w", source, err)
+		}
+		sidecars = append(sidecars, migrationFileMove{
+			source: source,
+			target: filepath.Join(parent, backupBase+suffix),
+		})
+	}
+	moves := make([]migrationFileMove, 0, len(sidecars)+1)
+	moves = append(moves, sidecars...)
+	moves = append(moves, migrationFileMove{
+		source: databasePath,
+		target: filepath.Join(parent, backupBase),
+	})
+	return moves, nil
+}
+
+// moveLegacyDatabaseFileSet moves sidecars before the main database so a
+// partial move either leaves the original main path intact or puts the complete
+// set in the backup namespace. On failure it restores every move already made.
+func moveLegacyDatabaseFileSet(databasePath, backupPath string) error {
+	moves, err := legacyMigrationFileMoves(databasePath, backupPath)
+	if err != nil {
+		return fmt.Errorf("list legacy database files for backup: %w", err)
+	}
+	applied := make([]migrationFileMove, 0, len(moves))
+	for _, move := range moves {
+		if err := os.Rename(move.source, move.target); err != nil {
+			var rollbackErr error
+			for index := len(applied) - 1; index >= 0; index-- {
+				if err := os.Rename(applied[index].target, applied[index].source); err != nil {
+					rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore legacy database file %q: %w", applied[index].target, err))
+				}
+			}
+			return errors.Join(fmt.Errorf("back up legacy database file %q: %w", move.source, err), rollbackErr)
+		}
+		applied = append(applied, move)
+	}
+	return nil
+}
+
+// restoreLegacyDatabaseFileSet returns every member currently in the backup
+// namespace to its original name, restoring sidecars first and the main
+// database last so a partial restore never looks like a complete database. The
+// operation is idempotent: members already restored are skipped.
+func restoreLegacyDatabaseFileSet(databasePath, backupPath string) error {
+	parent := filepath.Dir(databasePath)
+	base := filepath.Base(databasePath)
+	backupBase := filepath.Base(backupPath)
+	moves := make([]migrationFileMove, 0, len(legacyMigrationSidecarSuffixes)+1)
+	for _, suffix := range legacyMigrationSidecarSuffixes {
+		source := filepath.Join(parent, backupBase+suffix)
+		if _, err := os.Stat(source); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("stat legacy database backup sidecar %q: %w", source, err)
+		}
+		moves = append(moves, migrationFileMove{source: source, target: filepath.Join(parent, base+suffix)})
+	}
+	if _, err := os.Stat(backupPath); err == nil {
+		moves = append(moves, migrationFileMove{source: backupPath, target: filepath.Join(parent, base)})
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat legacy database backup %q: %w", backupPath, err)
+	}
+	var restoreErr error
+	for _, move := range moves {
+		if err := os.Rename(move.source, move.target); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore legacy database file %q: %w", move.source, err))
+		}
+	}
+	return restoreErr
+}
+
+// restoreLegacyDatabaseSet records the restoring phase before moving backup
+// members back, so an interrupted restoration is resumed by recovery instead of
+// being mistaken for a completed migration, and clears the marker only after
+// the complete set is back in place.
+func restoreLegacyDatabaseSet(marker databaseMigrationMarker, markerPath string) error {
+	marker.Phase = migrationPhaseRestoring
+	if err := writeDatabaseMigrationMarker(marker); err != nil {
+		// Restoration must not start before its intent is durable: a partial
+		// restore under an old phase would be mistaken for a complete set.
+		return err
+	}
+	if err := restoreLegacyDatabaseFileSet(marker.DatabasePath, marker.BackupPath); err != nil {
+		return err
+	}
+	// The verified staging database is no longer needed once the legacy set is
+	// back in place; keep the marker when cleanup fails so recovery can retry.
+	if err := os.RemoveAll(marker.StagingPath); err != nil {
+		return fmt.Errorf("remove abandoned migration staging database: %w", err)
+	}
+	return os.Remove(markerPath)
+}
+
+// legacyDatabasePartiallyBackedUp reports whether some native members already
+// moved into the backup namespace while the original main database is still in
+// place: the crash window between the sidecar-first moves and the main move.
+func legacyDatabasePartiallyBackedUp(marker databaseMigrationMarker) (bool, error) {
+	// A complete backup always contains the main database. When it is present
+	// the set moved in full, so the existing main path belongs to the installed
+	// target rather than to a partial move.
+	if _, err := os.Stat(marker.BackupPath); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	parent := filepath.Dir(marker.DatabasePath)
+	backupBase := filepath.Base(marker.BackupPath)
+	for _, suffix := range legacyMigrationSidecarSuffixes {
+		if _, err := os.Stat(filepath.Join(parent, backupBase+suffix)); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func persistedStatesEqual(left, right persistedState) (bool, error) {
@@ -290,25 +435,66 @@ func recoverDatabaseMigration(databasePath string) error {
 	switch marker.Phase {
 	case migrationPhasePrepared:
 		if _, err := os.Stat(databasePath); err == nil {
+			// A crash between the sidecar-first moves and the main move leaves
+			// the original main database in place with its sidecars already in
+			// the backup namespace; those members must come back before the
+			// recovery state is cleared.
+			partial, err := legacyDatabasePartiallyBackedUp(marker)
+			if err != nil {
+				return err
+			}
+			if partial {
+				return restoreLegacyDatabaseSet(marker, markerPath)
+			}
+			// Nothing was moved: remove only our staging directory and the
+			// marker.
 			if err := os.RemoveAll(marker.StagingPath); err != nil {
 				return fmt.Errorf("remove abandoned migration staging database: %w", err)
+			}
+			return os.Remove(markerPath)
+		}
+		if _, err := os.Stat(marker.StagingPath); err == nil {
+			// The legacy set was moved but the marker was not advanced. Record
+			// the installation intent before renaming staging into place, so a
+			// retry after the rename finalizes the installation instead of
+			// trying to roll it back.
+			marker.Phase = migrationPhaseBackedUp
+			if err := writeDatabaseMigrationMarker(marker); err != nil {
+				return err
+			}
+			if err := os.Rename(marker.StagingPath, databasePath); err != nil {
+				return fmt.Errorf("resume prepared lattice database install: %w", err)
+			}
+			marker.Phase = migrationPhaseInstalled
+			if err := writeDatabaseMigrationMarker(marker); err != nil {
+				return err
 			}
 			return os.Remove(markerPath)
 		}
 		if _, err := os.Stat(marker.BackupPath); err != nil {
 			return fmt.Errorf("migration is prepared but source and backup databases are missing")
 		}
-		if err := os.Rename(marker.StagingPath, databasePath); err != nil {
-			return fmt.Errorf("resume prepared lattice database install: %w", err)
-		}
-		return os.Remove(markerPath)
+		// Nothing can be installed; put the moved legacy set back.
+		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseBackedUp:
-		if _, err := os.Stat(databasePath); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(databasePath); err == nil {
+			// The installation completed (or the set was already restored);
+			// the backup stays in place.
+			return os.Remove(markerPath)
+		}
+		if _, err := os.Stat(marker.StagingPath); err == nil {
 			if err := os.Rename(marker.StagingPath, databasePath); err != nil {
 				return fmt.Errorf("resume lattice database install: %w", err)
 			}
+			marker.Phase = migrationPhaseInstalled
+			if err := writeDatabaseMigrationMarker(marker); err != nil {
+				return err
+			}
+			return os.Remove(markerPath)
 		}
-		return os.Remove(markerPath)
+		return restoreLegacyDatabaseSet(marker, markerPath)
+	case migrationPhaseRestoring:
+		return restoreLegacyDatabaseSet(marker, markerPath)
 	case migrationPhaseInstalled:
 		return os.Remove(markerPath)
 	default:
