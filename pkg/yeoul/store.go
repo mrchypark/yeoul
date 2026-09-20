@@ -66,6 +66,19 @@ func openStateStore(cfg Config) (stateStore, error) {
 		return memoryStore{}, nil
 	}
 
+	// A live migration owns the database until it finishes installing the
+	// replacement; a stale lock from a crashed migration is reclaimed here.
+	if err := reclaimStaleMigrationLock(cfg.DatabasePath); err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(legacyMigrationLockPath(cfg.DatabasePath)); err == nil {
+		return nil, errorf(ErrStorageFailed, "database migration is in progress", map[string]any{
+			"database_path": cfg.DatabasePath,
+		}, nil)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
 	// Complete an interrupted migration before any open or create attempt can
 	// observe a half-renamed database. A crash after the source backup rename
 	// leaves the marker, the backup, and the staging database behind without
@@ -88,7 +101,6 @@ func openStateStore(cfg Config) (stateStore, error) {
 			"database_path": cfg.DatabasePath,
 		}, err)
 	}
-
 	switch resolveStorageDriver(cfg) {
 	case StorageDriverLattice:
 		store, err := newLatticeStore(cfg)
