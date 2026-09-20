@@ -12,8 +12,8 @@ import (
 func (c cli) runFact(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul fact get --db PATH --id ID [--json]
-  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
+  yeoul fact get --db PATH --id ID [--space ID] [--json]
+  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--space ID] [--limit N] [--cursor CURSOR] [--json]
   yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-namespace NS --subject-type TYPE --subject-name NAME [--subject-stable-key KEY]) [--object-id ID | --upsert-object --object-namespace NS --object-type TYPE --object-name NAME [--object-stable-key KEY]] [--value-text TEXT] [--observed-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--cardinality one|many] --supporting-episodes IDS [--json]
   yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] [--valid-from RFC3339] [--valid-to RFC3339] --supporting-episodes IDS --reason TEXT [--json]
   yeoul fact retract --db PATH --id ID --reason TEXT [--json]
@@ -50,7 +50,7 @@ func (c cli) runFactLookup(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT]
-      [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
+      [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--space ID] [--limit N] [--cursor CURSOR] [--json]
 `)
 
 	fs := newFlagSet("fact lookup")
@@ -67,6 +67,7 @@ Usage:
 	var includeInactive bool
 	var limit int
 	var cursor string
+	var space string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&subjectIDsRaw, "subject-id", "", "comma-separated subject IDs")
@@ -81,6 +82,7 @@ Usage:
 	fs.BoolVar(&includeInactive, "include-inactive", false, "include inactive facts")
 	fs.IntVar(&limit, "limit", 25, "maximum number of facts")
 	fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -105,6 +107,7 @@ Usage:
 		return err
 	}
 	resp, err := eng.LookupFacts(ctx, yeoul.FactLookupRequest{
+		Meta:       yeoul.QueryMeta{SpaceID: space},
 		Temporal:   temporal,
 		SubjectIDs: splitCSV(subjectIDsRaw),
 		Predicates: splitCSV(predicatesRaw),
@@ -495,7 +498,7 @@ Usage:
 func (c cli) runEntity(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul entity get --db PATH --id ID [--json]
+  yeoul entity get --db PATH --id ID [--space ID] [--json]
   yeoul entity merge-preview --db PATH [--json]
   yeoul entity merge --db PATH --target ID --source IDS --reason TEXT [--json] [--confirm]
 `)

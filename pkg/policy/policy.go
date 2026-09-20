@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -73,6 +75,47 @@ type SearchRecipe struct {
 	Filters     map[string]any     `yaml:"filters" json:"filters,omitempty"`
 	Ranking     map[string]float64 `yaml:"ranking" json:"ranking,omitempty"`
 	Expand      map[string]any     `yaml:"expand" json:"expand,omitempty"`
+}
+
+// searchRecipeStrategies lists the strategies the CLI executes.
+var searchRecipeStrategies = []string{"hybrid", "neighborhood", "predicate_subject_lookup"}
+
+// supportedRecipeFilterKeys lists the recipe filters that map to real request
+// fields. Any other filter is rejected instead of being silently accepted.
+var supportedRecipeFilterKeys = []string{"fact_status", "window_days", "predicate"}
+
+// supportedRecipeExpandKeys lists the recipe expand settings that map to real
+// request fields.
+var supportedRecipeExpandKeys = []string{"entity_types"}
+
+// ValidateSearchRecipe reports recipe controls that the runtime does not
+// implement. Every accepted setting must change the executed request, so a
+// recipe can never advertise behavior the CLI ignores.
+func ValidateSearchRecipe(name string, recipe SearchRecipe) []string {
+	var issues []string
+	if len(recipe.Ranking) > 0 {
+		issues = append(issues, fmt.Sprintf("recipe %q declares ranking weights, which are not supported", name))
+	}
+	for _, key := range sortedKeys(recipe.Filters) {
+		if !slices.Contains(supportedRecipeFilterKeys, key) {
+			issues = append(issues, fmt.Sprintf("recipe %q declares unsupported filter %q", name, key))
+		}
+	}
+	for _, key := range sortedKeys(recipe.Expand) {
+		if !slices.Contains(supportedRecipeExpandKeys, key) {
+			issues = append(issues, fmt.Sprintf("recipe %q declares unsupported expand setting %q", name, key))
+		}
+	}
+	return issues
+}
+
+func sortedKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func LoadPack(path string) (*Pack, error) {
@@ -170,13 +213,28 @@ func ValidatePack(path string) (*ValidationResult, error) {
 	if len(pack.SearchRecipes.Recipes) == 0 {
 		addWarning("search_recipes.yaml does not declare any recipes")
 	}
-	for name, recipe := range pack.SearchRecipes.Recipes {
+	for _, name := range sortedRecipeNames(pack.SearchRecipes.Recipes) {
+		recipe := pack.SearchRecipes.Recipes[name]
 		if strings.TrimSpace(recipe.Strategy) == "" {
 			addIssue(fmt.Sprintf("recipe %q must declare strategy", name))
+		} else if !slices.Contains(searchRecipeStrategies, recipe.Strategy) {
+			addIssue(fmt.Sprintf("recipe %q declares unsupported strategy %q", name, recipe.Strategy))
+		}
+		for _, issue := range ValidateSearchRecipe(name, recipe) {
+			addIssue(issue)
 		}
 	}
 
 	return result, nil
+}
+
+func sortedRecipeNames(recipes map[string]SearchRecipe) []string {
+	names := make([]string, 0, len(recipes))
+	for name := range recipes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func validateNonEmptyList(addIssue func(string), field string, values []string) {

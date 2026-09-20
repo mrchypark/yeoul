@@ -62,19 +62,34 @@ Usage:
 		return err
 	}
 	if jsonOut {
-		return writeJSON(c.stdout, result)
-	}
-	if _, err := fmt.Fprintf(c.stdout, "valid: %t\n", result.Valid); err != nil {
-		return err
-	}
-	for _, issue := range result.Issues {
-		if _, err := fmt.Fprintf(c.stdout, "issue: %s\n", issue); err != nil {
+		if err := writeJSON(c.stdout, result); err != nil {
 			return err
 		}
-	}
-	for _, warning := range result.Warnings {
-		if _, err := fmt.Fprintf(c.stdout, "warning: %s\n", warning); err != nil {
+	} else {
+		if _, err := fmt.Fprintf(c.stdout, "valid: %t\n", result.Valid); err != nil {
 			return err
+		}
+		for _, issue := range result.Issues {
+			if _, err := fmt.Fprintf(c.stdout, "issue: %s\n", issue); err != nil {
+				return err
+			}
+		}
+		for _, warning := range result.Warnings {
+			if _, err := fmt.Fprintf(c.stdout, "warning: %s\n", warning); err != nil {
+				return err
+			}
+		}
+	}
+	// The result is reported first so callers keep the diagnostics, then an
+	// invalid pack fails the command instead of exiting successfully.
+	if !result.Valid {
+		return &yeoul.Error{
+			Code:    yeoul.ErrInputInvalid,
+			Message: fmt.Sprintf("policy pack %s is invalid", path),
+			Details: map[string]any{
+				"path":   path,
+				"issues": result.Issues,
+			},
 		}
 	}
 	return nil
@@ -184,8 +199,20 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	if !ok {
 		return req, fmt.Errorf("search recipe %q not found", recipeName)
 	}
+	if issues := policy.ValidateSearchRecipe(recipeName, recipe); len(issues) > 0 {
+		return req, fmt.Errorf("search recipe %q is not executable: %s", recipeName, strings.Join(issues, "; "))
+	}
+	// Scope must be populated before the strategy switch: the
+	// predicate_subject_lookup strategy narrows the hit types below.
 	if status, ok := recipe.Filters["fact_status"]; ok {
 		req.Scope.FactStatus = mergeStringSlices(req.Scope.FactStatus, splitCSV(fmt.Sprint(status)))
+	}
+	if predicates, ok := recipe.Filters["predicate"]; ok {
+		values, isList := stringSliceFromAny(predicates)
+		if !isList {
+			values = splitCSV(fmt.Sprint(predicates))
+		}
+		req.Predicates = mergeStringSlices(req.Predicates, values)
 	}
 	if windowDays, ok := intFromAny(recipe.Filters["window_days"]); ok {
 		from := time.Now().UTC().Add(-time.Duration(windowDays) * 24 * time.Hour)

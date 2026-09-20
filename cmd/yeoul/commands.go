@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	json "github.com/goccy/go-json"
 	latticedb "github.com/mrchypark/latticedb-go"
 	"github.com/mrchypark/yeoul/pkg/policy"
 	"github.com/mrchypark/yeoul/pkg/retrieval"
@@ -33,6 +32,31 @@ type ingestJSONResult struct {
 	EpisodeIDs   []string `json:"episode_ids,omitempty"`
 	EntityIDs    []string `json:"entity_ids,omitempty"`
 	FactIDs      []string `json:"fact_ids,omitempty"`
+}
+
+// applyDefaultSpace fills the space ID for every record that does not carry an
+// explicit one, so a CLI --space selector matches how the records are stored.
+// Records that name their own space keep it.
+func applyDefaultSpace(payload *ingestJSONFile, space string) {
+	space = strings.TrimSpace(space)
+	if space == "" {
+		return
+	}
+	for i := range payload.Episodes {
+		if strings.TrimSpace(payload.Episodes[i].SpaceID) == "" {
+			payload.Episodes[i].SpaceID = space
+		}
+	}
+	for i := range payload.Entities {
+		if strings.TrimSpace(payload.Entities[i].SpaceID) == "" {
+			payload.Entities[i].SpaceID = space
+		}
+	}
+	for i := range payload.Facts {
+		if strings.TrimSpace(payload.Facts[i].SpaceID) == "" {
+			payload.Facts[i].SpaceID = space
+		}
+	}
 }
 
 type migrateResult struct {
@@ -236,10 +260,10 @@ Usage:
 func (c cli) runIngest(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul ingest episode --db PATH --kind KIND (--content TEXT | --content-file FILE) [flags]
-  yeoul ingest file --db PATH --kind KIND --file FILE [flags]
-  yeoul ingest json --db PATH --file FILE [--json]
-  yeoul ingest batch --db PATH --file FILE [--json]
+  yeoul ingest episode --db PATH --kind KIND (--content TEXT | --content-file FILE) [flags] [--space ID]
+  yeoul ingest file --db PATH --kind KIND --file FILE [flags] [--space ID]
+  yeoul ingest json --db PATH --file FILE [--space ID] [--json]
+  yeoul ingest batch --db PATH --file FILE [--space ID] [--json]
 `)
 
 	if len(args) == 0 {
@@ -268,7 +292,7 @@ func (c cli) runIngestEpisode(ctx context.Context, args []string) error {
 Usage:
   yeoul ingest episode --db PATH --kind KIND (--content TEXT | --content-file FILE) [--id ID] [--group-id GROUP]
       [--source-id ID] [--source-kind KIND] [--source-uri URI] [--source-external-ref REF]
-      [--observed-at RFC3339] [--policy-path PATH] [--json]
+      [--observed-at RFC3339] [--policy-path PATH] [--space ID] [--json]
 `)
 
 	fs := newFlagSet("ingest episode")
@@ -285,6 +309,7 @@ Usage:
 	var sourceExternalRef string
 	var observedAtRaw string
 	var policyPath string
+	var space string
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	fs.StringVar(&episodeID, "id", "", "episode ID")
@@ -298,6 +323,7 @@ Usage:
 	fs.StringVar(&sourceExternalRef, "source-external-ref", "", "source external ref")
 	fs.StringVar(&observedAtRaw, "observed-at", "", "observed time in RFC3339 format")
 	fs.StringVar(&policyPath, "policy-path", "", "policy pack path")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
 		return err
@@ -361,6 +387,7 @@ Usage:
 
 	input := yeoul.EpisodeInput{
 		ID:         episodeID,
+		SpaceID:    space,
 		Kind:       kind,
 		Content:    content,
 		SourceID:   sourceID,
@@ -410,7 +437,7 @@ func (c cli) runIngestFile(ctx context.Context, args []string) error {
 Usage:
   yeoul ingest file --db PATH --kind KIND --file FILE [--id ID] [--group-id GROUP]
       [--source-id ID] [--source-kind KIND] [--source-uri URI] [--source-external-ref REF]
-      [--observed-at RFC3339] [--json]
+      [--observed-at RFC3339] [--space ID] [--json]
 `)
 
 	rewritten := make([]string, 0, len(args)+2)
@@ -438,16 +465,18 @@ Usage:
 func (c cli) runIngestJSON(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul ingest json --db PATH --file FILE [--json]
+  yeoul ingest json --db PATH --file FILE [--space ID] [--json]
 `)
 
 	fs := newFlagSet("ingest json")
 	var dbPath string
 	var filePath string
 	var jsonOut bool
+	var space string
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&filePath, "file", "", "path to a JSON ingest file")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
+	fs.StringVar(&space, "space", "default", "default space ID for records without one")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
 		return err
@@ -471,11 +500,10 @@ Usage:
 	}
 
 	var payload ingestJSONFile
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
+	if err := decodeSingleJSON(data, &payload); err != nil {
 		return fmt.Errorf("decode ingest file: %w", err)
 	}
+	applyDefaultSpace(&payload, space)
 
 	eng, err := openWriteEngine(ctx, dbPath)
 	if err != nil {
@@ -483,9 +511,11 @@ Usage:
 	}
 
 	batch, err := eng.IngestBatch(ctx, yeoul.BatchInput{
-		Episodes: payload.Episodes,
-		Entities: payload.Entities,
-		Facts:    payload.Facts,
+		Episodes:        payload.Episodes,
+		Entities:        payload.Entities,
+		Facts:           payload.Facts,
+		EntityRevisions: payload.EntityRevisions,
+		FactRevisions:   payload.FactRevisions,
 	})
 	if err != nil {
 		_ = closeEngine(ctx, eng)
@@ -519,7 +549,7 @@ Usage:
 func (c cli) runGet(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul get --db PATH --kind episode|entity|fact|source --id ID [--as-of RFC3339] [--json]
+  yeoul get --db PATH --kind episode|entity|fact|source --id ID [--as-of RFC3339] [--space ID] [--json]
 `)
 
 	fs := newFlagSet("get")
@@ -527,11 +557,13 @@ Usage:
 	var kind string
 	var id string
 	var asOfRaw string
+	var space string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&kind, "kind", "", "record kind")
 	fs.StringVar(&id, "id", "", "record ID")
 	fs.StringVar(&asOfRaw, "as-of", "", "point-in-time view in RFC3339 format")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -559,6 +591,7 @@ Usage:
 		return err
 	}
 	resp, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{
+		Meta:     yeoul.QueryMeta{SpaceID: space},
 		Kind:     kind,
 		ID:       id,
 		Temporal: temporal,
@@ -581,7 +614,7 @@ func (c cli) runSearch(ctx context.Context, args []string) error {
 Usage:
   yeoul search --db PATH --query TEXT [--backend auto|core|rax] [--rax-lib PATH] [--rax-bin PATH] [--type fact,episode,entity] [--mode hybrid|keyword|semantic] [--entity ID] [--predicate PREDS] [--min-score N]
       [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--from RFC3339] [--to RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--cursor CURSOR]
-      [--policy-path PATH] [--recipe NAME] [--limit N] [--include-related] [--json]
+      [--policy-path PATH] [--recipe NAME] [--space ID] [--limit N] [--include-related] [--json]
 `)
 
 	fs := newFlagSet("search")
@@ -607,6 +640,7 @@ Usage:
 	var cursor string
 	var policyPath string
 	var recipeName string
+	var space string
 	var limit int
 	var includeRelated bool
 	var jsonOut bool
@@ -639,6 +673,7 @@ Usage:
 	fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
 	fs.StringVar(&policyPath, "policy-path", "", "policy pack path")
 	fs.StringVar(&recipeName, "recipe", "", "search recipe name")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.IntVar(&limit, "limit", 10, "maximum number of hits")
 	fs.BoolVar(&includeRelated, "include-related", false, "include related records")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
@@ -668,6 +703,7 @@ Usage:
 	}
 
 	req := yeoul.SearchRequest{
+		Meta:       yeoul.QueryMeta{SpaceID: space},
 		QueryText:  query,
 		Mode:       yeoul.SearchMode(strings.ToLower(strings.TrimSpace(mode))),
 		Types:      splitCSV(typesRaw),
@@ -770,6 +806,7 @@ Usage:
 	var limit int
 	var maxBlocks int
 	var maxTextRunes int
+	var space string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&query, "query", "", "query text")
@@ -778,6 +815,7 @@ Usage:
 	fs.IntVar(&limit, "limit", 10, "maximum number of hits")
 	fs.IntVar(&maxBlocks, "max-blocks", 16, "maximum context blocks")
 	fs.IntVar(&maxTextRunes, "max-text-runes", 512, "maximum runes per block")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -797,6 +835,7 @@ Usage:
 		return err
 	}
 	searchResp, err := eng.Search(ctx, yeoul.SearchRequest{
+		Meta:      yeoul.QueryMeta{SpaceID: space},
 		QueryText: query,
 		Types:     splitCSV(typesRaw),
 		AnchorIDs: splitCSV(entityID),
@@ -829,10 +868,10 @@ func (c cli) runInspect(ctx context.Context, args []string) error {
 Usage:
   yeoul inspect schema --db PATH [--json]
   yeoul inspect counts --db PATH [--json]
-  yeoul inspect entity --db PATH --id ID [--json]
-  yeoul inspect fact --db PATH --id ID [--json]
-  yeoul inspect episode --db PATH --id ID [--json]
-  yeoul inspect source --db PATH --id ID [--json]
+  yeoul inspect entity --db PATH --id ID [--space ID] [--json]
+  yeoul inspect fact --db PATH --id ID [--space ID] [--json]
+  yeoul inspect episode --db PATH --id ID [--space ID] [--json]
+  yeoul inspect source --db PATH --id ID [--space ID] [--json]
 `)
 
 	if len(args) == 0 {
@@ -967,15 +1006,17 @@ Usage:
 func (c cli) runInspectRecord(ctx context.Context, kind string, args []string) error {
 	usage := strings.TrimSpace(fmt.Sprintf(`
 Usage:
-  yeoul inspect %s --db PATH --id ID [--json]
+  yeoul inspect %s --db PATH --id ID [--space ID] [--json]
 `, kind))
 
 	fs := newFlagSet("inspect " + kind)
 	var dbPath string
 	var id string
+	var space string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&id, "id", "", "record ID")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -995,7 +1036,7 @@ Usage:
 	if err != nil {
 		return err
 	}
-	resp, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Kind: kind, ID: id})
+	resp, err := eng.GetRecord(ctx, yeoul.GetRecordRequest{Meta: yeoul.QueryMeta{SpaceID: space}, Kind: kind, ID: id})
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
 		err = closeErr
 	}
@@ -1012,7 +1053,7 @@ func (c cli) runTimeline(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul timeline --db PATH [--entity ID | --fact ID | --episode ID | --source ID] [--event-type TYPES]
-      [--as-of RFC3339] [--from RFC3339] [--to RFC3339] [--descending] [--cursor CURSOR] [--limit N] [--json]
+      [--as-of RFC3339] [--from RFC3339] [--to RFC3339] [--descending] [--cursor CURSOR] [--limit N] [--space ID] [--json]
 `)
 
 	fs := newFlagSet("timeline")
@@ -1031,6 +1072,7 @@ Usage:
 	var descending bool
 	var cursor string
 	var limit int
+	var space string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
@@ -1047,6 +1089,7 @@ Usage:
 	fs.BoolVar(&descending, "descending", false, "sort descending by timestamp")
 	fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
 	fs.IntVar(&limit, "limit", 25, "maximum number of events")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -1072,6 +1115,7 @@ Usage:
 		return err
 	}
 	resp, err := eng.Timeline(ctx, yeoul.TimelineRequest{
+		Meta:       yeoul.QueryMeta{SpaceID: space},
 		AnchorIDs:  anchors,
 		EventTypes: splitCSV(eventTypesRaw),
 		Temporal:   temporal,
@@ -1105,7 +1149,7 @@ Usage:
 func (c cli) runProvenance(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul provenance --db PATH (--kind KIND --id ID | --entity ID | --fact ID | --episode ID) [--as-of RFC3339] [--max-depth N] [--json]
+  yeoul provenance --db PATH (--kind KIND --id ID | --entity ID | --fact ID | --episode ID) [--as-of RFC3339] [--max-depth N] [--space ID] [--json]
 `)
 
 	fs := newFlagSet("provenance")
@@ -1117,6 +1161,7 @@ Usage:
 	var episodeID string
 	var asOfRaw string
 	var maxDepth int
+	var space string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&kind, "kind", "", "record kind")
@@ -1126,6 +1171,7 @@ Usage:
 	fs.StringVar(&episodeID, "episode", "", "episode ID")
 	fs.StringVar(&asOfRaw, "as-of", "", "point-in-time view in RFC3339 format")
 	fs.IntVar(&maxDepth, "max-depth", 8, "maximum expansion depth")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -1140,17 +1186,29 @@ Usage:
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
 	}
-	if entityID != "" {
-		kind, id = "entity", entityID
-	}
-	if factID != "" {
-		kind, id = "fact", factID
-	}
-	if episodeID != "" {
-		kind, id = "episode", episodeID
-	}
-	if strings.TrimSpace(kind) == "" || strings.TrimSpace(id) == "" {
+	// The selector forms are mutually exclusive. Counting them prevents a
+	// conflicting invocation such as --entity A --fact B from silently
+	// querying only one of the requested records.
+	kindSet := strings.TrimSpace(kind) != ""
+	idSet := strings.TrimSpace(id) != ""
+	if kindSet != idSet {
 		return &usageError{message: usage}
+	}
+	anchors := compactStrings(entityID, factID, episodeID)
+	if kindSet {
+		if len(anchors) > 0 {
+			return &usageError{message: usage}
+		}
+	} else if len(anchors) != 1 {
+		return &usageError{message: usage}
+	}
+	switch {
+	case entityID != "":
+		kind, id = "entity", entityID
+	case factID != "":
+		kind, id = "fact", factID
+	case episodeID != "":
+		kind, id = "episode", episodeID
 	}
 	temporal, err := parseTemporalFlags(asOfRaw, "", "", true)
 	if err != nil {
@@ -1162,6 +1220,7 @@ Usage:
 		return err
 	}
 	resp, err := eng.Provenance(ctx, yeoul.ProvenanceRequest{
+		Meta:     yeoul.QueryMeta{SpaceID: space},
 		Kind:     kind,
 		ID:       id,
 		Temporal: temporal,
@@ -1190,7 +1249,7 @@ Usage:
 func (c cli) runNeighborhood(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul neighborhood --db PATH (--entity ID | --fact ID | --episode ID) [--hops N] [--max-nodes N] [--json]
+  yeoul neighborhood --db PATH (--entity ID | --fact ID | --episode ID) [--hops N] [--max-nodes N] [--space ID] [--json]
 `)
 
 	fs := newFlagSet("neighborhood")
@@ -1200,6 +1259,7 @@ Usage:
 	var episodeID string
 	var hops int
 	var maxNodes int
+	var space string
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
@@ -1207,6 +1267,7 @@ Usage:
 	fs.StringVar(&episodeID, "episode", "", "episode anchor ID")
 	fs.IntVar(&hops, "hops", 1, "maximum hop count")
 	fs.IntVar(&maxNodes, "max-nodes", 50, "maximum number of nodes")
+	fs.StringVar(&space, "space", "default", "record space ID")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)
 	if err != nil {
@@ -1237,6 +1298,7 @@ Usage:
 		return err
 	}
 	resp, err := eng.Neighborhood(ctx, yeoul.NeighborhoodRequest{
+		Meta:      yeoul.QueryMeta{SpaceID: space},
 		AnchorIDs: anchors,
 		MaxHops:   hops,
 		MaxNodes:  maxNodes,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	json "github.com/goccy/go-json"
 	"github.com/mrchypark/yeoul/pkg/yeoul"
@@ -88,23 +90,23 @@ func rootUsage() string {
 Usage:
   yeoul init --db PATH [--force] [--json]
   yeoul migrate --db PATH [--json]
-  yeoul ingest episode --db PATH --kind KIND (--content TEXT | --content-file FILE) [flags]
-  yeoul ingest file --db PATH --kind KIND --file FILE [flags]
-  yeoul ingest json --db PATH --file FILE [--json]
-  yeoul ingest batch --db PATH --file FILE [--json]
-  yeoul get --db PATH --kind episode|entity|fact|source --id ID [--json]
-  yeoul search --db PATH --query TEXT [--backend auto|core|rax] [--type fact,episode,entity] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--limit N] [--include-related] [--json]
-  yeoul context --db PATH --query TEXT [--type fact,episode,entity] [--limit N] [--json]
-  yeoul timeline --db PATH [--entity ID | --fact ID | --episode ID | --source ID] [--event-type TYPES] [--as-of RFC3339] [--from RFC3339] [--to RFC3339] [--descending] [--limit N] [--json]
-  yeoul provenance --db PATH (--kind KIND --id ID | --entity ID | --fact ID | --episode ID) [--as-of RFC3339] [--max-depth N] [--json]
+  yeoul ingest episode --db PATH --kind KIND (--content TEXT | --content-file FILE) [flags] [--space ID]
+  yeoul ingest file --db PATH --kind KIND --file FILE [flags] [--space ID]
+  yeoul ingest json --db PATH --file FILE [--space ID] [--json]
+  yeoul ingest batch --db PATH --file FILE [--space ID] [--json]
+  yeoul get --db PATH --kind episode|entity|fact|source --id ID [--space ID] [--json]
+  yeoul search --db PATH --query TEXT [--backend auto|core|rax] [--type fact,episode,entity] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--space ID] [--limit N] [--include-related] [--json]
+  yeoul context --db PATH --query TEXT [--type fact,episode,entity] [--limit N] [--space ID] [--json]
+  yeoul timeline --db PATH [--entity ID | --fact ID | --episode ID | --source ID] [--event-type TYPES] [--as-of RFC3339] [--from RFC3339] [--to RFC3339] [--descending] [--limit N] [--space ID] [--json]
+  yeoul provenance --db PATH (--kind KIND --id ID | --entity ID | --fact ID | --episode ID) [--as-of RFC3339] [--max-depth N] [--space ID] [--json]
   yeoul inspect schema --db PATH [--json]
   yeoul inspect counts --db PATH [--json]
-  yeoul neighborhood --db PATH (--entity ID | --fact ID | --episode ID) [--hops N] [--max-nodes N] [--json]
-  yeoul entity get --db PATH --id ID [--json]
+  yeoul neighborhood --db PATH (--entity ID | --fact ID | --episode ID) [--hops N] [--max-nodes N] [--space ID] [--json]
+  yeoul entity get --db PATH --id ID [--space ID] [--json]
   yeoul entity merge-preview --db PATH [--json]
   yeoul entity merge --db PATH --target ID --source IDS --reason TEXT [--json] [--confirm]
-  yeoul fact get --db PATH --id ID [--json]
-  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--limit N] [--cursor CURSOR] [--json]
+  yeoul fact get --db PATH --id ID [--space ID] [--json]
+  yeoul fact lookup --db PATH [--subject-id IDS] [--predicate PREDS] [--object-id IDS] [--object-text TEXT] [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--space ID] [--limit N] [--cursor CURSOR] [--json]
   yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-namespace NS --subject-type TYPE --subject-name NAME [--subject-stable-key KEY]) [--object-id ID | --upsert-object --object-namespace NS --object-type TYPE --object-name NAME [--object-stable-key KEY]] [--value-text TEXT] [--observed-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--cardinality one|many] --supporting-episodes IDS [--json]
   yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] [--valid-from RFC3339] [--valid-to RFC3339] --supporting-episodes IDS --reason TEXT [--json]
   yeoul fact retract --db PATH --id ID --reason TEXT [--json]
@@ -255,6 +257,23 @@ func writeJSON(w io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
+// decodeSingleJSON decodes exactly one complete JSON document into out. It
+// rejects unknown fields and any trailing value or garbage, so a misspelled
+// key or a concatenated payload cannot be accepted as an empty or partial
+// import. Every JSON entry point uses this decoder.
+func decodeSingleJSON(data []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil || !errors.Is(err, io.EOF) {
+		return fmt.Errorf("unexpected trailing content after the first JSON document")
+	}
+	return nil
+}
+
 func requireDB(dbPath, usage string) error {
 	if strings.TrimSpace(dbPath) == "" {
 		return &usageError{message: usage}
@@ -284,9 +303,25 @@ func shorten(text string, limit int) string {
 		return text
 	}
 	if limit <= 3 {
-		return text[:limit]
+		return truncateBytes(text, limit)
 	}
-	return text[:limit-3] + "..."
+	return truncateBytes(text, limit-3) + "..."
+}
+
+// truncateBytes returns the longest prefix of s that fits within n bytes
+// without splitting a UTF-8 sequence. The byte budget is preserved, but a
+// trailing partial rune is dropped so previews never emit invalid UTF-8.
+func truncateBytes(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n < 0 {
+		n = 0
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func readFile(path string) (string, error) {

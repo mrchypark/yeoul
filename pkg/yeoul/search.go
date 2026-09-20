@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
@@ -585,5 +586,20 @@ func summarize(content string) string {
 	if len(content) <= 80 {
 		return content
 	}
-	return content[:77] + "..."
+	return truncateUTF8(content, 77) + "..."
+}
+
+// truncateUTF8 returns the longest prefix of s within n bytes that does not
+// split a UTF-8 sequence, so previews stay valid for multibyte text.
+func truncateUTF8(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n < 0 {
+		n = 0
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
