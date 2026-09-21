@@ -49,6 +49,7 @@ Examples:
 - supersession loop
 - invalid lifecycle transition
 - entity merge conflict
+- near-duplicate entity guard on fact assert (`YEOUL_ENTITY_NEAR_DUPLICATE`)
 - single-value slot conflict on fact assert (`YEOUL_FACT_CONFLICT`)
 
 ### NotFound
@@ -73,6 +74,7 @@ Examples:
 - `YEOUL_INPUT_INVALID`
 - `YEOUL_POLICY_INVALID`
 - `YEOUL_ENTITY_NOT_FOUND`
+- `YEOUL_ENTITY_NEAR_DUPLICATE`
 - `YEOUL_FACT_NOT_FOUND`
 - `YEOUL_FACT_CONFLICT`
 - `YEOUL_LIFECYCLE_INVALID`
@@ -90,7 +92,7 @@ The CLI classifies the concrete error codes below, not every error that shares a
 semantic label:
 
 - success -> exit 0
-- usage errors (including a destructive command that is missing `--confirm`) and the `YEOUL_CONFIG_INVALID`, `YEOUL_INPUT_INVALID`, `YEOUL_FACT_CONFLICT`, `YEOUL_LIFECYCLE_INVALID`, and `YEOUL_NOT_SUPPORTED` codes -> exit 2
+- usage errors (including a destructive command that is missing `--confirm`) and the `YEOUL_CONFIG_INVALID`, `YEOUL_INPUT_INVALID`, `YEOUL_FACT_CONFLICT`, `YEOUL_LIFECYCLE_INVALID`, `YEOUL_ENTITY_NEAR_DUPLICATE`, and `YEOUL_NOT_SUPPORTED` codes -> exit 2
 - the `YEOUL_ENTITY_NOT_FOUND`, `YEOUL_FACT_NOT_FOUND`, and `YEOUL_SOURCE_NOT_FOUND` codes -> exit 3
 - the `YEOUL_QUERY_FAILED` code -> exit 4
 - every other error -> exit 1, including `YEOUL_STORAGE_FAILED` and plain errors such as a missing search recipe or an unsupported recipe strategy

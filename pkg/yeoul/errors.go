@@ -15,10 +15,15 @@ const (
 	ErrFactNotFound     ErrorCode = "YEOUL_FACT_NOT_FOUND"
 	ErrSourceNotFound   ErrorCode = "YEOUL_SOURCE_NOT_FOUND"
 	ErrLifecycleInvalid ErrorCode = "YEOUL_LIFECYCLE_INVALID"
-	ErrFactConflict     ErrorCode = "YEOUL_FACT_CONFLICT"
-	ErrQueryFailed      ErrorCode = "YEOUL_QUERY_FAILED"
-	ErrNotSupported     ErrorCode = "YEOUL_NOT_SUPPORTED"
-	ErrStorageFailed    ErrorCode = "YEOUL_STORAGE_FAILED"
+	// ErrEntityNearDuplicate guards an automatic entity upsert whose derived ID
+	// is new while an entity with the same identity already exists under a
+	// different ID (issue #139). It fails closed instead of creating a second
+	// entity for one conceptual identity.
+	ErrEntityNearDuplicate ErrorCode = "YEOUL_ENTITY_NEAR_DUPLICATE"
+	ErrFactConflict        ErrorCode = "YEOUL_FACT_CONFLICT"
+	ErrQueryFailed         ErrorCode = "YEOUL_QUERY_FAILED"
+	ErrNotSupported        ErrorCode = "YEOUL_NOT_SUPPORTED"
+	ErrStorageFailed       ErrorCode = "YEOUL_STORAGE_FAILED"
 )
 
 // Error is the structured error shape surfaced by the public Go API.

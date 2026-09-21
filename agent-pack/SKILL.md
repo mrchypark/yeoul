@@ -36,6 +36,8 @@ Before the final answer for a substantive cycle, classify the outcome as no memo
 Use `ingest episode` or `ingest file` for source records, and `fact assert` for a confirmed durable claim whose subject, predicate, scope, and supporting episodes are clear.
 Model a named referent as an object entity when future work should reuse, filter, or traverse it. Use `value_text` for a scalar, status, short conclusion, or opaque text. Do not create an entity for every noun.
 For Repository entities, use namespace `repo:<owner>/<repo>` and stable key `<owner>/<repo>` without repeating the namespace. Prefer real external IDs for other durable entities. Ontology patterns include `Project DECIDED Decision`, `Person OWNS Repository` or `Task`, component `DEPENDS_ON` component, and record `MENTIONED_IN Document`.
+
+Before asserting with `--upsert-subject`, run `yeoul entity resolve` to check whether an entity already matches the identity tuple. When resolve reports an existing entity, reuse its ID instead of upserting a new one. `--upsert-subject` and `--upsert-object` fail closed with `YEOUL_ENTITY_NEAR_DUPLICATE` (exit 2) when the derived entity ID is new but an existing entity already matches the same identity under a different ID, instead of creating a second entity. The guard also fires when the display name differs only by case.
 Prefer `fact supersede --confirm` for state changes instead of overwriting old facts, and `fact retract --confirm` only with an explicit reason. A `SUPERSEDES` assertion never substitutes for `fact supersede`. Use `--as-of` for what Yeoul knew then and `--valid-at` for what was true then.
 
 ## Verify a completed write

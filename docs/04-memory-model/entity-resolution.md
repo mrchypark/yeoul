@@ -94,3 +94,42 @@ Yeoul should eventually expose:
 ## Non-goal for MVP
 Fully autonomous entity mastering is out of scope.
 MVP should provide deterministic and explainable entity reuse.
+
+## Identity tuple
+
+An entity identity is the tuple (space, namespace, type, canonical name, stable key).
+The derived entity ID is a hash of the exact tuple: `EntityID(namespace, type, key)` does
+not include the space, so the same namespace/type/key in two spaces derives one ID.
+
+### Drift
+
+Drift is a difference that still refers to the same conceptual entity. Recognized forms:
+- namespace or type differs only by case (e.g. `repo` vs `Repo`)
+- namespace is empty on one side but populated on the other
+- canonical name matches a display-name alias (e.g. `yeoul` vs `Yeoul`)
+- canonical name differs only by case
+- one side carries a stable key and the other does not (near-duplicate guard only)
+
+A drifted namespace or type cannot be turned into the canonical ID by recomputation.
+The derived ID is computed from the exact tuple provided, so a caller that needs the
+canonical entity must use the ID returned by the resolver rather than recomputing one
+from the drifted input.
+
+### Resolution flow
+
+1. **Resolve by identity before writing.** Run `yeoul entity resolve` (or the Go
+   `ResolveEntity` API) to check whether an entity already matches the identity tuple.
+2. **Fail closed on a near duplicate.** When the derived entity ID is new but an existing
+   entity already matches the same identity under a different ID, `fact assert` with
+   `--upsert-subject` or `--upsert-object` fails with `YEOUL_ENTITY_NEAR_DUPLICATE`
+   (exit 2) instead of creating a second entity. The caller reuses the existing entity ID.
+3. **Reconcile recorded drift.** A pair that differs only by namespace/type case, by
+   empty-vs-populated namespace, or that agrees on canonical name or alias is reported
+   and mergeable through `entity merge-preview` and `entity merge`. Each preview
+   candidate reports `drift_name`, `drift_namespace`, and `drift_type` when its
+   sources differ from the target in canonical name, namespace, or type. Genuine scope
+   conflicts (different canonical names, different stable keys, different spaces) are
+   still refused.
+4. **Read merged duplicates through their canonical entity.** A fact attached to an entity
+   marked `duplicate_of X` is returned when the caller filters by X. This is a read-time
+   interpretation; stored facts are not rewritten.

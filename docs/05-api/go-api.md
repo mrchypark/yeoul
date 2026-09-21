@@ -62,6 +62,7 @@ type Engine interface {
     Neighborhood(ctx context.Context, req NeighborhoodRequest) (*NeighborhoodResponse, error)
     Timeline(ctx context.Context, req TimelineRequest) (*TimelineResponse, error)
     Provenance(ctx context.Context, req ProvenanceRequest) (*ProvenanceResponse, error)
+    ResolveEntity(ctx context.Context, req EntityResolveRequest) (*EntityResolveResponse, error)
 
     // Convenience getters
     GetEpisode(ctx context.Context, id string) (*Episode, error)
@@ -82,6 +83,7 @@ This means:
 - `Neighborhood` maps to `NeighborhoodRequest` and `NeighborhoodResponse`
 - `Timeline` maps to `TimelineRequest` and `TimelineResponse`
 - `Provenance` maps to `ProvenanceRequest` and `ProvenanceResponse`
+- `ResolveEntity` maps to `EntityResolveRequest` and `EntityResolveResponse`
 - `GetRecord` maps to `GetRecordRequest` and `GetRecordResponse`
 
 The embedded API is the source of truth. The Service API is only an HTTP transport mapping of these same contracts.
@@ -98,6 +100,24 @@ They should behave as thin wrappers over `GetRecord` with fixed `kind` values:
 - `GetSource` -> `kind=source`
 
 These helpers should not add semantics that do not exist in `GetRecord`.
+
+## Identity-tuple resolution
+
+`ResolveEntity` resolves an entity by its identity tuple (space, namespace, type, canonical name, stable key)
+rather than by ID, because the entity ID is a hash of the exact identity tuple. The response carries
+`Matches` (all entities matching the tuple, ordered by ID) and `Drifted` (the subset that only matched
+after tolerating namespace/type case drift, empty-vs-populated namespace, or a folded display name that
+matches the stored canonical name or an alias).
+
+Set `EntityResolveRequest.IncludeKeyDrift` only for the upsert near-duplicate guard. It widens the
+identity rule so a stored entity that carries a stable key also matches a request that carries none
+(and the reverse) when the display names overlap, and every such match is reported in `Drifted`.
+Ordinary resolution leaves it off, because a stable key is a stronger identity claim than a display
+name.
+
+A drifted namespace or type cannot be turned into the canonical ID by recomputation; the derived ID is
+computed from the exact tuple provided, so a caller that needs the canonical entity must use the ID
+returned in `Matches` rather than recomputing one from the drifted input.
 
 ## Write API scope
 

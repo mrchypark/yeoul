@@ -48,7 +48,9 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			anchorMatched := matchesAnchors(req.AnchorIDs, append([]string{factRecord.ID, factRecord.SubjectID, factRecord.ObjectID}, factRecord.SupportingEpisodeIDs...)...)
+			subjectID := e.canonicalEntityIDLocked(factRecord.SubjectID)
+			objectID := e.canonicalEntityIDLocked(factRecord.ObjectID)
+			anchorMatched := matchesAnchors(req.AnchorIDs, append([]string{factRecord.ID, subjectID, objectID}, factRecord.SupportingEpisodeIDs...)...)
 			if len(req.AnchorIDs) > 0 && !anchorMatched {
 				continue
 			}
@@ -77,7 +79,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 					Reasons:     reasons,
 				})
 				seenHits["fact:"+factRecord.ID] = true
-				addGraphSeeds(graphSeeds, score, factRecord.ID, factRecord.SubjectID, factRecord.ObjectID)
+				addGraphSeeds(graphSeeds, score, factRecord.ID, subjectID, objectID)
 				addGraphSeeds(graphSeeds, score, factRecord.SupportingEpisodeIDs...)
 			}
 		}
@@ -169,7 +171,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			score := graphExpansionScore(graphSeeds, *factRecord)
+			score := e.graphExpansionScoreLocked(graphSeeds, *factRecord)
 			if score <= 0 {
 				continue
 			}
@@ -185,7 +187,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				Reasons:     []string{"graph_expansion"},
 			})
 			seenHits["fact:"+factRecord.ID] = true
-			addGraphSeeds(expandedSeeds, score, factRecord.ID, factRecord.SubjectID, factRecord.ObjectID)
+			addGraphSeeds(expandedSeeds, score, factRecord.ID, e.canonicalEntityIDLocked(factRecord.SubjectID), e.canonicalEntityIDLocked(factRecord.ObjectID))
 			addGraphSeeds(expandedSeeds, score, factRecord.SupportingEpisodeIDs...)
 		}
 		for _, fact := range e.facts {
@@ -196,7 +198,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			score := graphExpansionScore(expandedSeeds, *factRecord)
+			score := e.graphExpansionScoreLocked(expandedSeeds, *factRecord)
 			if score <= 0 {
 				continue
 			}
@@ -262,7 +264,7 @@ func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID st
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			if len(req.AnchorIDs) > 0 && !matchesAnchors(req.AnchorIDs, append([]string{factRecord.ID, factRecord.SubjectID, factRecord.ObjectID}, factRecord.SupportingEpisodeIDs...)...) {
+			if len(req.AnchorIDs) > 0 && !matchesAnchors(req.AnchorIDs, append([]string{factRecord.ID, e.canonicalEntityIDLocked(factRecord.SubjectID), e.canonicalEntityIDLocked(factRecord.ObjectID)}, factRecord.SupportingEpisodeIDs...)...) {
 				continue
 			}
 			observe(factRecord.ValueText + " " + factRecord.Predicate + " " + factRecord.SubjectID + " " + factRecord.ObjectID)
@@ -298,6 +300,17 @@ func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID st
 }
 
 func RecordPassesSearchFilters(ctx context.Context, eng Engine, record any, req SearchRequest) bool {
+	// The canonical view of a fact endpoint is engine state, so it is only
+	// available when the caller passes the core engine; another Engine
+	// implementation falls back to the raw IDs.
+	var core *engine
+	if typed, ok := eng.(*engine); ok {
+		core = typed
+	}
+	return recordPassesSearchFilters(ctx, eng, core, record, req)
+}
+
+func recordPassesSearchFilters(ctx context.Context, eng Engine, core *engine, record any, req SearchRequest) bool {
 	switch value := record.(type) {
 	case *Fact:
 		current, err := eng.GetRecord(ctx, GetRecordRequest{Meta: req.Meta, Kind: "fact", ID: value.ID, Temporal: req.Temporal})
@@ -311,7 +324,15 @@ func RecordPassesSearchFilters(ctx context.Context, eng Engine, record any, req 
 		if !req.Temporal.IncludeInactive && value.Status != factStatusActive {
 			return false
 		}
-		if !matchesAnchors(req.AnchorIDs, append([]string{value.ID, value.SubjectID, value.ObjectID}, value.SupportingEpisodeIDs...)...) {
+		subjectID := value.SubjectID
+		objectID := value.ObjectID
+		if core != nil {
+			core.mu.RLock()
+			subjectID = core.canonicalEntityIDLocked(subjectID)
+			objectID = core.canonicalEntityIDLocked(objectID)
+			core.mu.RUnlock()
+		}
+		if !matchesAnchors(req.AnchorIDs, append([]string{value.ID, subjectID, objectID}, value.SupportingEpisodeIDs...)...) {
 			return false
 		}
 		if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, value.Predicate) {
@@ -340,7 +361,7 @@ func RecordPassesSearchFilters(ctx context.Context, eng Engine, record any, req 
 		}
 		for _, episodeID := range value.SupportingEpisodeIDs {
 			episode, err := eng.GetRecord(ctx, GetRecordRequest{Meta: req.Meta, Kind: "episode", ID: episodeID, Temporal: req.Temporal})
-			if err == nil && RecordPassesSearchFilters(ctx, eng, episode.Record, SearchRequest{Meta: req.Meta, Scope: req.Scope, Temporal: req.Temporal}) {
+			if err == nil && recordPassesSearchFilters(ctx, eng, core, episode.Record, SearchRequest{Meta: req.Meta, Scope: req.Scope, Temporal: req.Temporal}) {
 				return true
 			}
 		}
@@ -460,9 +481,12 @@ func addGraphSeeds(seeds map[string]float64, score float64, ids ...string) {
 	}
 }
 
-func graphExpansionScore(seeds map[string]float64, fact Fact) float64 {
+// graphExpansionScoreLocked scores a fact against graph seeds using the
+// canonical forms of its endpoints, so an expansion seeded from the canonical
+// entity reaches facts stored against a merged duplicate.
+func (e *engine) graphExpansionScoreLocked(seeds map[string]float64, fact Fact) float64 {
 	best := 0.0
-	for _, id := range append([]string{fact.SubjectID, fact.ObjectID}, fact.SupportingEpisodeIDs...) {
+	for _, id := range append([]string{e.canonicalEntityIDLocked(fact.SubjectID), e.canonicalEntityIDLocked(fact.ObjectID)}, fact.SupportingEpisodeIDs...) {
 		if score := seeds[id] * 0.45; score > best {
 			best = score
 		}

@@ -103,6 +103,7 @@ Usage:
   yeoul inspect counts --db PATH [--json]
   yeoul neighborhood --db PATH (--entity ID | --fact ID | --episode ID) [--hops N] [--max-nodes N] [--space ID] [--json]
   yeoul entity get --db PATH --id ID [--space ID] [--json]
+  yeoul entity resolve --db PATH --type TYPE (--name NAME | --stable-key KEY) [--namespace NS] [--space ID] [--json]
   yeoul entity merge-preview --db PATH [--json]
   yeoul entity merge --db PATH --target ID --source IDS --reason TEXT [--json] [--confirm]
   yeoul fact get --db PATH --id ID [--space ID] [--json]
@@ -182,7 +183,7 @@ func exitCode(err error) int {
 	var apiErr *yeoul.Error
 	if errors.As(err, &apiErr) {
 		switch apiErr.Code {
-		case yeoul.ErrConfigInvalid, yeoul.ErrInputInvalid, yeoul.ErrFactConflict, yeoul.ErrLifecycleInvalid, yeoul.ErrNotSupported:
+		case yeoul.ErrConfigInvalid, yeoul.ErrInputInvalid, yeoul.ErrFactConflict, yeoul.ErrLifecycleInvalid, yeoul.ErrEntityNearDuplicate, yeoul.ErrNotSupported:
 			return 2
 		case yeoul.ErrEntityNotFound, yeoul.ErrFactNotFound, yeoul.ErrSourceNotFound:
 			return 3

@@ -2,12 +2,68 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
+
+// guardEntityNearDuplicate fails closed when an automatic upsert would derive a
+// new entity ID while an entity with the same identity already exists under a
+// different ID. The derived ID is a hash of the exact identity tuple, so a
+// caller that supplied a drifted namespace, type, or display name derives a
+// fresh ID and would otherwise silently create a second entity for one
+// conceptual identity (issue #139). An entity that is already stored under the
+// derived ID is left to the ordinary upsert path, which reports its own
+// identity conflict.
+func guardEntityNearDuplicate(ctx context.Context, eng yeoul.Engine, role, derivedID, namespace, entityType, canonicalName, stableKey string) error {
+	if _, err := eng.GetEntity(ctx, derivedID); err == nil {
+		return nil
+	}
+	resp, err := eng.ResolveEntity(ctx, yeoul.EntityResolveRequest{
+		SpaceID:         "default",
+		Namespace:       namespace,
+		Type:            entityType,
+		CanonicalName:   canonicalName,
+		StableKey:       stableKey,
+		IncludeKeyDrift: true,
+	})
+	if err != nil {
+		var apiErr *yeoul.Error
+		if errors.As(err, &apiErr) && apiErr.Code == yeoul.ErrEntityNotFound {
+			return nil
+		}
+		return err
+	}
+	existingIDs := make([]string, 0, len(resp.Matches))
+	for _, match := range resp.Matches {
+		if match.ID != derivedID {
+			existingIDs = append(existingIDs, match.ID)
+		}
+	}
+	if len(existingIDs) == 0 {
+		return nil
+	}
+	return &yeoul.Error{
+		Code:    yeoul.ErrEntityNearDuplicate,
+		Message: "an entity with this identity already exists under a different id; reuse it instead of creating a duplicate",
+		Details: map[string]any{
+			"role":           role,
+			"derived_id":     derivedID,
+			"existing_ids":   existingIDs,
+			"namespace":      namespace,
+			"type":           entityType,
+			"canonical_name": canonicalName,
+			"hint": fmt.Sprintf(
+				"pass --%s-id with the existing id (or --%s-stable-key with its stable key) instead of letting the identity be derived",
+				role, role,
+			),
+		},
+		Timestamp: time.Now().UTC(),
+	}
+}
 
 func (c cli) runFact(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
@@ -257,6 +313,10 @@ Usage:
 		}
 		if strings.TrimSpace(subjectID) == "" {
 			subjectID = yeoul.EntityID(subjectNamespace, subjectType, fallbackString(subjectStableKey, subjectName))
+			if guardErr := guardEntityNearDuplicate(ctx, eng, "subject", subjectID, subjectNamespace, subjectType, subjectName, subjectStableKey); guardErr != nil {
+				_ = closeEngine(ctx, eng)
+				return guardErr
+			}
 		}
 		batch.Entities = append(batch.Entities, subjectInput)
 	}
@@ -270,6 +330,10 @@ Usage:
 		}
 		if strings.TrimSpace(objectID) == "" {
 			objectID = yeoul.EntityID(objectNamespace, objectType, fallbackString(objectStableKey, objectName))
+			if guardErr := guardEntityNearDuplicate(ctx, eng, "object", objectID, objectNamespace, objectType, objectName, objectStableKey); guardErr != nil {
+				_ = closeEngine(ctx, eng)
+				return guardErr
+			}
 		}
 		batch.Entities = append(batch.Entities, objectInput)
 	}
@@ -504,6 +568,7 @@ func (c cli) runEntity(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul entity get --db PATH --id ID [--space ID] [--json]
+  yeoul entity resolve --db PATH --type TYPE (--name NAME | --stable-key KEY) [--namespace NS] [--space ID] [--json]
   yeoul entity merge-preview --db PATH [--json]
   yeoul entity merge --db PATH --target ID --source IDS --reason TEXT [--json] [--confirm]
 `)
@@ -513,6 +578,8 @@ Usage:
 	switch args[0] {
 	case "get":
 		return c.runInspectRecord(ctx, "entity", args[1:])
+	case "resolve":
+		return c.runEntityResolve(ctx, args[1:])
 	case "merge-preview":
 		return c.runEntityMergePreview(ctx, args[1:])
 	case "merge":
@@ -552,7 +619,7 @@ Usage:
 	if err != nil {
 		return err
 	}
-	candidates := buildEntityMergeCandidates(payload)
+	candidates := buildEntityDriftCandidates(payload)
 	if jsonOut {
 		return writeJSON(c.stdout, candidates)
 	}
@@ -649,10 +716,15 @@ func mergeEntities(ctx context.Context, eng yeoul.Engine, targetID string, sourc
 		if source.SpaceID != target.SpaceID {
 			return nil, nil, fmt.Errorf("entity merge source %s has a different space_id than target %s (source=%q, target=%q)", source.ID, target.ID, source.SpaceID, target.SpaceID)
 		}
-		if source.Namespace != target.Namespace {
+		// A namespace or type difference is accepted only when the two entities
+		// agree exactly on their canonical name or on an alias: that recorded
+		// overlap is what makes the difference drift on one entity rather than
+		// a scope conflict. Everything else keeps the original rejection.
+		namesOverlap := entityNamesOverlap(target, source)
+		if source.Namespace != target.Namespace && !namesOverlap {
 			return nil, nil, fmt.Errorf("entity merge source %s has a different namespace than target %s (source=%q, target=%q)", source.ID, target.ID, source.Namespace, target.Namespace)
 		}
-		if source.Type != target.Type {
+		if source.Type != target.Type && !namesOverlap {
 			return nil, nil, fmt.Errorf("entity merge source %s has a different type than target %s (source=%q, target=%q)", source.ID, target.ID, source.Type, target.Type)
 		}
 		sources = append(sources, source)
@@ -666,6 +738,13 @@ func mergeEntities(ctx context.Context, eng yeoul.Engine, targetID string, sourc
 		mergedFrom = append(mergedFrom, source.ID)
 		aliases = append(aliases, source.CanonicalName)
 		aliases = append(aliases, source.Aliases...)
+		sourceDrift := map[string]any{}
+		if source.Namespace != target.Namespace {
+			sourceDrift["merge_drift_namespace"] = fmt.Sprintf("%s -> %s", target.Namespace, source.Namespace)
+		}
+		if source.Type != target.Type {
+			sourceDrift["merge_drift_type"] = fmt.Sprintf("%s -> %s", target.Type, source.Type)
+		}
 		batch.Entities = append(batch.Entities, yeoul.EntityInput{
 			ID:            source.ID,
 			SpaceID:       source.SpaceID,
@@ -673,19 +752,26 @@ func mergeEntities(ctx context.Context, eng yeoul.Engine, targetID string, sourc
 			Type:          source.Type,
 			CanonicalName: source.CanonicalName,
 			Aliases:       source.Aliases,
-			Metadata: mergeMaps(source.Metadata, map[string]any{
+			Metadata: mergeMaps(source.Metadata, mergeMaps(map[string]any{
 				"duplicate_of": targetID,
 				"merge_reason": reason,
 				"merge_marked": markedAt,
 				"merge_target": targetID,
-			}),
+			}, sourceDrift)),
 		})
 	}
-	targetMeta := mergeMaps(target.Metadata, map[string]any{
+	targetDrift := map[string]any{}
+	if drift := mergeDriftSummary(target, sources, "merge_drift_namespace"); drift != nil {
+		targetDrift["merge_drift_namespace"] = drift
+	}
+	if drift := mergeDriftSummary(target, sources, "merge_drift_type"); drift != nil {
+		targetDrift["merge_drift_type"] = drift
+	}
+	targetMeta := mergeMaps(target.Metadata, mergeMaps(map[string]any{
 		"merged_from":  mergeStringSlices(anyStrings(target.Metadata["merged_from"]), mergedFrom),
 		"merge_reason": reason,
 		"merge_marked": markedAt,
-	})
+	}, targetDrift))
 	batch.Entities = append(batch.Entities, yeoul.EntityInput{
 		ID:            target.ID,
 		SpaceID:       target.SpaceID,

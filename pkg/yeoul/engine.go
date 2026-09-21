@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -852,6 +853,144 @@ func (e *engine) GetEntity(ctx context.Context, id string) (*Entity, error) {
 		return nil, errorf(ErrEntityNotFound, "entity not found", map[string]any{"entity_id": id}, nil)
 	}
 	return cloneEntity(entity), nil
+}
+
+// ResolveEntity looks an entity up by its identity tuple instead of by ID.
+// The derived ID is a hash of the exact tuple, so a caller that only knows the
+// identity cannot recompute the canonical ID when the stored namespace or type
+// drifted (issue #139). Matching tolerates namespace/type case drift, an
+// empty-vs-populated namespace, and a canonical name that matches a stored
+// alias; every tolerated match is reported in Drifted so a caller can decide
+// whether to reconcile it instead of silently reusing it.
+func (e *engine) ResolveEntity(ctx context.Context, req EntityResolveRequest) (*EntityResolveResponse, error) {
+	_ = ctx
+	if strings.TrimSpace(req.Type) == "" {
+		return nil, errorf(ErrInputInvalid, "entity type is required", map[string]any{"field": "type"}, nil)
+	}
+	if strings.TrimSpace(req.CanonicalName) == "" && strings.TrimSpace(req.StableKey) == "" {
+		return nil, errorf(ErrInputInvalid, "canonical_name or stable_key is required", map[string]any{"field": "canonical_name"}, nil)
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	spaceID := normalizeSpaceID(req.SpaceID)
+	fold := func(value string) string {
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+
+	type resolution struct {
+		entity Entity
+		drift  bool
+	}
+	resolutions := make([]resolution, 0)
+	for _, entity := range e.entities {
+		if entity.SpaceID != spaceID || entityMarkedDuplicate(entity) {
+			continue
+		}
+
+		// Type: an exact match is a clean match; a folded-only match is drift.
+		drift := false
+		if entity.Type != req.Type {
+			if fold(entity.Type) != fold(req.Type) {
+				continue
+			}
+			drift = true
+		}
+
+		// Namespace: two populated namespaces must agree after folding, and a
+		// blank on exactly one side is tolerated drift.
+		storedNamespaceBlank := strings.TrimSpace(entity.Namespace) == ""
+		requestedNamespaceBlank := strings.TrimSpace(req.Namespace) == ""
+		switch {
+		case storedNamespaceBlank && requestedNamespaceBlank:
+		case storedNamespaceBlank || requestedNamespaceBlank:
+			drift = true
+		case entity.Namespace != req.Namespace:
+			if fold(entity.Namespace) != fold(req.Namespace) {
+				continue
+			}
+			drift = true
+		}
+
+		// Identity: a strong key on both sides is compared exactly and the
+		// display name is not consulted. When exactly one side carries a key,
+		// only the near-duplicate guard (IncludeKeyDrift) widens the rule, and
+		// then only on overlapping display names. With no key on either side
+		// the display name decides, and a folded match (canonical name or
+		// alias) is reported as drift so a caller sees the ambiguity instead
+		// of silently reusing or duplicating the entity.
+		storedKey := metadataStableKey(entity.Metadata)
+		requestKeyed := strings.TrimSpace(req.StableKey) != ""
+		storedKeyed := strings.TrimSpace(storedKey) != ""
+		switch {
+		case requestKeyed && storedKeyed:
+			if req.StableKey != storedKey {
+				continue
+			}
+		case requestKeyed != storedKeyed:
+			if !req.IncludeKeyDrift || !entityDisplayNameMatches(entity, req.CanonicalName, fold) {
+				continue
+			}
+			drift = true
+		default:
+			switch {
+			case entity.CanonicalName == req.CanonicalName:
+			case fold(entity.CanonicalName) == fold(req.CanonicalName):
+				drift = true
+			case slices.Contains(entity.Aliases, req.CanonicalName):
+				drift = true
+			case entityDisplayNameMatches(entity, req.CanonicalName, fold):
+				drift = true
+			default:
+				continue
+			}
+		}
+
+		resolutions = append(resolutions, resolution{entity: entity, drift: drift})
+	}
+
+	if len(resolutions) == 0 {
+		return nil, errorf(ErrEntityNotFound, "no entity matches the requested identity", map[string]any{
+			"namespace":      req.Namespace,
+			"type":           req.Type,
+			"canonical_name": req.CanonicalName,
+			"stable_key":     req.StableKey,
+			"space_id":       spaceID,
+		}, nil)
+	}
+
+	sort.Slice(resolutions, func(i, j int) bool { return resolutions[i].entity.ID < resolutions[j].entity.ID })
+
+	response := &EntityResolveResponse{
+		Matches: make([]Entity, 0, len(resolutions)),
+		Drifted: make([]Entity, 0, len(resolutions)),
+	}
+	for _, item := range resolutions {
+		response.Matches = append(response.Matches, *cloneEntity(item.entity))
+		if item.drift {
+			response.Drifted = append(response.Drifted, *cloneEntity(item.entity))
+		}
+	}
+	return response, nil
+}
+
+// entityDisplayNameMatches reports whether a request display name overlaps the
+// entity's display identity after folding: the folded canonical name, or any
+// folded alias. It is the widened overlap rule the near-duplicate guard uses
+// when exactly one side carries a stable key, and it also catches a folded
+// alias for the ordinary no-key rule.
+func entityDisplayNameMatches(entity Entity, canonicalName string, fold func(string) string) bool {
+	folded := fold(canonicalName)
+	if fold(entity.CanonicalName) == folded {
+		return true
+	}
+	for _, alias := range entity.Aliases {
+		if fold(alias) == folded {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *engine) GetFact(ctx context.Context, id string) (*Fact, error) {

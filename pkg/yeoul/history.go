@@ -18,6 +18,50 @@ func entityMarkedDuplicate(entity Entity) bool {
 	return strings.TrimSpace(fmt.Sprint(value)) != ""
 }
 
+// canonicalEntityIDLocked follows the "duplicate_of" chain from id to the
+// entity that absorbed it. A fact stored against a merged duplicate still
+// names the duplicate, so read paths canonicalize the endpoint before matching
+// instead of rewriting the stored fact. The walk is bounded and cycle-safe; a
+// blank, unknown, or non-entity id is returned unchanged.
+func (e *engine) canonicalEntityIDLocked(id string) string {
+	if strings.TrimSpace(id) == "" {
+		return id
+	}
+	current := id
+	visited := map[string]struct{}{current: {}}
+	const maxHops = 64
+	for hop := 0; hop < maxHops; hop++ {
+		entity, ok := e.entities[current]
+		if !ok {
+			return current
+		}
+		next, ok := entity.Metadata["duplicate_of"].(string)
+		if !ok || strings.TrimSpace(next) == "" || next == current {
+			return current
+		}
+		if _, seen := visited[next]; seen {
+			return current
+		}
+		visited[next] = struct{}{}
+		current = next
+	}
+	return current
+}
+
+// canonicalEntityIDsLocked maps every id through canonicalEntityIDLocked so a
+// caller-supplied anchor set and a stored fact endpoint are compared in the
+// same canonical namespace.
+func (e *engine) canonicalEntityIDsLocked(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, e.canonicalEntityIDLocked(id))
+	}
+	return out
+}
+
 func factProvenanceMeta(fact Fact) map[string]any {
 	meta := map[string]any{
 		"status": fact.Status,
