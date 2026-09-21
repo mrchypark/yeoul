@@ -188,7 +188,6 @@ export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.ltdb"
 yeoul inspect counts --db "$YEOUL_DB" --json
 yeoul search --db "$YEOUL_DB" \
   --query "recent Yeoul memory" \
-  --backend auto \
   --limit 3
 ```
 

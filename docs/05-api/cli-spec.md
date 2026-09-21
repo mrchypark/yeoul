@@ -73,13 +73,12 @@ Run retrieval queries.
 #### Examples
 ```bash
 yeoul search --db ./yeoul.ltdb --query "recent decisions about LatticeDB"
-yeoul search --db ./yeoul.ltdb --query "recent decisions about rax" --backend rax
+yeoul search --db ./yeoul.ltdb --query "recent decisions about storage engine"
 yeoul search --db ./yeoul.ltdb --query "recent decisions" --type fact,episode --group-id project:yeoul --limit 20
 ```
 
 #### Flags
 - `--query TEXT` required
-- `--backend auto|core|rax` (default `auto`)
 - `--type fact,episode,entity`
 - `--group-id IDS`
 - `--as-of`, `--valid-at`, `--valid-from`, `--valid-to` RFC3339
@@ -88,18 +87,15 @@ yeoul search --db ./yeoul.ltdb --query "recent decisions" --type fact,episode --
 - `--json`
 
 #### Behavior
-- defaults to `--backend auto`
 - keeps LatticeDB-backed Yeoul records as canonical truth
-- may use the bundled rax FFI runtime as a derived retrieval signal
-- falls back to core Yeoul search in `auto` mode when the rax runtime is unavailable
-- fails on rax errors when `--backend rax` is explicitly requested
+- runs entirely in-process with no external retrieval runtime
 
 ### `yeoul context`
 Build a bounded, factual context bundle from one scoped search response.
 
 #### Example
 ```bash
-yeoul context --db ./yeoul.ltdb --query "recent decisions about rax" --json
+yeoul context --db ./yeoul.ltdb --query "recent decisions about storage engine" --json
 ```
 
 #### Flags
@@ -253,39 +249,26 @@ Manage derived retrieval projections.
 - `rebuild`
 - `verify`
 - `status`
-- `publish-rax`
 
 #### Examples
 ```bash
 yeoul index build --db ./yeoul.ltdb --root ~/.local/share/yeoul/index
 yeoul index verify --db ./yeoul.ltdb --root ~/.local/share/yeoul/index
-yeoul index publish-rax --root ~/.local/share/yeoul/index --store ~/.local/share/yeoul/rax/projection.rax
 ```
 
 #### Flags
 - `--root DIR`
-- `--store FILE` for `publish-rax`
-- `--rax-lib PATH`, `--rax-bin PATH` to override the rax runtime
 
 #### Behavior
 - treats the index as a derived artifact, not canonical truth
 - rebuilds or validates projection state against the LatticeDB-backed Yeoul database
-- can publish Yeoul-owned projections into a rax FFI-backed `.rax` retrieval index
-
-`publish-rax` publishes the current projection documents into the target store by
-appending or updating documents by ID. It does not replace the store: documents
-already present that the projection does not contain are left untouched, so
-publishing a different corpus into a reused `--store` accumulates documents
-instead of swapping them. Use a fresh `--store` path when the store must contain
-only the current projection. The JSON `published_document_count` reports the
-documents submitted by this publication, not the target store's total size.
 
 ### `yeoul bench`
 Run benchmark suites.
 
 #### Subcommands
 - `ingest` — `--episodes N [--facts-per-episode N]`
-- `query` — `--query TEXT [--backend auto|core|rax] [--entity ID] [--fact ID] [--iterations N]`
+- `query` — `--query TEXT [--entity ID] [--fact ID] [--iterations N]`
 - `lifecycle` — `--iterations N`
 
 #### Example

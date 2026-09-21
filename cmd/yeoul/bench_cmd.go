@@ -137,23 +137,17 @@ Usage:
 func (c cli) runBenchQuery(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul bench query --db PATH --query TEXT [--backend auto|core|rax] [--rax-lib PATH] [--rax-bin PATH] [--entity ID] [--fact ID] [--iterations N] [--json]
+  yeoul bench query --db PATH --query TEXT [--entity ID] [--fact ID] [--iterations N] [--json]
 `)
 	fs := newFlagSet("bench query")
 	var dbPath string
 	var query string
-	var backend string
-	var raxLib string
-	var raxBin string
 	var entityID string
 	var factID string
 	var iterations int
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&query, "query", "", "query text")
-	fs.StringVar(&backend, "backend", "auto", "search backend: auto, core, rax")
-	fs.StringVar(&raxLib, "rax-lib", "", "rax FFI library path")
-	fs.StringVar(&raxBin, "rax-bin", "", "rax CLI binary path")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
 	fs.StringVar(&factID, "fact", "", "fact ID for provenance")
 	fs.IntVar(&iterations, "iterations", 10, "number of iterations")
@@ -170,10 +164,6 @@ Usage:
 	}
 	if err := requireDB(dbPath, usage); err != nil {
 		return err
-	}
-	backend = strings.ToLower(strings.TrimSpace(backend))
-	if backend != "auto" && backend != "core" && backend != "rax" {
-		return &usageError{message: usage}
 	}
 	eng, err := openReadEngine(ctx, dbPath)
 	if err != nil {
@@ -197,11 +187,6 @@ Usage:
 		"timeline":     {},
 		"provenance":   {},
 	}
-	if backend == "rax" {
-		if _, ok := lookupRaxRuntime(raxLib, raxBin); !ok {
-			return fmt.Errorf("rax search failed: bundled rax FFI runtime not found; reinstall Yeoul or pass --rax-lib for development")
-		}
-	}
 	var searchHits int
 	var searchRecordIDs []string
 	for i := 0; i < iterations; i++ {
@@ -213,15 +198,7 @@ Usage:
 		}
 		// Run the same planner the search command uses so the benchmark measures
 		// production work rather than a truncated or differently filtered query.
-		var searchResp *yeoul.SearchResponse
-		if backend == "rax" {
-			searchResp, err = runRaxPrimarySearch(ctx, eng, dbPath, searchReq, raxLib, raxBin)
-		} else {
-			searchResp, err = eng.Search(ctx, searchReq)
-			if err == nil {
-				searchResp, err = maybeRerankSearchWithRax(ctx, eng, dbPath, query, backend, raxLib, raxBin, 10, searchResp)
-			}
-		}
+		searchResp, err := eng.Search(ctx, searchReq)
 		if err != nil {
 			return err
 		}

@@ -11,7 +11,6 @@ Reproduce with:
 ```sh
 go test ./pkg/yeoul/ -run '^$' -bench 'BenchmarkMutation' -benchtime=50x
 go test ./pkg/yeoul/ -run '^$' -bench 'BenchmarkHistorical' -benchtime=100x
-go test ./cmd/yeoul/ -run '^$' -bench 'BenchmarkRaxPrimary' -benchtime=20x
 ```
 
 ## H-01: mutation clones full state and serializes previous/current records
@@ -113,45 +112,7 @@ once per live record and fail this immediately.
 
 ## H-03: primary Rax retrieval still runs a full core search
 
-**Benchmark:** `BenchmarkRaxPrimaryCoreRerankScaling`,
-`BenchmarkRaxPrimaryResponseScaling`, and
-`BenchmarkRaxPrimaryResponseCandidateScaling` in
-`cmd/yeoul/rax_primary_bench_test.go`.
-
-**Confirmed.** `buildRaxPrimarySearchResponse` calls `raxCoreRerankScores`,
-which runs a full `eng.Search` over the whole corpus to obtain rerank scores for
-the Rax candidates, regardless of how many candidates there were. The core
-search, not the candidate set, drives the cost:
-
-| corpus | `CoreRerankScaling` (10 candidates) |
-| --- | --- |
-| 250 facts | 1,504,996 ns |
-| 500 facts | 2,052,435 ns |
-| 1000 facts | 4,598,323 ns |
-| 2000 facts | 10,450,185 ns |
-
-The whole response build tracks the same dimension: with 10 candidates,
-`ResponseScaling` went 787 us / 2.02 ms / 7.00 ms / 12.6 ms across the same
-corpora, so an 8x corpus grew the build about 16x while the Rax candidate set
-stayed at ten. Growing the candidate set instead, at a fixed 1000-fact corpus,
-cost 4.17 ms / 6.67 ms / 18.1 ms for 10 / 100 / 1000 candidates, i.e. a much
-shallower slope than the corpus dimension.
-
-So the hypothesis is correct: primary Rax retrieval does not reduce core CPU.
-The full core search runs anyway to produce `coreScores`, and the core search
-already visits every fact, episode, and entity in the space. Auto mode has the
-same shape, reranking only the already selected core page.
-
-**No fix applied, by design.** The issue's own guidance is to repair RET-13
-before comparing latency or quality and to retain the simpler integration
-unless evidence supports further indexing. RET-13 is not present in this
-worktree, and removing the core search would change result semantics: the
-`coreScores` rerank and the `raxRecordMatchesCurrentQuery` fallback decide
-whether a candidate is kept and how it is scored, so the core page is part of
-the result contract, not just a score source. A safe fix needs the native
-retrieval to carry enough signal to replace that rerank, which is a behavior
-change rather than a scoped performance fix. The benchmarks are kept so the
-property is measured if the Rax integration is reworked.
+**Historical record.** The benchmarks in `cmd/yeoul/rax_primary_bench_test.go` confirmed that primary Rax retrieval ran a full core search to obtain rerank scores, so it did not reduce core CPU. The measured integration has since been removed from the product: Yeoul no longer ships or resolves an external retrieval runtime. This finding is why no external retrieval runtime is shipped.
 
 ## Summary
 
@@ -159,4 +120,4 @@ property is measured if the Rax integration is reworked.
 | --- | --- | --- |
 | H-01 mutation clones and serializes full state | yes | fixed; store pass 2.3x-8.3x faster |
 | H-02 historical queries rescan revision maps | yes (timeline half already fixed by #126) | fixed; up to ~70x faster, now linear |
-| H-03 primary Rax still runs a full core search | yes | documented; not fixed, core page is part of result semantics |
+| H-03 primary Rax still runs a full core search | yes | confirmed; integration removed, no external retrieval runtime shipped |

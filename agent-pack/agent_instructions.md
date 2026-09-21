@@ -26,7 +26,6 @@ When a conversation produces durable memory:
 7. Use `yeoul fact supersede` or `yeoul fact retract` for lifecycle changes instead of editing old facts. A `SUPERSEDES` assertion never substitutes for `fact supersede`.
 8. Use `--as-of` for knowledge/lifecycle time and `--valid-at` for domain validity.
 9. Read back with `fact lookup` and `provenance`; use `neighborhood` for relationships and `timeline` for lifecycle changes.
-10. Treat `rax` as a derived retrieval index; LatticeDB-backed Yeoul records remain canonical.
 
 ## Authority and privacy
 
