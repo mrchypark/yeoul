@@ -13,7 +13,9 @@
 #   REL-05  install roots and wrapper paths survive unrelated working directories
 #   SEC-01  no workstation audit artifact is tracked in the repository
 #
-# Requires: sh, bash (the installer is a bash script), tar, awk, sed, grep.
+# Requires: sh, bash (the installer is a bash script), tar, awk, sed, grep. GNU
+# tar delegates compression to a separate gzip child, so gzip must be present
+# on the host PATH as well as inside every installer sandbox below.
 
 set -eu
 
@@ -177,7 +179,9 @@ create_release_fixture "v0.5.6" "no"
 
 # The installer runs with a PATH that contains only the tools it is allowed to
 # see, so the "verifier is absent" case cannot be satisfied by the host PATH.
-sandbox_tools="awk bash cat chmod cp dirname env expr find grep head ln mkdir mktemp mv rm rmdir sed sort tar touch uname"
+# gzip is listed because GNU tar execs it as a child when extracting -z
+# archives; bsdtar links libz directly and does not need it.
+sandbox_tools="awk bash cat chmod cp dirname env expr find grep gzip head ln mkdir mktemp mv rm rmdir sed sort tar touch uname"
 
 link_host_tools() {
   sandbox="$1"
