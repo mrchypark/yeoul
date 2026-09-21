@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestQuiescedNativeDirectoryBackupPreservesState pins the documented backup
@@ -44,7 +43,12 @@ func TestQuiescedNativeDirectoryBackupPreservesState(t *testing.T) {
 		t.Fatalf("supersede old fact: %v", err)
 	}
 	newFactID := supersede.NewFactID
-	beforeSupersede := oldFact.CreatedAt.Add(time.Nanosecond)
+	// The engine only guarantees that the supersession is stamped STRICTLY after
+	// the retired fact's previous state, so the only instant that separates the
+	// two states on every clock is the retired fact's own last pre-transition
+	// stamp. A one-nanosecond offset is not a valid cut: a coarse clock (Windows
+	// advances roughly every 15ms) can place both transitions inside it.
+	beforeSupersede := oldFact.CreatedAt
 
 	beforeSnapshot, err := Snapshot(ctx, eng)
 	if err != nil {
@@ -60,7 +64,7 @@ func TestQuiescedNativeDirectoryBackupPreservesState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("historical lookup before: %v", err)
 	}
-	if len(beforeHistorical.Facts) != 1 || beforeHistorical.Facts[0].ID != oldFact.ID {
+	if len(beforeHistorical.Facts) != 1 || beforeHistorical.Facts[0].ID != oldFact.ID || beforeHistorical.Facts[0].Status != factStatusActive {
 		t.Fatalf("expected the pre-supersede fact historically before backup, got %#v", beforeHistorical.Facts)
 	}
 	if err := eng.Close(ctx); err != nil {
@@ -108,7 +112,7 @@ func TestQuiescedNativeDirectoryBackupPreservesState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("historical lookup after: %v", err)
 	}
-	if len(afterHistorical.Facts) != 1 || afterHistorical.Facts[0].ID != oldFact.ID {
+	if len(afterHistorical.Facts) != 1 || afterHistorical.Facts[0].ID != oldFact.ID || afterHistorical.Facts[0].Status != factStatusActive {
 		t.Fatalf("expected historical query results to survive backup, got %#v", afterHistorical.Facts)
 	}
 	current, err := backup.LookupFacts(ctx, FactLookupRequest{SubjectIDs: []string{entity.ID}})

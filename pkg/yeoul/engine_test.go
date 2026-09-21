@@ -1496,9 +1496,18 @@ func TestRevisionOrderSurvivesSixDigitIDBoundary(t *testing.T) {
 		t.Fatalf("expected the explicit revision ID to sort earlier as text: auto=%s explicit=%s", autoRevision, explicitRevision)
 	}
 
+	// The supersession is stamped strictly after the retired fact's previous
+	// state, so the two tied revisions live at the supersede instant rather than
+	// at the frozen clock instant the retired fact's previous state carries. The
+	// cut that still sees both of them is that supersede instant.
+	retired, err := eng.GetFact(ctx, original.ID)
+	if err != nil {
+		t.Fatalf("get superseded fact: %v", err)
+	}
+	supersedeAt := retired.UpdatedAt
 	assertLaterSupersedeWins := func(t *testing.T, eng Engine) {
 		t.Helper()
-		at := fixed
+		at := supersedeAt
 		resp, err := eng.GetRecord(ctx, GetRecordRequest{
 			Kind:     "fact",
 			ID:       original.ID,
@@ -3123,6 +3132,127 @@ func TestTimelineRetractionOrderingSurvivesOneInstant(t *testing.T) {
 	}
 	if !timelineHasEvent(prefix.Events, "evt:"+factA.ID+":superseded") || timelineHasEvent(prefix.Events, "evt:"+factA.ID+":retracted") {
 		t.Fatalf("expected as_of prefix to keep supersession and drop retraction, got %#v", prefix.Events)
+	}
+}
+
+// TestSupersessionOrderingSurvivesOneInstant pins the supersession's ordering
+// when the clock cannot separate the transitions. A coarse platform clock
+// (Windows advances roughly every 15ms) reports one instant for the assert of
+// fact A and the supersession that retires it, and the historical cut is
+// expressed as a time. If the successor is created at the same instant as the
+// fact it retires, a cut taken at the retired fact's own last pre-transition
+// stamp still includes the retirement, so the fact comes back superseded and
+// the successor is visible beside it. The successor's creation is therefore
+// carried strictly past the instant the retired fact's state became current.
+func TestSupersessionOrderingSurvivesOneInstant(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	// One instant for every clock read: no transition can be separated by the
+	// clock alone, which is what a coarse Windows clock reports.
+	frozen := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	eng.(*engine).now = func() time.Time { return frozen }
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-supersede-instant", Kind: "note", Content: "one instant", Source: SourceInput{Kind: "note", ExternalRef: "supersede-instant"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:supersede-instant", Type: "Thing", CanonicalName: "Supersede Instant"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	oldFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:supersede-old", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert old fact: %v", err)
+	}
+	if _, err := eng.SupersedeFact(ctx, oldFact.ID, FactInput{ID: "fact:supersede-new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "replaced"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	// The cut at the retired fact's own pre-transition stamp must still return it
+	// active and alone: the successor is stamped strictly later, so it is excluded
+	// even though the clock read the same instant for both transitions.
+	cut := oldFact.CreatedAt
+	historical, err := eng.LookupFacts(ctx, FactLookupRequest{
+		SubjectIDs: []string{entity.ID},
+		Temporal:   TemporalFilter{AsOf: &cut, IncludeInactive: true},
+	})
+	if err != nil {
+		t.Fatalf("historical lookup: %v", err)
+	}
+	if len(historical.Facts) != 1 {
+		t.Fatalf("expected exactly one fact before the supersession, got %#v", historical.Facts)
+	}
+	if historical.Facts[0].ID != oldFact.ID {
+		t.Fatalf("expected the pre-supersede fact %q, got %#v", oldFact.ID, historical.Facts)
+	}
+	if historical.Facts[0].Status != factStatusActive {
+		t.Fatalf("expected the pre-supersede fact to be active, got status %q", historical.Facts[0].Status)
+	}
+}
+
+// TestAutoSupersessionOrderingSurvivesOneInstant pins the same ordering for the
+// cardinality-one slot replacement, which retires its target without an
+// explicit SupersedeFact call. The successor's creation instant is also the
+// retirement instant of every fact it replaces, so the same coarse-clock tie
+// would otherwise let a cut taken at the retiring fact's own stamp include the
+// replacement and lose its active state.
+func TestAutoSupersessionOrderingSurvivesOneInstant(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	// One instant for every clock read: no transition can be separated by the
+	// clock alone, which is what a coarse Windows clock reports.
+	frozen := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	eng.(*engine).now = func() time.Time { return frozen }
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-auto-instant", Kind: "note", Content: "one instant", Source: SourceInput{Kind: "note", ExternalRef: "auto-instant"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	task, err := eng.UpsertEntity(ctx, EntityInput{ID: "task:auto-instant", Type: "Task", CanonicalName: "Auto Instant"})
+	if err != nil {
+		t.Fatalf("upsert task: %v", err)
+	}
+	ownerA, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-instant-a", Type: "Person", CanonicalName: "A"})
+	if err != nil {
+		t.Fatalf("upsert owner A: %v", err)
+	}
+	ownerB, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-instant-b", Type: "Person", CanonicalName: "B"})
+	if err != nil {
+		t.Fatalf("upsert owner B: %v", err)
+	}
+	oldFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:auto-instant-old", Predicate: "OWNED_BY", SubjectID: task.ID, ObjectID: ownerA.ID, SupportingEpisodeIDs: []string{episode.EpisodeID}, Cardinality: "one"})
+	if err != nil {
+		t.Fatalf("assert old fact: %v", err)
+	}
+	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact:auto-instant-new", Predicate: "OWNED_BY", SubjectID: task.ID, ObjectID: ownerB.ID, SupportingEpisodeIDs: []string{episode.EpisodeID}, Cardinality: "one"}); err != nil {
+		t.Fatalf("assert replacement fact: %v", err)
+	}
+
+	// The cut at the retired fact's own pre-transition stamp must still return it
+	// active and alone: the replacement is stamped strictly later, so it is
+	// excluded even though the clock read the same instant for both asserts.
+	cut := oldFact.CreatedAt
+	historical, err := eng.LookupFacts(ctx, FactLookupRequest{
+		SubjectIDs: []string{task.ID},
+		Temporal:   TemporalFilter{AsOf: &cut, IncludeInactive: true},
+	})
+	if err != nil {
+		t.Fatalf("historical lookup: %v", err)
+	}
+	if len(historical.Facts) != 1 {
+		t.Fatalf("expected exactly one fact before the slot replacement, got %#v", historical.Facts)
+	}
+	if historical.Facts[0].ID != oldFact.ID {
+		t.Fatalf("expected the pre-replacement fact %q, got %#v", oldFact.ID, historical.Facts)
+	}
+	if historical.Facts[0].Status != factStatusActive {
+		t.Fatalf("expected the pre-replacement fact to be active, got status %q", historical.Facts[0].Status)
 	}
 }
 

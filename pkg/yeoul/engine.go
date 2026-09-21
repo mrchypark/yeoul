@@ -601,7 +601,15 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 }
 
 func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact {
-	superseded := make([]string, 0, 1)
+	// Collect the facts this successor retires before stamping any of them. The
+	// successor's creation instant is also each retirement instant, so it has to
+	// be carried strictly past the latest instant a retiring fact's current state
+	// became current. A coarse platform clock (Windows advances roughly every
+	// 15ms) otherwise reports one instant for the assert of the retiring facts and
+	// the assert that replaces them, and a cut taken at a retiring fact's own
+	// stamp would include its retirement and lose its active state.
+	targets := make([]string, 0, 1)
+	var latest time.Time
 	for id, fact := range e.facts {
 		if fact.Status != factStatusActive || fact.SpaceID != newFact.SpaceID || fact.SubjectID != newFact.SubjectID || fact.Predicate != newFact.Predicate {
 			continue
@@ -609,6 +617,21 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 		if !factValidityOverlaps(fact.ValidFrom, fact.ValidTo, newFact.ValidFrom, newFact.ValidTo) {
 			continue
 		}
+		targets = append(targets, id)
+		if fact.UpdatedAt.After(latest) {
+			latest = fact.UpdatedAt
+		}
+	}
+	if len(targets) == 0 {
+		return newFact
+	}
+	if !newFact.CreatedAt.After(latest) {
+		newFact.CreatedAt = latest.Add(time.Nanosecond)
+		newFact.UpdatedAt = newFact.CreatedAt
+	}
+	superseded := make([]string, 0, len(targets))
+	for _, id := range targets {
+		fact := e.facts[id]
 		fact.Status = factStatusSuperseded
 		if !validTo.IsZero() && fact.ValidFrom.Before(validTo) && (fact.ValidTo.IsZero() || validTo.Before(fact.ValidTo)) {
 			fact.ValidTo = validTo
@@ -621,9 +644,6 @@ func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact 
 		e.facts[id] = fact
 		e.appendFactRevisionLocked(fact, "auto_supersede")
 		superseded = append(superseded, id)
-	}
-	if len(superseded) == 0 {
-		return newFact
 	}
 	// The recorded lineage is a set of IDs, so it is sorted: metadata must not
 	// depend on the order the map scan above happened to visit facts in.
@@ -671,6 +691,12 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 		return nil, errorf(ErrLifecycleInvalid, "replacement fact must match subject and predicate", map[string]any{"fact_id": factID}, nil)
 	}
 	spaceID := oldFact.SpaceID
+	// The successor is created at the mutation's transaction time, and that same
+	// instant becomes the retirement stamp of the old fact. It must land strictly
+	// after the instant the old fact's current state became current: otherwise a
+	// cut taken at that earlier stamp includes the retirement and loses the old
+	// fact's active state whenever the clock cannot separate the two transitions.
+	e.txTime = e.strictlyAfterTxTime(oldFact.UpdatedAt)
 	newFact, err := e.assertFactLocked(spaceID, input, false)
 	if err != nil {
 		return nil, err
@@ -1009,6 +1035,22 @@ func (e *engine) txNow() time.Time {
 		return e.txTime
 	}
 	return e.now()
+}
+
+// strictlyAfterTxTime returns the mutation's pinned transaction time carried
+// strictly past `after`. Ordered transitions of one fact must not share an
+// instant: the historical cut is expressed as a time, so a retirement and the
+// successor it creates are indistinguishable when both are stamped with the
+// same instant as the state they replace. A POSIX wall clock resolves finely
+// enough that successive commits read distinct times, but Windows can report
+// one instant for both, so the successor's creation is carried past the state
+// it retires and a cut at that earlier stamp stays a valid pre-transition cut.
+func (e *engine) strictlyAfterTxTime(after time.Time) time.Time {
+	now := e.txNow()
+	if !now.After(after) {
+		now = after.Add(time.Nanosecond)
+	}
+	return now
 }
 
 func (e *engine) restoreLocked(snapshot persistedState) {
