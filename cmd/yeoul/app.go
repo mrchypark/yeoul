@@ -182,7 +182,7 @@ func exitCode(err error) int {
 	var apiErr *yeoul.Error
 	if errors.As(err, &apiErr) {
 		switch apiErr.Code {
-		case yeoul.ErrConfigInvalid, yeoul.ErrInputInvalid, yeoul.ErrLifecycleInvalid, yeoul.ErrNotSupported:
+		case yeoul.ErrConfigInvalid, yeoul.ErrInputInvalid, yeoul.ErrFactConflict, yeoul.ErrLifecycleInvalid, yeoul.ErrNotSupported:
 			return 2
 		case yeoul.ErrEntityNotFound, yeoul.ErrFactNotFound, yeoul.ErrSourceNotFound:
 			return 3

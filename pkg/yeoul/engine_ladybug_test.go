@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -541,18 +542,22 @@ func TestLadybugDriverSeedsRevisionMigrationForLegacyState(t *testing.T) {
 	assertRowCount(t, raw, "MATCH (r:FactRevision {id: 'seed:fact-legacy:current'}) RETURN r.id", 1)
 }
 
-func TestLadybugDriverPreservesMultipleSupersedesOnReopen(t *testing.T) {
+// TestLadybugDriverPreservesSupersedesOnReopen pins the list representation of
+// the replacement lineage through the Ladybug driver. Each explicit supersession
+// records exactly its own target, and both the lineage and the retired statuses
+// survive a reopen.
+func TestLadybugDriverPreservesSupersedesOnReopen(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "yeoul.lbug")
 	eng, err := Open(ctx, Config{Driver: StorageDriverLadybug, DatabasePath: dbPath, CreateIfMissing: true, legacyLadybugWrites: true})
 	if err != nil {
 		t.Fatalf("open ladybug engine: %v", err)
 	}
-	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "multi supersede", Source: SourceInput{Kind: "note"}})
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "explicit supersede lineage", Source: SourceInput{Kind: "note"}})
 	if err != nil {
 		t.Fatalf("ingest episode: %v", err)
 	}
-	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "multi supersede"})
+	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "explicit supersede lineage"})
 	if err != nil {
 		t.Fatalf("upsert entity: %v", err)
 	}
@@ -564,9 +569,13 @@ func TestLadybugDriverPreservesMultipleSupersedesOnReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assert old b: %v", err)
 	}
-	newFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", Cardinality: factCardinalityOne, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	newA, err := eng.SupersedeFact(ctx, oldA.ID, FactInput{ID: "fact:new-a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new a", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "explicit a")
 	if err != nil {
-		t.Fatalf("assert new: %v", err)
+		t.Fatalf("supersede old a: %v", err)
+	}
+	newB, err := eng.SupersedeFact(ctx, oldB.ID, FactInput{ID: "fact:new-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new b", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "explicit b")
+	if err != nil {
+		t.Fatalf("supersede old b: %v", err)
 	}
 	if err := eng.Close(ctx); err != nil {
 		t.Fatalf("close engine: %v", err)
@@ -577,17 +586,21 @@ func TestLadybugDriverPreservesMultipleSupersedesOnReopen(t *testing.T) {
 		t.Fatalf("reopen ladybug engine: %v", err)
 	}
 	defer func() { _ = reopened.Close(ctx) }()
-	got, err := reopened.GetFact(ctx, newFact.ID)
-	if err != nil {
-		t.Fatalf("get new fact: %v", err)
-	}
-	ids := metadataStringIDs(got.Metadata["supersedes"])
-	seen := map[string]bool{}
-	for _, id := range ids {
-		seen[id] = true
-	}
-	if !seen[oldA.ID] || !seen[oldB.ID] {
-		t.Fatalf("expected all superseded facts after reopen, got %#v", got.Metadata)
+	for wantTarget, replacementID := range map[string]string{oldA.ID: newA.NewFactID, oldB.ID: newB.NewFactID} {
+		got, err := reopened.GetFact(ctx, replacementID)
+		if err != nil {
+			t.Fatalf("get replacement %s: %v", replacementID, err)
+		}
+		if lineage := metadataStringIDs(got.Metadata["supersedes"]); !slices.Equal(lineage, []string{wantTarget}) {
+			t.Fatalf("expected lineage %v after reopen, got %#v", []string{wantTarget}, got.Metadata)
+		}
+		retired, err := reopened.GetFact(ctx, wantTarget)
+		if err != nil {
+			t.Fatalf("get retired %s: %v", wantTarget, err)
+		}
+		if retired.Status != factStatusSuperseded {
+			t.Fatalf("expected %s superseded after reopen, got %q", wantTarget, retired.Status)
+		}
 	}
 }
 

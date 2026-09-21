@@ -17,6 +17,11 @@ Usage:
   yeoul fact assert --db PATH --predicate PRED (--subject-id ID | --upsert-subject --subject-namespace NS --subject-type TYPE --subject-name NAME [--subject-stable-key KEY]) [--object-id ID | --upsert-object --object-namespace NS --object-type TYPE --object-name NAME [--object-stable-key KEY]] [--value-text TEXT] [--observed-at RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--cardinality one|many] --supporting-episodes IDS [--json]
   yeoul fact supersede --db PATH --id ID --predicate PRED --subject-id ID [--object-id ID] [--value-text TEXT] [--valid-from RFC3339] [--valid-to RFC3339] --supporting-episodes IDS --reason TEXT [--json]
   yeoul fact retract --db PATH --id ID --reason TEXT [--json]
+
+  To replace an existing fact, use "yeoul fact supersede --id ID", not an assert.
+  The --cardinality one flag is a single-value slot guard: it fails with
+  YEOUL_FACT_CONFLICT when the slot already has an overlapping active fact.
+  --cardinality many (or empty) appends without checking the slot.
 `)
 
 	if len(args) == 0 {
@@ -191,7 +196,7 @@ Usage:
 	fs.StringVar(&observedAtRaw, "observed-at", "", "observed time in RFC3339 format")
 	fs.StringVar(&validFromRaw, "valid-from", "", "domain-valid interval start in RFC3339 format")
 	fs.StringVar(&validToRaw, "valid-to", "", "domain-valid interval end in RFC3339 format")
-	fs.StringVar(&cardinality, "cardinality", "", "fact slot cardinality: one or many")
+	fs.StringVar(&cardinality, "cardinality", "", "single-value slot guard: one fails when the slot already has an overlapping active fact; many appends")
 	fs.StringVar(&supportingEpisodes, "supporting-episodes", "", "comma-separated supporting episode IDs")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
 	handled, err := parseFlagSet(fs, usage, args, c.stdout)

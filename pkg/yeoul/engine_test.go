@@ -382,92 +382,46 @@ func TestSupersedeFactRejectsUnrelatedReplacement(t *testing.T) {
 	}
 }
 
-func TestAssertFactCardinalityOneAutoSupersedesSlot(t *testing.T) {
+// TestAssertFactCardinalityOneEmptySlotSucceeds pins the accepted half of the
+// single-value contract: when nothing occupies the overlapping slot, the
+// assertion is created as an ordinary active fact and records no supersession
+// lineage.
+func TestAssertFactCardinalityOneEmptySlotSucceeds(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
 	}
-	rawEng := eng.(*engine)
-	current := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	rawEng.now = func() time.Time {
-		current = current.Add(time.Microsecond)
-		return current
-	}
-
-	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "slot changed", Source: SourceInput{Kind: "note"}})
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "empty slot", Source: SourceInput{Kind: "note"}})
 	if err != nil {
 		t.Fatalf("ingest episode: %v", err)
 	}
-	task, err := eng.UpsertEntity(ctx, EntityInput{ID: "task:auto-slot", Type: "Task", CanonicalName: "Auto Slot"})
+	task, err := eng.UpsertEntity(ctx, EntityInput{ID: "task:empty-slot", Type: "Task", CanonicalName: "Empty Slot"})
 	if err != nil {
 		t.Fatalf("upsert task: %v", err)
 	}
-	ownerA, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-a", Type: "Person", CanonicalName: "A"})
+	fact, err := eng.AssertFact(ctx, FactInput{ID: "fact:empty-slot", Predicate: "STATUS", SubjectID: task.ID, ValueText: "open", Cardinality: "one", SupportingEpisodeIDs: []string{episode.EpisodeID}})
 	if err != nil {
-		t.Fatalf("upsert owner A: %v", err)
+		t.Fatalf("assert fact: %v", err)
 	}
-	ownerB, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-b", Type: "Person", CanonicalName: "B"})
+	stored, err := eng.GetFact(ctx, fact.ID)
 	if err != nil {
-		t.Fatalf("upsert owner B: %v", err)
+		t.Fatalf("get fact: %v", err)
 	}
-	oldFact, err := eng.AssertFact(ctx, FactInput{
-		ID:                   "fact-auto-old",
-		Predicate:            "OWNED_BY",
-		SubjectID:            task.ID,
-		ObjectID:             ownerA.ID,
-		SupportingEpisodeIDs: []string{episode.EpisodeID},
-		Cardinality:          "one",
-	})
-	if err != nil {
-		t.Fatalf("assert old fact: %v", err)
+	if stored.Status != factStatusActive {
+		t.Fatalf("expected the fact to be active, got %q", stored.Status)
 	}
-	beforeReplacement := oldFact.CreatedAt.Add(time.Nanosecond)
-	newFact, err := eng.AssertFact(ctx, FactInput{
-		ID:                   "fact-auto-new",
-		Predicate:            "OWNED_BY",
-		SubjectID:            task.ID,
-		ObjectID:             ownerB.ID,
-		SupportingEpisodeIDs: []string{episode.EpisodeID},
-		Cardinality:          "one",
-	})
-	if err != nil {
-		t.Fatalf("assert replacement fact: %v", err)
+	if _, ok := stored.Metadata["supersedes"]; ok {
+		t.Fatalf("expected no supersession lineage, got %#v", stored.Metadata)
 	}
-	oldStored, err := eng.GetFact(ctx, oldFact.ID)
-	if err != nil {
-		t.Fatalf("get old fact: %v", err)
-	}
-	if oldStored.Status != factStatusSuperseded {
-		t.Fatalf("expected old fact superseded, got %q", oldStored.Status)
-	}
-	if supersededBy, _ := oldStored.Metadata["superseded_by"].(string); supersededBy != newFact.ID {
-		t.Fatalf("expected superseded_by %q, got %#v", newFact.ID, oldStored.Metadata)
-	}
-
-	historical, err := eng.LookupFacts(ctx, FactLookupRequest{
-		Meta:       QueryMeta{SpaceID: "default"},
-		SubjectIDs: []string{task.ID},
-		Temporal:   TemporalFilter{AsOf: &beforeReplacement},
-	})
-	if err != nil {
-		t.Fatalf("historical lookup: %v", err)
-	}
-	if len(historical.Facts) != 1 || historical.Facts[0].ID != oldFact.ID {
-		t.Fatalf("expected old fact historically, got %#v", historical.Facts)
-	}
-	currentFacts, err := eng.LookupFacts(ctx, FactLookupRequest{
-		Meta:       QueryMeta{SpaceID: "default"},
-		SubjectIDs: []string{task.ID},
-	})
+	currentFacts, err := eng.LookupFacts(ctx, FactLookupRequest{SubjectIDs: []string{task.ID}})
 	if err != nil {
 		t.Fatalf("current lookup: %v", err)
 	}
-	if len(currentFacts.Facts) != 1 || currentFacts.Facts[0].ID != newFact.ID {
-		t.Fatalf("expected new fact currently, got %#v", currentFacts.Facts)
+	if len(currentFacts.Facts) != 1 || currentFacts.Facts[0].ID != fact.ID {
+		t.Fatalf("expected the asserted fact currently, got %#v", currentFacts.Facts)
 	}
 }
-
 func TestHistoricalFactReadBeforeSupersedeAndRetract(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
@@ -1408,137 +1362,36 @@ func TestImportedRevisionIDsDoNotCollideWithGeneratedIDs(t *testing.T) {
 	}
 }
 
-// TestRevisionOrderSurvivesSixDigitIDBoundary seeds the ID sequence next to the
-// six-digit boundary so the cardinality-one auto-supersede revision lands on
-// factrev_999999 while the explicit supersede revision crosses to
-// factrev_1000001. Those two revisions share a transaction time, and text
-// ordering puts the later one first, so only numeric revision order can keep
-// the later operation winning.
-func TestRevisionOrderSurvivesSixDigitIDBoundary(t *testing.T) {
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "revision-order.db")
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
-	if err != nil {
-		t.Fatalf("open engine: %v", err)
+// TestRevisionComesAfterPrefersNumericOrderAtDigitBoundary pins the revision
+// ordering helper directly. A tie on transaction time is broken by the numeric
+// revision order recovered from the generated revision ID, because raw text
+// ordering flips at a digit boundary and would otherwise let the older
+// representation win.
+func TestRevisionComesAfterPrefersNumericOrderAtDigitBoundary(t *testing.T) {
+	at := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	older := "factrev_999999"
+	newer := "factrev_1000001"
+	if !(newer < older) {
+		t.Fatalf("expected raw text ordering to invert the digit boundary: %s vs %s", newer, older)
 	}
-
-	// A fixed clock makes supersession produce equal-time revisions, which is the
-	// tie the ordering rule has to break.
-	fixed := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
-	rawEng := eng.(*engine)
-	rawEng.mu.Lock()
-	rawEng.now = func() time.Time { return fixed }
-	rawEng.mu.Unlock()
-
-	episode, err := eng.IngestEpisode(ctx, EpisodeInput{
-		Kind:    "note",
-		Content: "revision order subject",
-		Source:  SourceInput{Kind: "note"},
-	})
-	if err != nil {
-		t.Fatalf("ingest episode: %v", err)
+	if revisionOrder(newer) <= revisionOrder(older) {
+		t.Fatalf("expected numeric order to keep %s after %s", newer, older)
 	}
-	subject, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "boundary"})
-	if err != nil {
-		t.Fatalf("upsert entity: %v", err)
+	if !revisionComesAfter(newer, at, older, at) {
+		t.Fatalf("expected %s to be ordered after %s at one instant", newer, older)
 	}
-	original, err := eng.AssertFact(ctx, FactInput{
-		Predicate:            "HAS_STATE",
-		SubjectID:            subject.ID,
-		ValueText:            "old",
-		Cardinality:          "one",
-		SupportingEpisodeIDs: []string{episode.EpisodeID},
-	})
-	if err != nil {
-		t.Fatalf("assert fact: %v", err)
+	if revisionComesAfter(older, at, newer, at) {
+		t.Fatalf("expected %s not to be ordered after %s at one instant", older, newer)
 	}
-
-	// Parking the sequence here puts the auto-supersede revision on 999999 and
-	// the explicit supersede revision on 1000001: numerically later, but
-	// lexicographically earlier.
-	rawEng.mu.Lock()
-	rawEng.sequence = 999997
-	rawEng.mu.Unlock()
-
-	if _, err := eng.SupersedeFact(ctx, original.ID, FactInput{
-		Predicate:            "HAS_STATE",
-		SubjectID:            subject.ID,
-		ValueText:            "new",
-		Cardinality:          "one",
-		SupportingEpisodeIDs: []string{episode.EpisodeID},
-	}, "explicit-boundary-supersede"); err != nil {
-		t.Fatalf("supersede fact: %v", err)
+	// A later transaction time wins regardless of the ID order.
+	earlier := at.Add(-time.Second)
+	if revisionComesAfter(older, earlier, newer, at) {
+		t.Fatalf("expected the later transaction time to win over the ID order")
 	}
-
-	// Pin down that the tie really straddles the digit boundary instead of
-	// trusting the sequence arithmetic above.
-	autoRevision, explicitRevision := "", ""
-	rawEng.mu.RLock()
-	for _, revision := range rawEng.factRevisions {
-		if revision.FactID != original.ID {
-			continue
-		}
-		switch revision.RevisionKind {
-		case "auto_supersede":
-			autoRevision = revision.ID
-		case "supersede":
-			explicitRevision = revision.ID
-		}
+	if !revisionComesAfter(newer, at, older, earlier) {
+		t.Fatalf("expected the later transaction time to be ordered after the earlier one")
 	}
-	rawEng.mu.RUnlock()
-	if autoRevision == "" || explicitRevision == "" {
-		t.Fatalf("expected both tied revisions, got auto=%q explicit=%q", autoRevision, explicitRevision)
-	}
-	if revisionOrder(explicitRevision) <= revisionOrder(autoRevision) {
-		t.Fatalf("expected the explicit revision to be numerically later: auto=%s explicit=%s", autoRevision, explicitRevision)
-	}
-	if explicitRevision >= autoRevision {
-		t.Fatalf("expected the explicit revision ID to sort earlier as text: auto=%s explicit=%s", autoRevision, explicitRevision)
-	}
-
-	// The supersession is stamped strictly after the retired fact's previous
-	// state, so the two tied revisions live at the supersede instant rather than
-	// at the frozen clock instant the retired fact's previous state carries. The
-	// cut that still sees both of them is that supersede instant.
-	retired, err := eng.GetFact(ctx, original.ID)
-	if err != nil {
-		t.Fatalf("get superseded fact: %v", err)
-	}
-	supersedeAt := retired.UpdatedAt
-	assertLaterSupersedeWins := func(t *testing.T, eng Engine) {
-		t.Helper()
-		at := supersedeAt
-		resp, err := eng.GetRecord(ctx, GetRecordRequest{
-			Kind:     "fact",
-			ID:       original.ID,
-			Temporal: TemporalFilter{AsOf: &at, IncludeInactive: true},
-		})
-		if err != nil {
-			t.Fatalf("get fact version: %v", err)
-		}
-		fact, ok := resp.Record.(*Fact)
-		if !ok {
-			t.Fatalf("unexpected record type %T", resp.Record)
-		}
-		if reason, _ := fact.Metadata["supersede_reason"].(string); reason != "explicit-boundary-supersede" {
-			t.Fatalf("expected the later operation to win, got supersede_reason=%q metadata=%#v (auto=%s explicit=%s)", reason, fact.Metadata, autoRevision, explicitRevision)
-		}
-	}
-
-	assertLaterSupersedeWins(t, eng)
-
-	if err := eng.Close(ctx); err != nil {
-		t.Fatalf("close engine: %v", err)
-	}
-
-	reopened, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
-	if err != nil {
-		t.Fatalf("reopen engine: %v", err)
-	}
-	defer func() { _ = reopened.Close(ctx) }()
-	assertLaterSupersedeWins(t, reopened)
 }
-
 func TestAssertFactRequiresSupportingEpisode(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
@@ -1900,7 +1753,11 @@ func TestCardinalityOneBackfillDoesNotInvalidateNonOverlappingCurrent(t *testing
 	}
 }
 
-func TestCardinalityOneCorrectionKeepsTransactionHistory(t *testing.T) {
+// TestSupersedeFactKeepsTransactionHistory pins that an explicit, target-only
+// supersession still records an ordered transition: a historical cut taken
+// before the supersession sees the retired fact active, and the current read
+// sees the replacement.
+func TestSupersedeFactKeepsTransactionHistory(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
 	if err != nil {
@@ -1921,14 +1778,14 @@ func TestCardinalityOneCorrectionKeepsTransactionHistory(t *testing.T) {
 		t.Fatalf("upsert entity: %v", err)
 	}
 	validFrom := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	oldFact, err := eng.AssertFact(ctx, FactInput{Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old", ValidFrom: validFrom, Cardinality: factCardinalityOne, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	oldFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:correction-old", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old", ValidFrom: validFrom, SupportingEpisodeIDs: []string{episode.EpisodeID}})
 	if err != nil {
 		t.Fatalf("assert old fact: %v", err)
 	}
 	beforeCorrection := oldFact.CreatedAt.Add(time.Nanosecond)
-	newFact, err := eng.AssertFact(ctx, FactInput{Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", ValidFrom: validFrom, Cardinality: factCardinalityOne, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	result, err := eng.SupersedeFact(ctx, oldFact.ID, FactInput{Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", ValidFrom: validFrom, SupportingEpisodeIDs: []string{episode.EpisodeID}}, "explicit correction")
 	if err != nil {
-		t.Fatalf("assert correction fact: %v", err)
+		t.Fatalf("supersede fact: %v", err)
 	}
 	historical, err := eng.LookupFacts(ctx, FactLookupRequest{SubjectIDs: []string{entity.ID}, Temporal: TemporalFilter{AsOf: &beforeCorrection, ValidAt: &validFrom}})
 	if err != nil {
@@ -1941,11 +1798,10 @@ func TestCardinalityOneCorrectionKeepsTransactionHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("current lookup: %v", err)
 	}
-	if len(current.Facts) != 1 || current.Facts[0].ID != newFact.ID {
+	if len(current.Facts) != 1 || current.Facts[0].ID != result.NewFactID {
 		t.Fatalf("expected new fact currently, got %#v", current.Facts)
 	}
 }
-
 func TestLegacyBitemporalSeedPreservesHistoricalActiveFact(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
@@ -2084,128 +1940,237 @@ func TestTimelineIncludesLifecycleEventsByDefaultAtTransactionTime(t *testing.T)
 	}
 }
 
-func TestCardinalityOneProvenanceIncludesAllAutoSupersededFacts(t *testing.T) {
+// TestSupersedeFactProvenanceRecordsOnlyTarget pins that a replacement records
+// exactly the fact it retires. A sibling occupant of the same slot is neither
+// reported in the lineage nor retired, and the provenance graph says the same.
+func TestSupersedeFactProvenanceRecordsOnlyTarget(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
 	}
-	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "many replaced", Source: SourceInput{Kind: "note"}})
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "target provenance", Source: SourceInput{Kind: "note"}})
 	if err != nil {
 		t.Fatalf("ingest episode: %v", err)
 	}
-	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "multi replace"})
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:target-prov", Type: "Thing", CanonicalName: "Target Provenance"})
 	if err != nil {
 		t.Fatalf("upsert entity: %v", err)
 	}
-	oldA, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	target, err := eng.AssertFact(ctx, FactInput{ID: "fact:target-prov", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "target", SupportingEpisodeIDs: []string{episode.EpisodeID}})
 	if err != nil {
-		t.Fatalf("assert old a: %v", err)
+		t.Fatalf("assert target: %v", err)
 	}
-	oldB, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old b", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	sibling, err := eng.AssertFact(ctx, FactInput{ID: "fact:sibling-prov", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "sibling", SupportingEpisodeIDs: []string{episode.EpisodeID}})
 	if err != nil {
-		t.Fatalf("assert old b: %v", err)
+		t.Fatalf("assert sibling: %v", err)
 	}
-	newFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", Cardinality: factCardinalityOne, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	result, err := eng.SupersedeFact(ctx, target.ID, FactInput{ID: "fact:target-prov-new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "replacement", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "explicit replacement")
 	if err != nil {
-		t.Fatalf("assert new: %v", err)
+		t.Fatalf("supersede target: %v", err)
 	}
-	if got := metadataStringIDs(newFact.Metadata["supersedes"]); !slices.Contains(got, oldA.ID) || !slices.Contains(got, oldB.ID) {
-		t.Fatalf("expected replacement to record all superseded facts, got %#v", newFact.Metadata)
+	stored, err := eng.GetFact(ctx, result.NewFactID)
+	if err != nil {
+		t.Fatalf("get replacement: %v", err)
+	}
+	if got := metadataStringIDs(stored.Metadata["supersedes"]); !slices.Equal(got, []string{target.ID}) {
+		t.Fatalf("expected lineage %v, got %#v", []string{target.ID}, stored.Metadata)
 	}
 
-	prov, err := eng.Provenance(ctx, ProvenanceRequest{
-		Kind:     "fact",
-		ID:       newFact.ID,
-		Temporal: TemporalFilter{IncludeInactive: true},
-	})
+	prov, err := eng.Provenance(ctx, ProvenanceRequest{Kind: "fact", ID: result.NewFactID, Temporal: TemporalFilter{IncludeInactive: true}})
 	if err != nil {
 		t.Fatalf("provenance: %v", err)
 	}
 	edges := map[string]bool{}
 	for _, edge := range prov.Edges {
-		if edge.Type == "SUPERSEDES" && edge.FromID == newFact.ID {
+		if edge.Type == "SUPERSEDES" && edge.FromID == result.NewFactID {
 			edges[edge.ToID] = true
 		}
 	}
-	if !edges[oldA.ID] || !edges[oldB.ID] {
-		t.Fatalf("expected provenance edges to both old facts, got %#v", prov.Edges)
+	if !edges[target.ID] || edges[sibling.ID] {
+		t.Fatalf("expected a lineage edge to %s only, got %#v", target.ID, prov.Edges)
+	}
+	storedSibling, err := eng.GetFact(ctx, sibling.ID)
+	if err != nil {
+		t.Fatalf("get sibling: %v", err)
+	}
+	if storedSibling.Status != factStatusActive {
+		t.Fatalf("expected the sibling occupant to stay active, got %q", storedSibling.Status)
 	}
 }
 
-func TestExplicitSupersessionKeepsAutoSupersededIDs(t *testing.T) {
+// TestSupersedeFactIsTargetOnly pins the core guarantee: superseding one fact
+// retires exactly that fact. Every other active occupant of the same
+// subject + predicate slot stays active, and the replacement's lineage is
+// exactly the single target as a list.
+func TestSupersedeFactIsTargetOnly(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
 	}
-	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "explicit supersession lineage", Source: SourceInput{Kind: "note"}})
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "target only", Source: SourceInput{Kind: "note"}})
 	if err != nil {
 		t.Fatalf("ingest episode: %v", err)
 	}
-	entity, err := eng.UpsertEntity(ctx, EntityInput{Type: "Thing", CanonicalName: "explicit supersession"})
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:target-only", Type: "Thing", CanonicalName: "Target Only"})
 	if err != nil {
 		t.Fatalf("upsert entity: %v", err)
 	}
-	oldA, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-a", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
-	if err != nil {
-		t.Fatalf("assert old a: %v", err)
+	ids := []string{"fact:target-only-a", "fact:target-only-b", "fact:target-only-c"}
+	facts := make(map[string]*Fact, len(ids))
+	for _, id := range ids {
+		fact, err := eng.AssertFact(ctx, FactInput{ID: id, Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: id, SupportingEpisodeIDs: []string{episode.EpisodeID}})
+		if err != nil {
+			t.Fatalf("assert %s: %v", id, err)
+		}
+		facts[id] = fact
 	}
-	oldB, err := eng.AssertFact(ctx, FactInput{ID: "fact:old-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old b", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	target := facts["fact:target-only-b"]
+	result, err := eng.SupersedeFact(ctx, target.ID, FactInput{ID: "fact:target-only-new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "replacement", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "target only replacement")
 	if err != nil {
-		t.Fatalf("assert old b: %v", err)
+		t.Fatalf("supersede target: %v", err)
 	}
-	replacement, err := eng.SupersedeFact(ctx, oldA.ID, FactInput{
-		ID:                   "fact:new",
-		Predicate:            "HAS_STATE",
-		SubjectID:            entity.ID,
-		ValueText:            "new",
-		Cardinality:          factCardinalityOne,
-		SupportingEpisodeIDs: []string{episode.EpisodeID},
-	}, "explicit replacement")
-	if err != nil {
-		t.Fatalf("supersede fact: %v", err)
+	for _, id := range ids {
+		got, err := eng.GetFact(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		wantStatus := factStatusActive
+		if id == target.ID {
+			wantStatus = factStatusSuperseded
+		}
+		if got.Status != wantStatus {
+			t.Fatalf("expected %s status %q, got %q", id, wantStatus, got.Status)
+		}
 	}
-
-	// The explicit target and the fact that cardinality-one slot replacement
-	// superseded on its own must both survive, in one representation.
-	stored, err := eng.GetFact(ctx, replacement.NewFactID)
+	replacement, err := eng.GetFact(ctx, result.NewFactID)
 	if err != nil {
 		t.Fatalf("get replacement: %v", err)
 	}
-	listed, isList := stored.Metadata["supersedes"].([]string)
+	listed, isList := replacement.Metadata["supersedes"].([]string)
 	if !isList {
-		t.Fatalf("expected supersedes to be recorded as a list, got %#v", stored.Metadata["supersedes"])
+		t.Fatalf("expected supersedes to be recorded as a list, got %#v", replacement.Metadata["supersedes"])
 	}
-	if !slices.Contains(listed, oldA.ID) || !slices.Contains(listed, oldB.ID) {
-		t.Fatalf("expected explicit and automatic supersession targets, got %#v", listed)
+	if !slices.Equal(listed, []string{target.ID}) {
+		t.Fatalf("expected lineage exactly %v, got %#v", []string{target.ID}, listed)
 	}
-
 	snapshot, err := Snapshot(ctx, eng)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	snapshotIDs := metadataStringIDs(snapshot.Facts[replacement.NewFactID].Metadata["supersedes"])
-	if !slices.Contains(snapshotIDs, oldA.ID) || !slices.Contains(snapshotIDs, oldB.ID) {
-		t.Fatalf("expected snapshot to keep both superseded facts, got %#v", snapshotIDs)
+	if got := metadataStringIDs(snapshot.Facts[result.NewFactID].Metadata["supersedes"]); !slices.Equal(got, []string{target.ID}) {
+		t.Fatalf("expected snapshot lineage exactly %v, got %#v", []string{target.ID}, got)
+	}
+}
+
+// TestSupersedeFactMetadataSurvivesReopen pins that the replacement's lineage
+// and the retired target's status are durable across a reopen of the default
+// LatticeDB file database.
+func TestSupersedeFactMetadataSurvivesReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "supersede-metadata.db")
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "durable supersede", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:durable", Type: "Thing", CanonicalName: "Durable"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	target, err := eng.AssertFact(ctx, FactInput{ID: "fact:durable-target", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert target: %v", err)
+	}
+	result, err := eng.SupersedeFact(ctx, target.ID, FactInput{ID: "fact:durable-replacement", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "durable replacement")
+	if err != nil {
+		t.Fatalf("supersede target: %v", err)
+	}
+	if err := eng.Close(ctx); err != nil {
+		t.Fatalf("close engine: %v", err)
 	}
 
-	prov, err := eng.Provenance(ctx, ProvenanceRequest{
-		Kind:     "fact",
-		ID:       replacement.NewFactID,
-		Temporal: TemporalFilter{IncludeInactive: true},
-	})
+	reopened, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
 	if err != nil {
-		t.Fatalf("provenance: %v", err)
+		t.Fatalf("reopen engine: %v", err)
 	}
-	edges := map[string]bool{}
-	for _, edge := range prov.Edges {
-		if edge.Type == "SUPERSEDES" && edge.FromID == replacement.NewFactID {
-			edges[edge.ToID] = true
-		}
+	defer func() { _ = reopened.Close(ctx) }()
+	got, err := reopened.GetFact(ctx, result.NewFactID)
+	if err != nil {
+		t.Fatalf("get replacement: %v", err)
 	}
-	if !edges[oldA.ID] || !edges[oldB.ID] {
-		t.Fatalf("expected provenance edges to both superseded facts, got %#v", prov.Edges)
+	if lineage := metadataStringIDs(got.Metadata["supersedes"]); !slices.Equal(lineage, []string{target.ID}) {
+		t.Fatalf("expected lineage %v after reopen, got %#v", []string{target.ID}, got.Metadata)
+	}
+	retired, err := reopened.GetFact(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("get target: %v", err)
+	}
+	if retired.Status != factStatusSuperseded {
+		t.Fatalf("expected the target superseded after reopen, got %q", retired.Status)
+	}
+}
+
+// TestBatchCardinalityOneConflictFailsBatch pins that a single-value conflict
+// inside a batch fails the whole batch through the rollback path: neither the
+// conflicting fact nor the additive earlier facts and episodes persist, and the
+// identifier sequence is restored.
+func TestBatchCardinalityOneConflictFailsBatch(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	rawEng := eng.(*engine)
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{Kind: "note", Content: "batch conflict", Source: SourceInput{Kind: "note"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:batch-conflict", Type: "Thing", CanonicalName: "Batch Conflict"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	occupant, err := eng.AssertFact(ctx, FactInput{ID: "fact:batch-occupant", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "occupant", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert occupant: %v", err)
+	}
+
+	rawEng.mu.RLock()
+	sequenceBefore := rawEng.sequence
+	factsBefore := len(rawEng.facts)
+	episodesBefore := len(rawEng.episodes)
+	revisionsBefore := len(rawEng.factRevisions)
+	rawEng.mu.RUnlock()
+
+	_, err = eng.IngestBatch(ctx, BatchInput{
+		Episodes: []EpisodeInput{{ID: "ep:batch-conflict", Kind: "note", Content: "rolled back", Source: SourceInput{Kind: "note"}}},
+		Facts: []FactInput{
+			{Predicate: "HAS_NOTE", SubjectID: entity.ID, ValueText: "additive before the conflict", SupportingEpisodeIDs: []string{episode.EpisodeID}},
+			{ID: "fact:batch-conflict", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "conflict", Cardinality: factCardinalityOne, SupportingEpisodeIDs: []string{episode.EpisodeID}},
+		},
+	})
+	requireFactConflict(t, err, []string{occupant.ID})
+
+	if _, err := eng.GetEpisode(ctx, "ep:batch-conflict"); err == nil {
+		t.Fatal("expected the batch episode to be rolled back")
+	}
+	if _, err := eng.GetFact(ctx, "fact:batch-conflict"); err == nil {
+		t.Fatal("expected the conflicting batch fact to be rolled back")
+	}
+	rawEng.mu.RLock()
+	defer rawEng.mu.RUnlock()
+	if rawEng.sequence != sequenceBefore {
+		t.Fatalf("expected the ID sequence to be restored, got %d want %d", rawEng.sequence, sequenceBefore)
+	}
+	if len(rawEng.facts) != factsBefore || len(rawEng.episodes) != episodesBefore {
+		t.Fatalf("expected the batch to persist nothing, got facts %d want %d episodes %d want %d", len(rawEng.facts), factsBefore, len(rawEng.episodes), episodesBefore)
+	}
+	if len(rawEng.factRevisions) != revisionsBefore {
+		t.Fatalf("expected no fact revision to survive the rollback, got %d want %d", len(rawEng.factRevisions), revisionsBefore)
 	}
 }
 func TestCanceledContextCreatesNoRecordsOrSaves(t *testing.T) {
@@ -3193,13 +3158,13 @@ func TestSupersessionOrderingSurvivesOneInstant(t *testing.T) {
 	}
 }
 
-// TestAutoSupersessionOrderingSurvivesOneInstant pins the same ordering for the
-// cardinality-one slot replacement, which retires its target without an
-// explicit SupersedeFact call. The successor's creation instant is also the
-// retirement instant of every fact it replaces, so the same coarse-clock tie
-// would otherwise let a cut taken at the retiring fact's own stamp include the
-// replacement and lose its active state.
-func TestAutoSupersessionOrderingSurvivesOneInstant(t *testing.T) {
+// TestExplicitSupersedeOrderingSurvivesOneInstant pins the ordered-transition
+// invariant for an explicit supersession. The retirement is stamped strictly
+// after the instant the retired fact's previous state became current, so a cut
+// taken at that earlier stamp still returns it active and alone even when a
+// coarse clock reads one instant for both transitions; the transition instant
+// itself returns the replacement.
+func TestExplicitSupersedeOrderingSurvivesOneInstant(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})
 	if err != nil {
@@ -3210,59 +3175,55 @@ func TestAutoSupersessionOrderingSurvivesOneInstant(t *testing.T) {
 	frozen := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
 	eng.(*engine).now = func() time.Time { return frozen }
 
-	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-auto-instant", Kind: "note", Content: "one instant", Source: SourceInput{Kind: "note", ExternalRef: "auto-instant"}})
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-explicit-instant", Kind: "note", Content: "one instant", Source: SourceInput{Kind: "note", ExternalRef: "explicit-instant"}})
 	if err != nil {
 		t.Fatalf("ingest episode: %v", err)
 	}
-	task, err := eng.UpsertEntity(ctx, EntityInput{ID: "task:auto-instant", Type: "Task", CanonicalName: "Auto Instant"})
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:explicit-instant", Type: "Thing", CanonicalName: "Explicit Instant"})
 	if err != nil {
-		t.Fatalf("upsert task: %v", err)
+		t.Fatalf("upsert entity: %v", err)
 	}
-	ownerA, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-instant-a", Type: "Person", CanonicalName: "A"})
-	if err != nil {
-		t.Fatalf("upsert owner A: %v", err)
-	}
-	ownerB, err := eng.UpsertEntity(ctx, EntityInput{ID: "person:auto-instant-b", Type: "Person", CanonicalName: "B"})
-	if err != nil {
-		t.Fatalf("upsert owner B: %v", err)
-	}
-	oldFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:auto-instant-old", Predicate: "OWNED_BY", SubjectID: task.ID, ObjectID: ownerA.ID, SupportingEpisodeIDs: []string{episode.EpisodeID}, Cardinality: "one"})
+	oldFact, err := eng.AssertFact(ctx, FactInput{ID: "fact:explicit-instant-old", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "old", SupportingEpisodeIDs: []string{episode.EpisodeID}})
 	if err != nil {
 		t.Fatalf("assert old fact: %v", err)
 	}
-	if _, err := eng.AssertFact(ctx, FactInput{ID: "fact:auto-instant-new", Predicate: "OWNED_BY", SubjectID: task.ID, ObjectID: ownerB.ID, SupportingEpisodeIDs: []string{episode.EpisodeID}, Cardinality: "one"}); err != nil {
-		t.Fatalf("assert replacement fact: %v", err)
+	result, err := eng.SupersedeFact(ctx, oldFact.ID, FactInput{ID: "fact:explicit-instant-new", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "new", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "one instant")
+	if err != nil {
+		t.Fatalf("supersede fact: %v", err)
 	}
 
 	// The cut at the retired fact's own pre-transition stamp must still return it
-	// active and alone: the replacement is stamped strictly later, so it is
-	// excluded even though the clock read the same instant for both asserts.
+	// active and alone: the successor is stamped strictly later, so it is excluded
+	// even though the clock read the same instant for both transitions.
 	cut := oldFact.CreatedAt
-	historical, err := eng.LookupFacts(ctx, FactLookupRequest{
-		SubjectIDs: []string{task.ID},
-		Temporal:   TemporalFilter{AsOf: &cut, IncludeInactive: true},
-	})
+	historical, err := eng.LookupFacts(ctx, FactLookupRequest{SubjectIDs: []string{entity.ID}, Temporal: TemporalFilter{AsOf: &cut, IncludeInactive: true}})
 	if err != nil {
 		t.Fatalf("historical lookup: %v", err)
 	}
 	if len(historical.Facts) != 1 {
-		t.Fatalf("expected exactly one fact before the slot replacement, got %#v", historical.Facts)
+		t.Fatalf("expected exactly one fact before the supersession, got %#v", historical.Facts)
 	}
 	if historical.Facts[0].ID != oldFact.ID {
-		t.Fatalf("expected the pre-replacement fact %q, got %#v", oldFact.ID, historical.Facts)
+		t.Fatalf("expected the pre-supersede fact %q, got %#v", oldFact.ID, historical.Facts)
 	}
 	if historical.Facts[0].Status != factStatusActive {
-		t.Fatalf("expected the pre-replacement fact to be active, got status %q", historical.Facts[0].Status)
+		t.Fatalf("expected the pre-supersede fact to be active, got status %q", historical.Facts[0].Status)
+	}
+
+	transition := result.NewFactID
+	fact, err := eng.GetFact(ctx, transition)
+	if err != nil {
+		t.Fatalf("get replacement: %v", err)
+	}
+	atTransition := fact.CreatedAt
+	current, err := eng.LookupFacts(ctx, FactLookupRequest{SubjectIDs: []string{entity.ID}, Temporal: TemporalFilter{AsOf: &atTransition}})
+	if err != nil {
+		t.Fatalf("transition lookup: %v", err)
+	}
+	if len(current.Facts) != 1 || current.Facts[0].ID != result.NewFactID {
+		t.Fatalf("expected only the replacement at the transition instant, got %#v", current.Facts)
 	}
 }
-
-// TestTimelineOrdersEventsSharingOneInstantByRecord pins the tie-break for
-// events recorded at the same instant across different records. Facts live in a
-// map, so without a deterministic tie-break the page order of two facts' events
-// can differ between runs; a coarse platform clock (Windows advances roughly
-// every 15ms) makes every event of one transaction share that instant, so the
-// tie-break is the only thing ordering them. The order is asserted through the
-// page limit: it can only be deterministic if the events before the cut are.
 func TestTimelineOrdersEventsSharingOneInstantByRecord(t *testing.T) {
 	ctx := context.Background()
 	eng, err := Open(ctx, Config{InMemory: true})

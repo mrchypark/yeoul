@@ -194,11 +194,11 @@ yeoul fact retract --db ./yeoul.ltdb --id fact_123 --reason "incorrect source"
 - `--cardinality one|many`
 - `--supporting-episodes IDS` required
 
-`--cardinality one` replaces the whole overlapping active fact in the same
-subject/predicate slot; it does not split validity intervals. A bounded
-assertion such as `--valid-from 2026-02-01 --valid-to 2026-03-01` that replaces an
-open-ended earlier fact leaves no active fact after the new `--valid-to`. Prefer
-`fact supersede` when the earlier fact should stay active outside the new window.
+`--cardinality one` is a single-value slot guard: the assert fails with
+`YEOUL_FACT_CONFLICT` when the same space, subject, and predicate slot already has an
+overlapping active fact. Nothing is written and nothing is retired. Use
+`fact supersede --id ID` to replace a specific existing fact explicitly. Interval
+splitting is not implemented.
 
 #### `lookup` flags
 - `--subject-id IDS`, `--predicate PREDS`, `--object-id IDS`, `--object-text TEXT`

@@ -150,7 +150,7 @@ Do not let a one-off tool name, environment name, or implementation detail becom
 - Use `fact supersede --confirm` for state changes rather than overwriting.
 - Use `fact retract --confirm` only with an explicit reason.
 - A `SUPERSEDES` assertion never substitutes for `fact supersede`.
-- Use `--cardinality one` only when overlapping active facts in the same subject/predicate slot should be replaced.
+- An assertion never retires a fact; `--cardinality one` only guards a single-value slot and fails with `YEOUL_FACT_CONFLICT` on conflict. Use `fact supersede --id` to replace a specific fact.
 - Use `--as-of` for what Yeoul knew then and `--valid-at` for what was true then.
 - After writing, verify with `fact lookup` and `provenance`; use `neighborhood` for relationships and `timeline` for lifecycle changes. Use `context` when a bounded agent-ready retrieval bundle is needed.
 - Use `admin compact` as dry-run first; treat apply as maintenance, not normal editing.

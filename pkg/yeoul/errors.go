@@ -15,6 +15,7 @@ const (
 	ErrFactNotFound     ErrorCode = "YEOUL_FACT_NOT_FOUND"
 	ErrSourceNotFound   ErrorCode = "YEOUL_SOURCE_NOT_FOUND"
 	ErrLifecycleInvalid ErrorCode = "YEOUL_LIFECYCLE_INVALID"
+	ErrFactConflict     ErrorCode = "YEOUL_FACT_CONFLICT"
 	ErrQueryFailed      ErrorCode = "YEOUL_QUERY_FAILED"
 	ErrNotSupported     ErrorCode = "YEOUL_NOT_SUPPORTED"
 	ErrStorageFailed    ErrorCode = "YEOUL_STORAGE_FAILED"
