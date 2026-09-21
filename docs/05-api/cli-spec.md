@@ -216,6 +216,10 @@ splitting is not implemented.
 - `--supporting-episodes IDS` required
 - `--reason TEXT` required
 
+`supersede` is target-only: it retires exactly the fact named by `--id` and creates one
+successor, even when other active facts occupy the same space, subject, and predicate
+slot. The successor records the named fact in its `supersedes` lineage.
+
 ### `yeoul entity`
 Inspect or manage entities.
 

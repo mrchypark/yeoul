@@ -1824,3 +1824,56 @@ func TestCLIIngestRejectsSecretCanaries(t *testing.T) {
 		t.Fatalf("CLI error echoed the rejected canary: %v", err)
 	}
 }
+
+func TestCLIFactConflictExitsTwo(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "conflict.ltdb")
+
+	runCLI := func(args ...string) (string, error) {
+		t.Helper()
+		var stdout strings.Builder
+		var stderr strings.Builder
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
+	}
+
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	assertArgs := func(value string, cardinality string) []string {
+		return []string{
+			"fact", "assert", "--db", dbPath,
+			"--predicate", "USES_STORAGE_ENGINE",
+			"--upsert-subject",
+			"--subject-namespace", "repo:mrchypark/yeoul",
+			"--subject-type", "Project",
+			"--subject-name", "Yeoul",
+			"--subject-stable-key", "yeoul",
+			"--value-text", value,
+			"--cardinality", cardinality,
+			"--supporting-episodes", "ep_000001",
+		}
+	}
+
+	if _, err := runCLI("ingest", "episode", "--db", dbPath, "--kind", "note", "--content", "seed", "--source-kind", "note", "--id", "ep_000001"); err != nil {
+		t.Fatalf("seed episode: %v", err)
+	}
+	if _, err := runCLI(assertArgs("Yeoul uses LatticeDB.", "one")...); err != nil {
+		t.Fatalf("first cardinality-one assert: %v", err)
+	}
+
+	// The same space+subject+predicate slot is now occupied, so a second
+	// cardinality-one assert must surface the conflict as an exit-2 failure.
+	_, err := runCLI(assertArgs("Yeoul uses Ladybug.", "one")...)
+	if err == nil {
+		t.Fatal("expected a conflicting cardinality-one assert to fail")
+	}
+	if !strings.Contains(err.Error(), string(yeoul.ErrFactConflict)) {
+		t.Fatalf("expected %s, got %v", yeoul.ErrFactConflict, err)
+	}
+	if code := exitCode(err); code != 2 {
+		t.Fatalf("expected exit code 2 for a fact conflict, got %d", code)
+	}
+}
