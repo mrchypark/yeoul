@@ -15,12 +15,12 @@ Use this layout for normal Codex work:
 <repo>/agent-pack/                         # optional Yeoul policy pack for that repo
 ```
 
-`agent-pack/` and `skills/yeoul-memory/` are different things:
+`agent-pack/` and the loaded `yeoul-memory` skill are different things:
 
-- `skills/yeoul-memory/` is the reusable Agent Skill. Install it in the directory that the agent host actually loads for `yeoul-memory`.
+- The loaded `yeoul-memory` skill directory is the reusable Agent Skill. Install it in the directory that the agent host actually loads for `yeoul-memory`.
 - `agent-pack/` is the Yeoul policy pack. Keep it in a repository or shared policy location when you want CLI policy validation, ontology, episode rules, or search recipes.
 
-The repository's `skills/yeoul-memory/` directory is the canonical distributable source. Treat installed copies as derived artifacts: update them one-way from this directory, then restart Codex. Do not edit the installed copy independently.
+The reusable skill is distributed from the skill repository that the active host loads. Treat installed copies as derived artifacts: update them one-way from that loaded source, then restart Codex. Do not edit the installed copy independently.
 Its bundled `search_recipes.yaml` lets the skill run recipe-backed searches even when no repository `agent-pack/` is available.
 
 ## 1. Install the Yeoul CLI
@@ -58,12 +58,12 @@ Use `--group-id` or stable subject namespaces to keep repository-specific record
 
 ## 3. Install the Codex Skill
 
-Clone or unpack Yeoul, then set `YEOUL_LOADED_SKILL_DIR` to the directory that the agent host actually loads for `yeoul-memory` and copy the reusable skill there:
+Obtain the reusable skill from the skill repository the active host loads, then set `YEOUL_LOADED_SKILL_DIR` to the directory that the agent host actually loads for `yeoul-memory` and copy the skill there:
 
 ```sh
 export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
 mkdir -p "$YEOUL_LOADED_SKILL_DIR"
-cp -R /path/to/yeoul/skills/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
+cp -R /path/to/skill-repository/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
 ```
 
 Restart Codex after installing or updating the skill so it reloads local skill metadata.
@@ -151,7 +151,7 @@ YEOUL_INSTALLED_SKILL_PATH="/absolute/path/to/loaded/yeoul-memory" \
   scripts/ci/smoke-yeoul-memory-guidance.sh
 ```
 
-`YEOUL_INSTALLED_SKILL_PATH` is explicit so CI can validate the installed skill that an active host actually loads. In source-tree CI, omit it to use the repository skill source.
+`YEOUL_INSTALLED_SKILL_PATH` is explicit so CI can validate the installed skill that an active host actually loads. In source-tree CI, omit it to use the repository `agent-pack/` policy source.
 
 Then ask Codex:
 
@@ -171,14 +171,14 @@ Expected behavior:
 
 ## Updating
 
-When Yeoul changes, update the installed skill one-way from the canonical repository source:
+When Yeoul changes, update the installed skill one-way from the skill repository the active host loads:
 
 ```sh
 curl -fsSL https://github.com/mrchypark/yeoul/releases/latest/download/install.sh | bash
 
 export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
 mkdir -p "$YEOUL_LOADED_SKILL_DIR"
-cp -R /path/to/yeoul/skills/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
+cp -R /path/to/skill-repository/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
 ```
 
 Then verify the installed binary against the real user-level database, not just `--help`:

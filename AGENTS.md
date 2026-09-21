@@ -8,7 +8,7 @@ Default path for new databases: `$HOME/.local/share/yeoul/work-memory.ltdb`
 LatticeDB is the canonical storage engine and `.ltdb` is the standard extension for new databases. If only the legacy `$HOME/.local/share/yeoul/work-memory.lbug` exists, keep using that explicit path until its migration and optional rename are verified; do not silently create an empty `.ltdb` database. A read-only open never converts a legacy database; run `yeoul admin migrate-db --db "$YEOUL_DB" --json` explicitly (or open writable) before inspecting a legacy path read-only.
 
 Project-local `./yeoul.ltdb` is only for quickstart examples, isolated tests, or temporary debugging.
-Prefer the workflows documented in `skills/yeoul-memory/SKILL.md` and `skills/yeoul-memory/references/cli-workflows.md`.
+Prefer the workflows documented in the `yeoul-memory` skill as loaded by the active host, the repository `agent-pack/`, and `docs/10-examples/proactive-decision-support.md`.
 Use `docs/10-examples/proactive-decision-support.md` as the default operating loop for proactive Yeoul usage in this repository.
 
 Use Yeoul proactively during normal work in this repository.
@@ -29,7 +29,7 @@ Prefer:
 - `yeoul timeline` for change history
 - `yeoul provenance` for explanation and supporting context
 
-Before planning, bulk exploration, implementation, review, or a final answer for non-trivial Yeoul repo work, run the `preflight_briefing` workflow from `skills/yeoul-memory/references/cli-workflows.md`.
+Before planning, bulk exploration, implementation, review, or a final answer for non-trivial Yeoul repo work, run the `preflight_briefing` workflow from the loaded `yeoul-memory` skill or the repository `agent-pack/`.
 Prompt-injected memory summaries do not count as a Yeoul search. If `preflight_briefing` is missing, list recipes, use `recent_context` once as a fallback, and report that the policy pack is stale.
 
 Default behavior:
