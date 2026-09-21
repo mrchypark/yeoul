@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -62,8 +63,14 @@ func TestWritePrivateFilePublishesCompleteReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat replacement export: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("expected replacement export mode 0600, got %o", got)
+	// Windows has no POSIX permission bits, so Mode().Perm() always reports
+	// 0666 there and the 0600 assertion is not expressible. The staging path
+	// still runs on Windows to cover the durability behavior, so only the mode
+	// assertion is skipped; every other check above and below stays in force.
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("expected replacement export mode 0600, got %o", got)
+		}
 	}
 	assertNoExportStagingLeftovers(t, dir, filepath.Base(path))
 }

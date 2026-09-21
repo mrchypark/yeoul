@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 # Verify a downloaded native runtime asset against the committed digest pin in
 # runtime-digests.txt before it is extracted or staged. This is fail-closed: an
@@ -6,9 +6,12 @@
 #
 # usage: verify-runtime-digest.sh <release-ref> <asset-name> <file>
 
-set -euo pipefail
+# POSIX sh only: the verifier is driven through `sh` on every platform, including
+# the Windows CI job, where a script cannot be executed directly. pipefail is a
+# bash extension, and the digest comparisons below stay fail-closed without it.
+set -eu
 
-if [[ $# -ne 3 ]]; then
+if [ $# -ne 3 ]; then
   echo "usage: $0 <release-ref> <asset-name> <file>" >&2
   exit 2
 fi
@@ -20,29 +23,29 @@ asset_path="$3"
 script_dir="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 digests_file="${YEOUL_RUNTIME_DIGESTS:-${script_dir}/runtime-digests.txt}"
 
-if [[ ! -f "${digests_file}" ]]; then
+if [ ! -f "${digests_file}" ]; then
   echo "runtime digest pin file not found: ${digests_file}" >&2
   exit 1
 fi
 
 expected=""
 while read -r ref name digest _rest; do
-  if [[ -z "${ref}" || "${ref}" == \#* ]]; then
+  if [ -z "${ref}" ] || [ "${ref#\#}" != "${ref}" ]; then
     continue
   fi
-  if [[ "${ref}" == "${release_ref}" && "${name}" == "${asset_name}" ]]; then
+  if [ "${ref}" = "${release_ref}" ] && [ "${name}" = "${asset_name}" ]; then
     expected="${digest}"
     break
   fi
 done < "${digests_file}"
 
-if [[ -z "${expected}" ]]; then
+if [ -z "${expected}" ]; then
   echo "no committed digest pin for ${release_ref}/${asset_name}" >&2
   echo "refusing to stage unverified native bytes; add a line to ${digests_file}" >&2
   exit 1
 fi
 
-if [[ ! -f "${asset_path}" ]]; then
+if [ ! -f "${asset_path}" ]; then
   echo "asset to verify is missing: ${asset_path}" >&2
   exit 1
 fi
@@ -63,7 +66,7 @@ fi
 actual="$(printf '%s' "${actual}" | tr 'A-Z' 'a-z')"
 expected="$(printf '%s' "${expected}" | tr 'A-Z' 'a-z')"
 
-if [[ "${actual}" != "${expected}" ]]; then
+if [ "${actual}" != "${expected}" ]; then
   echo "digest mismatch for ${asset_name} (${release_ref})" >&2
   echo "  expected ${expected}" >&2
   echo "  actual   ${actual}" >&2
