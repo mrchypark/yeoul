@@ -61,7 +61,6 @@ printf '%s' "${counts_json}" | jq -e '
 "${work_root}/package/bin/yeoul" search \
   --db "${work_root}/work-memory.lbug" \
   --query preserves \
-  --backend core \
   --json | jq -e 'any(.hits[]; .hit_type == "episode" and .record_id == "ep_000001")' >/dev/null
 
 second_json="$("${work_root}/package/bin/yeoul" admin migrate-db --db "${work_root}/work-memory.lbug" --json)"

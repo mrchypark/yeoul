@@ -22,11 +22,10 @@ When a conversation produces durable memory:
 3. Before the final answer, classify the outcome as no memory, episode-only context, a new durable fact, or a lifecycle change. This does not make every episode a fact.
 4. For an authorized confirmed durable claim, do not stop after episode ingest because an entity is missing. Select namespace, type, canonical name, and stable key; reuse matching entities or assert with `--upsert-subject`. Use `--upsert-object` for a reusable named relationship target and `--value-text` for scalar or opaque text.
 5. For Repository entities, use namespace `repo:<owner>/<repo>` and stable key `<owner>/<repo>` without repeating the namespace. Prefer real external IDs for other durable entities.
-6. Check the active subject/predicate slot and possible conflicts before writing. Use `--cardinality one` only when overlapping active facts in that slot should be replaced.
+6. Check the active subject/predicate slot and possible conflicts before writing. An assertion never retires a fact; `--cardinality one` only guards a single-value slot and fails with `YEOUL_FACT_CONFLICT` on conflict. Use `fact supersede --id` to replace a specific fact.
 7. Use `yeoul fact supersede` or `yeoul fact retract` for lifecycle changes instead of editing old facts. A `SUPERSEDES` assertion never substitutes for `fact supersede`.
 8. Use `--as-of` for knowledge/lifecycle time and `--valid-at` for domain validity.
 9. Read back with `fact lookup` and `provenance`; use `neighborhood` for relationships and `timeline` for lifecycle changes.
-10. Treat `rax` as a derived retrieval index; LatticeDB-backed Yeoul records remain canonical.
 
 ## Authority and privacy
 

@@ -54,7 +54,7 @@ Replace the placeholder with the actual loaded `yeoul-memory` skill directory fo
 ## Search current context
 
 ```bash
-yeoul search --db "$YEOUL_DB" --query "storage engine decision" --backend auto --group-id "$YEOUL_GROUP" --include-related
+yeoul search --db "$YEOUL_DB" --query "storage engine decision" --group-id "$YEOUL_GROUP" --include-related
 ```
 
 ## Verify local install
@@ -65,7 +65,7 @@ After installing or upgrading Yeoul locally, verify the wrapper and the real use
 command -v yeoul
 sed -n '1,5p' "$HOME/.local/bin/yeoul"
 yeoul inspect counts --db "$YEOUL_DB" --json
-yeoul search --db "$YEOUL_DB" --query "recent Yeoul memory" --backend auto --group-id "$YEOUL_GROUP" --limit 3
+yeoul search --db "$YEOUL_DB" --query "recent Yeoul memory" --group-id "$YEOUL_GROUP" --limit 3
 ```
 
 Require Yeoul v0.5.2 or later with its bundled version-pinned migration helper. Never use v0.5.0 or v0.5.1 to migrate a pristine v0.2.2 database. Stop other Yeoul processes, then migrate a legacy Ladybug database in place through Yeoul's verified staging workflow:
@@ -300,7 +300,7 @@ For another relationship, the object can be upserted in the same command:
 yeoul fact assert --db "$YEOUL_DB" \
   --predicate DEPENDS_ON \
   --upsert-subject --subject-namespace repo:mrchypark/yeoul --subject-type Project --subject-name Yeoul --subject-stable-key yeoul \
-  --upsert-object --object-namespace repo:mrchypark/rax --object-type Repository --object-name mrchypark/rax --object-stable-key mrchypark/rax \
+  --upsert-object --object-namespace repo:mrchypark/latticedb-go --object-type Repository --object-name mrchypark/latticedb-go --object-stable-key mrchypark/latticedb-go \
   --supporting-episodes ep_000001
 ```
 

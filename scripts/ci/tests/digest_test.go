@@ -10,7 +10,7 @@ import (
 )
 
 // These tests exercise the committed runtime-digest pins through the verifier
-// that both setup-ladybug.sh and stage-runtime.sh call before they extract or
+// that setup-ladybug.sh calls before it extracts or
 // stage native bytes. They use a synthetic asset with a synthetic pin file, so
 // no network access and no real credential or release asset is involved.
 
@@ -69,26 +69,26 @@ func TestVerifyRuntimeDigestRejectsUnpinnedAsset(t *testing.T) {
 
 func TestVerifyRuntimeDigestAcceptsMatchingAndRejectsMismatch(t *testing.T) {
 	dir := t.TempDir()
-	asset := filepath.Join(dir, "rax-ffi-v0.4.4-macos-arm64.tar.gz")
-	if err := os.WriteFile(asset, []byte("authentic rax bytes"), 0o644); err != nil {
+	asset := filepath.Join(dir, "libruntime-test-v0.1.0-macos-arm64.tar.gz")
+	if err := os.WriteFile(asset, []byte("authentic runtime bytes"), 0o644); err != nil {
 		t.Fatalf("write asset: %v", err)
 	}
 
 	// Compute the genuine digest with the same tool the verifier uses, then pin it.
 	digest := sha256Of(t, asset)
-	pins := writeSyntheticPins(t, "v0.4.4 rax-ffi-v0.4.4-macos-arm64.tar.gz "+digest+"\n")
+	pins := writeSyntheticPins(t, "v0.1.0 libruntime-test-v0.1.0-macos-arm64.tar.gz "+digest+"\n")
 	env := []string{"YEOUL_RUNTIME_DIGESTS=" + pins}
 
-	out, err := runVerifier(t, env, "v0.4.4", "rax-ffi-v0.4.4-macos-arm64.tar.gz", asset)
+	out, err := runVerifier(t, env, "v0.1.0", "libruntime-test-v0.1.0-macos-arm64.tar.gz", asset)
 	if err != nil {
 		t.Fatalf("expected the pinned asset to verify, got err=%v out=%s", err, out)
 	}
 
 	// Replace the bytes under the same asset name: must be rejected before staging.
-	if err := os.WriteFile(asset, []byte("replaced rax bytes"), 0o644); err != nil {
+	if err := os.WriteFile(asset, []byte("replaced runtime bytes"), 0o644); err != nil {
 		t.Fatalf("replace asset: %v", err)
 	}
-	out, err = runVerifier(t, env, "v0.4.4", "rax-ffi-v0.4.4-macos-arm64.tar.gz", asset)
+	out, err = runVerifier(t, env, "v0.1.0", "libruntime-test-v0.1.0-macos-arm64.tar.gz", asset)
 	if err == nil {
 		t.Fatalf("expected replaced bytes to be rejected, got: %s", out)
 	}
@@ -130,11 +130,6 @@ func TestDownloadPathsVerifyBeforeStaging(t *testing.T) {
 			script:     filepath.Join(root, "scripts", "ci", "setup-ladybug.sh"),
 			verifyCall: `"${script_dir}/verify-runtime-digest.sh" "${release_ref}" "${candidate}" "${archive_path}"`,
 			staging:    "tar -xzf",
-		},
-		{
-			script:     filepath.Join(root, "scripts", "ci", "stage-runtime.sh"),
-			verifyCall: `"${script_dir}/verify-runtime-digest.sh" "${rax_version}" "${asset}" "${archive}"`,
-			staging:    `unzip -q "${archive}"`,
 		},
 	}
 	for _, tc := range cases {

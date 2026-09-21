@@ -104,14 +104,14 @@ neighborhood_json=$("${yeoul_bin}" neighborhood --db "${smoke_db}" --fact "${fac
 printf '%s\n' "${neighborhood_json}" | grep -Fq "${subject_id}"
 printf '%s\n' "${neighborhood_json}" | grep -Fq "${object_id}"
 
-search_json=$("${yeoul_bin}" search --db "${smoke_db}" --backend core --type fact --query DEPENDS_ON --json)
+search_json=$("${yeoul_bin}" search --db "${smoke_db}" --type fact --query DEPENDS_ON --json)
 printf '%s\n' "${search_json}" | grep -Fq "${fact_id}"
 
 recipe_workdir=${smoke_root}/recipe-working-directory
 mkdir "${recipe_workdir}"
 recipe_search_json=$(
   CDPATH= cd "${recipe_workdir}"
-  "${yeoul_bin}" search --db "${smoke_db}" --backend core --type fact \
+  "${yeoul_bin}" search --db "${smoke_db}" --type fact \
     --query DEPENDS_ON \
     --policy-path "${skill_policy_path}" \
     --recipe recent_context \

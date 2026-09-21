@@ -614,7 +614,7 @@ Usage:
 func (c cli) runSearch(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul search --db PATH --query TEXT [--backend auto|core|rax] [--rax-lib PATH] [--rax-bin PATH] [--type fact,episode,entity] [--mode hybrid|keyword|semantic] [--entity ID] [--predicate PREDS] [--min-score N]
+  yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--mode hybrid|keyword|semantic] [--entity ID] [--predicate PREDS] [--min-score N]
       [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--from RFC3339] [--to RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--cursor CURSOR]
       [--policy-path PATH] [--recipe NAME] [--space ID] [--limit N] [--include-related] [--json]
 `)
@@ -622,9 +622,6 @@ Usage:
 	fs := newFlagSet("search")
 	var dbPath string
 	var query string
-	var backend string
-	var raxLib string
-	var raxBin string
 	var typesRaw string
 	var mode string
 	var entityID string
@@ -648,9 +645,6 @@ Usage:
 	var jsonOut bool
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&query, "query", "", "query text")
-	fs.StringVar(&backend, "backend", "auto", "search backend: auto, core, rax")
-	fs.StringVar(&raxLib, "rax-lib", "", "rax FFI library path")
-	fs.StringVar(&raxBin, "rax-bin", "", "rax CLI binary path")
 	fs.StringVar(&typesRaw, "type", "", "comma-separated hit types")
 	fs.StringVar(&mode, "mode", "hybrid", "search mode: hybrid, keyword, semantic")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
@@ -693,10 +687,6 @@ Usage:
 		return err
 	}
 	if strings.TrimSpace(query) == "" {
-		return &usageError{message: usage}
-	}
-	backend = strings.ToLower(strings.TrimSpace(backend))
-	if backend != "auto" && backend != "core" && backend != "rax" {
 		return &usageError{message: usage}
 	}
 	temporal, err := parseTemporalFlagsFull(asOfRaw, validAtRaw, fromRaw, toRaw, validFromRaw, validToRaw, includeInactive)
@@ -747,15 +737,7 @@ Usage:
 	if err != nil {
 		return err
 	}
-	var resp *yeoul.SearchResponse
-	if backend == "rax" {
-		resp, err = runRaxPrimarySearch(ctx, eng, dbPath, req, raxLib, raxBin)
-	} else {
-		resp, err = eng.Search(ctx, req)
-		if err == nil {
-			resp, err = maybeRerankSearchWithRax(ctx, eng, dbPath, query, backend, raxLib, raxBin, limit, resp)
-		}
-	}
+	resp, err := eng.Search(ctx, req)
 	if closeErr := closeEngine(ctx, eng); closeErr != nil && err == nil {
 		err = closeErr
 	}

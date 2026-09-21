@@ -48,7 +48,6 @@ Before recommending a direction, interpreting status, or resolving a tradeoff:
 ```bash
 yeoul search --db "$YEOUL_DB" \
   --query "current context for this task" \
-  --backend auto \
   --policy-path "$YEOUL_POLICY_PATH" \
   --recipe recent_context \
   --include-related
@@ -181,10 +180,10 @@ yeoul fact assert --db "$YEOUL_DB" \
   --subject-name Yeoul \
   --subject-stable-key yeoul \
   --upsert-object \
-  --object-namespace repo:mrchypark/rax \
+  --object-namespace repo:mrchypark/latticedb-go \
   --object-type Repository \
-  --object-name mrchypark/rax \
-  --object-stable-key mrchypark/rax \
+  --object-name mrchypark/latticedb-go \
+  --object-stable-key mrchypark/latticedb-go \
   --supporting-episodes ep_000001
 ```
 

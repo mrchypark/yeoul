@@ -60,15 +60,9 @@ It should not replace entity, fact, and provenance-oriented retrieval.
 
 ## Derived retrieval runtime
 
-When Yeoul uses an external retrieval runtime such as `rax`, the indexing boundary is a projection layer.
+The indexing boundary is a projection layer. Canonical records stay in LatticeDB; projections are derived and rebuildable; search responses hydrate canonical records before provenance or lifecycle-sensitive output is returned.
 
-That means:
-- LatticeDB-backed Yeoul records remain canonical
-- projection records are rebuilt from canonical records
-- retrieval runtime indexes may be dropped and rebuilt without losing memory truth
-- final search responses should hydrate canonical Yeoul records before provenance or lifecycle-sensitive output is returned
-
-Explicit index commands keep `projection.ndjson` for inspection. Managed search cache rebuilds can stream the same projection into the bundled rax FFI runtime and keep only Yeoul's manifest plus the derived `.rax` store.
+Yeoul no longer ships or resolves an external retrieval runtime. The projection artifacts exist for inspection and verification via `yeoul index build|rebuild|status|verify`. Projection indexes may be dropped and rebuilt without losing memory truth.
 
 ## Benchmark responsibility
 Any new index addition should include:

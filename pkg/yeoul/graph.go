@@ -606,8 +606,8 @@ func factLookupHits(facts []Fact) []SearchHit {
 // page, so a small page cannot leak the support of unreturned hits or repeat it
 // on every page. Callers must not assemble includes for unreturned matches.
 //
-// Shaping is delegated to AssembleIncludedRecords so the core engine and the Rax
-// backend honor identical flag implications and dedupe shared support.
+// Shaping is delegated to AssembleIncludedRecords so the core engine honors the
+// canonical flag implications and dedupes shared support.
 func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal TemporalFilter, page []SearchHit, spaceID string, index *temporalIndex) IncludedRecords {
 	resolve := func(kind, id string) (any, bool) {
 		switch kind {

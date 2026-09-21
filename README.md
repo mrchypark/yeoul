@@ -113,8 +113,8 @@ go vet ./...
 go test ./...
 ```
 
-The `rax` retrieval runtime is optional; CLI search degrades to core search
-when the bundled `librax_ffi` library is not present.
+Yeoul search runs fully in-process over LatticeDB and requires no external
+retrieval runtime or native retrieval library.
 
 ## Database Migration
 

@@ -364,8 +364,8 @@ func matchesScopeForEpisode(episode Episode, scope ScopeFilter, sources map[stri
 	return true
 }
 
-// RecordPassesSearchFilters applies Yeoul's canonical search post-filter to records
-// returned by derived indexes such as rax.
+// RecordPassesSearchFilters applies Yeoul's canonical search post-filter to
+// records returned by the core engine.
 
 func asOfTime(filter TemporalFilter) *time.Time {
 	return filter.AsOf

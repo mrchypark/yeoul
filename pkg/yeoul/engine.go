@@ -537,17 +537,6 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 		return nil, errorf(ErrInputInvalid, "supporting_episode_ids must contain at least one episode", map[string]any{"field": "supporting_episode_ids"}, nil)
 	}
 
-	now := e.txNow()
-	id := input.ID
-	if id == "" {
-		id = e.newIDLocked("fact")
-	} else if err := e.ensureGlobalIDAvailableLocked(id, kindFact); err != nil {
-		return nil, err
-	}
-	if _, ok := e.facts[id]; ok {
-		return nil, errorf(ErrLifecycleInvalid, "fact id already exists", map[string]any{"fact_id": id}, nil)
-	}
-
 	status := input.Status
 	if status == "" {
 		status = factStatusActive
@@ -573,7 +562,33 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 		return nil, errorf(ErrInputInvalid, "invalid fact cardinality", map[string]any{"cardinality": input.Cardinality}, nil)
 	}
 	if !validFactInterval(input.ValidFrom, input.ValidTo) {
-		return nil, errorf(ErrInputInvalid, "invalid fact validity interval", map[string]any{"fact_id": id}, nil)
+		return nil, errorf(ErrInputInvalid, "invalid fact validity interval", map[string]any{"fact_id": input.ID}, nil)
+	}
+	// A single-value slot is a guard, not a retirement: an assertion refuses an
+	// occupied overlapping slot instead of silently retiring whatever happens to
+	// hold it. The check runs before any ID is allocated or any revision is
+	// appended, so a rejected conflict leaves every counter untouched.
+	if !allowLifecycleFields && cardinality == factCardinalityOne {
+		occupants := e.factSlotOccupantsLocked(spaceID, input.SubjectID, input.Predicate, input.ValidFrom, input.ValidTo)
+		if len(occupants) > 0 {
+			return nil, errorf(ErrFactConflict, "single-value fact slot is already occupied", map[string]any{
+				"space_id":             spaceID,
+				"subject_id":           input.SubjectID,
+				"predicate":            input.Predicate,
+				"conflicting_fact_ids": occupants,
+			}, nil)
+		}
+	}
+
+	now := e.txNow()
+	id := input.ID
+	if id == "" {
+		id = e.newIDLocked("fact")
+	} else if err := e.ensureGlobalIDAvailableLocked(id, kindFact); err != nil {
+		return nil, err
+	}
+	if _, ok := e.facts[id]; ok {
+		return nil, errorf(ErrLifecycleInvalid, "fact id already exists", map[string]any{"fact_id": id}, nil)
 	}
 	fact := Fact{
 		ID:                   id,
@@ -592,67 +607,30 @@ func (e *engine) assertFactLocked(spaceID string, input FactInput, allowLifecycl
 		SupportingEpisodeIDs: supportingEpisodeIDs,
 		Metadata:             cloneAnyMap(input.Metadata),
 	}
-	if !allowLifecycleFields && cardinality == factCardinalityOne {
-		fact = e.invalidateFactSlotLocked(fact, input.ValidFrom)
-	}
 	e.facts[id] = fact
 	e.appendFactRevisionLocked(fact, "assert")
 	return cloneFact(fact), nil
 }
 
-func (e *engine) invalidateFactSlotLocked(newFact Fact, validTo time.Time) Fact {
-	// Collect the facts this successor retires before stamping any of them. The
-	// successor's creation instant is also each retirement instant, so it has to
-	// be carried strictly past the latest instant a retiring fact's current state
-	// became current. A coarse platform clock (Windows advances roughly every
-	// 15ms) otherwise reports one instant for the assert of the retiring facts and
-	// the assert that replaces them, and a cut taken at a retiring fact's own
-	// stamp would include its retirement and lose its active state.
-	targets := make([]string, 0, 1)
-	var latest time.Time
+// factSlotOccupantsLocked returns the sorted IDs of the active facts that hold
+// the same space, subject, and predicate as the candidate and whose validity
+// interval overlaps the candidate's. The result is sorted so a conflict report
+// never depends on the order the fact map happened to be scanned. Interval
+// overlap uses factValidityOverlaps, the same semantics a slot comparison has
+// always used.
+func (e *engine) factSlotOccupantsLocked(spaceID, subjectID, predicate string, validFrom, validTo time.Time) []string {
+	occupants := make([]string, 0, 1)
 	for id, fact := range e.facts {
-		if fact.Status != factStatusActive || fact.SpaceID != newFact.SpaceID || fact.SubjectID != newFact.SubjectID || fact.Predicate != newFact.Predicate {
+		if fact.Status != factStatusActive || fact.SpaceID != spaceID || fact.SubjectID != subjectID || fact.Predicate != predicate {
 			continue
 		}
-		if !factValidityOverlaps(fact.ValidFrom, fact.ValidTo, newFact.ValidFrom, newFact.ValidTo) {
+		if !factValidityOverlaps(fact.ValidFrom, fact.ValidTo, validFrom, validTo) {
 			continue
 		}
-		targets = append(targets, id)
-		if fact.UpdatedAt.After(latest) {
-			latest = fact.UpdatedAt
-		}
+		occupants = append(occupants, id)
 	}
-	if len(targets) == 0 {
-		return newFact
-	}
-	if !newFact.CreatedAt.After(latest) {
-		newFact.CreatedAt = latest.Add(time.Nanosecond)
-		newFact.UpdatedAt = newFact.CreatedAt
-	}
-	superseded := make([]string, 0, len(targets))
-	for _, id := range targets {
-		fact := e.facts[id]
-		fact.Status = factStatusSuperseded
-		if !validTo.IsZero() && fact.ValidFrom.Before(validTo) && (fact.ValidTo.IsZero() || validTo.Before(fact.ValidTo)) {
-			fact.ValidTo = validTo
-		}
-		fact.UpdatedAt = newFact.CreatedAt
-		fact.Metadata = mergeAnyMap(fact.Metadata, map[string]any{
-			"superseded_by":    newFact.ID,
-			"supersede_reason": "cardinality_one_slot_replaced",
-		})
-		e.facts[id] = fact
-		e.appendFactRevisionLocked(fact, "auto_supersede")
-		superseded = append(superseded, id)
-	}
-	// The recorded lineage is a set of IDs, so it is sorted: metadata must not
-	// depend on the order the map scan above happened to visit facts in.
-	slices.Sort(superseded)
-	newFact.Metadata = mergeAnyMap(newFact.Metadata, map[string]any{
-		"supersedes":       superseded,
-		"supersede_reason": "cardinality_one_slot_replaced",
-	})
-	return newFact
+	slices.Sort(occupants)
+	return occupants
 }
 
 func (e *engine) SupersedeFact(ctx context.Context, factID string, input FactInput, reason string) (*SupersedeFactResult, error) {
@@ -697,6 +675,14 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 	// cut taken at that earlier stamp includes the retirement and loses the old
 	// fact's active state whenever the clock cannot separate the two transitions.
 	e.txTime = e.strictlyAfterTxTime(oldFact.UpdatedAt)
+	// Supersession is strictly target-only, so the replacement must not trip the
+	// single-value slot guard over the other occupants of the same slot.
+	// Normalizing the internal assertion to the additive cardinality keeps the
+	// guard honest for every public assertion path while this replacement stays
+	// additive; the named target is the only fact retired below.
+	if strings.TrimSpace(input.Cardinality) == factCardinalityOne {
+		input.Cardinality = factCardinalityMany
+	}
 	newFact, err := e.assertFactLocked(spaceID, input, false)
 	if err != nil {
 		return nil, err
@@ -713,16 +699,10 @@ func (e *engine) supersedeFactLocked(factID string, input FactInput, reason stri
 	e.facts[factID] = oldFact
 	e.appendFactRevisionLocked(oldFact, "supersede")
 	if storedNewFact, ok := e.facts[newFact.ID]; ok {
-		// Replacing a fact through the cardinality-one slot may already have
-		// recorded automatic supersession targets. The explicit target is merged
-		// into that list instead of overwriting it, and the list representation is
-		// kept, so snapshot and provenance consumers always see the complete
-		// lineage of the replacement.
-		supersedes := append(metadataStringIDs(storedNewFact.Metadata["supersedes"]), factID)
-		supersedes = dedupeStrings(supersedes)
-		slices.Sort(supersedes)
+		// The replacement's lineage is exactly the fact it retires. The list form
+		// is kept so snapshot and provenance consumers see one representation.
 		storedNewFact.Metadata = mergeAnyMap(storedNewFact.Metadata, map[string]any{
-			"supersedes":       supersedes,
+			"supersedes":       []string{factID},
 			"supersede_reason": reason,
 		})
 		e.facts[newFact.ID] = storedNewFact

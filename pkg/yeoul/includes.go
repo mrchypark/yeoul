@@ -7,8 +7,8 @@ package yeoul
 type IncludedSupportResolver func(kind, id string) (any, bool)
 
 // AssembleIncludedRecords shapes the page-scoped IncludedRecords for a search or
-// lookup response. It is shared by the core engine and the Rax backend so both
-// backends honor the same flag implications and dedupe shared support.
+// lookup response. The core engine uses it so every path honors the same flag
+// implications and dedupes shared support.
 //
 // Flag implications:
 //   - SupportingFacts returns the facts behind the returned hits.

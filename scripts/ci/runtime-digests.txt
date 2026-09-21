@@ -22,8 +22,3 @@ v0.13.1 liblbug-linux-x86_64.tar.gz ce6387bd46a5bcecbf7d59608694c540274b6bfb690e
 v0.13.1 liblbug-osx-universal.tar.gz 4195a05e42671e5f8d036c5d035617ca05d25a1813b2ed8b46ab6cf9d8f0c426
 v0.13.1 liblbug-windows-x86_64.zip 68e0dffb16cf54158ca5780e0e62042e03873eb7287d10bdc2bf79f105998caa
 
-# mrchypark/rax release used by scripts/ci/stage-runtime.sh (YEOUL_RAX_VERSION default v0.4.4)
-v0.4.4 rax-ffi-v0.4.4-linux-x86_64.tar.gz a2f4f0ecce18d80ad9b06c2fd8f5ba06bad89c8d9d995afa5189e5af6ba5e1f7
-v0.4.4 rax-ffi-v0.4.4-macos-arm64.tar.gz ff2e7df1af47fa4089dad39c9d0b002e2318b4ff7622b93b3f93dfcb17b926ab
-v0.4.4 rax-ffi-v0.4.4-macos-x86_64.tar.gz 7a7b9f424f6818d1f01c2f8a8134e28891195a803e006279e36366174a790fbd
-v0.4.4 rax-ffi-v0.4.4-windows-x86_64.zip f83d63225aa129ff7e87d8360b0b9b661b71a7645573b4dee057bf1af52d520b
