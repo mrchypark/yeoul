@@ -10,30 +10,24 @@ import (
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
-// entityIdentityKey is a comparable identity for automatic duplicate detection.
-// The identity token is the exact stable key when the entity carries one and
-// the exact canonical name otherwise, so entities that share a display name but
-// carry different strong identities are never marked as duplicates and
-// case-different display names stay distinct. The type is folded because a
-// case-only type difference is recorded drift rather than a different identity,
-// and the namespace is deliberately not part of the key: it is reconciled per
-// subgroup so empty-vs-populated drift groups together while two populated
-// namespaces that differ after folding stay apart.
+// entityIdentityKey is the exact identity used by automatic compaction. Keep
+// this grouping conservative: drift belongs to explicit merge-preview and
+// merge, never to destructive compaction.
 type entityIdentityKey struct {
-	SpaceID string
-	Type    string
-	Token   string
+	SpaceID       string
+	Namespace     string
+	Type          string
+	CanonicalName string
+	StableKey     string
 }
 
 func entityIdentityOf(entity yeoul.EntityInput, stableKey string) entityIdentityKey {
-	token := stableKey
-	if strings.TrimSpace(token) == "" {
-		token = entity.CanonicalName
-	}
 	return entityIdentityKey{
-		SpaceID: entity.SpaceID,
-		Type:    normalizeKey(entity.Type),
-		Token:   token,
+		SpaceID:       entity.SpaceID,
+		Namespace:     entity.Namespace,
+		Type:          entity.Type,
+		CanonicalName: entity.CanonicalName,
+		StableKey:     stableKey,
 	}
 }
 
@@ -64,12 +58,15 @@ func partitionEntityDriftGroups(entities []yeoul.EntityInput) [][]yeoul.EntityIn
 	}
 	sort.Strings(keys)
 	subgroups := make([][]yeoul.EntityInput, 0, len(keys))
-	for index, key := range keys {
+	for _, key := range keys {
 		subgroup := buckets[key]
-		if index == 0 {
+		if len(buckets) == 1 {
 			subgroup = append(append([]yeoul.EntityInput{}, blank...), subgroup...)
 		}
 		subgroups = append(subgroups, subgroup)
+	}
+	if len(buckets) > 1 && len(blank) > 0 {
+		subgroups = append(subgroups, blank)
 	}
 	return subgroups
 }
@@ -114,35 +111,21 @@ func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
 		if len(entities) < 2 {
 			continue
 		}
-		for _, subgroup := range partitionEntityDriftGroups(entities) {
-			if len(subgroup) < 2 {
-				continue
-			}
-			sort.Slice(subgroup, func(i, j int) bool { return subgroup[i].ID < subgroup[j].ID })
-			sourceIDs := make([]string, 0, len(subgroup)-1)
-			driftNamespace := false
-			driftType := false
-			for _, entity := range subgroup[1:] {
-				sourceIDs = append(sourceIDs, entity.ID)
-				if entity.Namespace != subgroup[0].Namespace {
-					driftNamespace = true
-				}
-				// Grouping folds the type, so an exact disagreement is exactly
-				// the case-only drift that folding tolerated.
-				if entity.Type != subgroup[0].Type {
-					driftType = true
-				}
-			}
-			candidates = append(candidates, entityMergeCandidate{
-				TargetID:       subgroup[0].ID,
-				SourceIDs:      sourceIDs,
-				Namespace:      subgroup[0].Namespace,
-				Type:           subgroup[0].Type,
-				CanonicalName:  subgroup[0].CanonicalName,
-				DriftNamespace: driftNamespace,
-				DriftType:      driftType,
-			})
+		if len(entities) < 2 {
+			continue
 		}
+		sort.Slice(entities, func(i, j int) bool { return entities[i].ID < entities[j].ID })
+		sourceIDs := make([]string, 0, len(entities)-1)
+		for _, entity := range entities[1:] {
+			sourceIDs = append(sourceIDs, entity.ID)
+		}
+		candidates = append(candidates, entityMergeCandidate{
+			TargetID:      entities[0].ID,
+			SourceIDs:     sourceIDs,
+			Namespace:     entities[0].Namespace,
+			Type:          entities[0].Type,
+			CanonicalName: entities[0].CanonicalName,
+		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].TargetID < candidates[j].TargetID })
 	return candidates

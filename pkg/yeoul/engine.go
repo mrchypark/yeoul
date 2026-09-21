@@ -885,7 +885,7 @@ func (e *engine) ResolveEntity(ctx context.Context, req EntityResolveRequest) (*
 	}
 	resolutions := make([]resolution, 0)
 	for _, entity := range e.entities {
-		if entity.SpaceID != spaceID || entityMarkedDuplicate(entity) {
+		if entity.SpaceID != spaceID || (entityMarkedDuplicate(entity) && !req.IncludeMarkedDuplicates) {
 			continue
 		}
 

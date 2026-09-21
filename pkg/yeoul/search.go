@@ -33,6 +33,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
+	anchorIDs := e.canonicalEntityIDsAtLocked(req.AnchorIDs, req.Temporal, index)
 
 	hits := make([]SearchHit, 0)
 	graphSeeds := map[string]float64{}
@@ -48,9 +49,9 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			subjectID := e.canonicalEntityIDLocked(factRecord.SubjectID)
-			objectID := e.canonicalEntityIDLocked(factRecord.ObjectID)
-			anchorMatched := matchesAnchors(req.AnchorIDs, append([]string{factRecord.ID, subjectID, objectID}, factRecord.SupportingEpisodeIDs...)...)
+			subjectID := e.canonicalEntityIDAtLocked(factRecord.SubjectID, req.Temporal, index)
+			objectID := e.canonicalEntityIDAtLocked(factRecord.ObjectID, req.Temporal, index)
+			anchorMatched := matchesAnchors(anchorIDs, append([]string{factRecord.ID, subjectID, objectID}, factRecord.SupportingEpisodeIDs...)...)
 			if len(req.AnchorIDs) > 0 && !anchorMatched {
 				continue
 			}
@@ -92,7 +93,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 {
 				continue
 			}
-			anchorMatched := matchesAnchors(req.AnchorIDs, episode.ID, episode.SourceID)
+			anchorMatched := matchesAnchors(anchorIDs, episode.ID, episode.SourceID)
 			if len(req.AnchorIDs) > 0 && !anchorMatched {
 				continue
 			}
@@ -132,7 +133,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 {
 				continue
 			}
-			anchorMatched := matchesAnchors(req.AnchorIDs, entityRecord.ID)
+			anchorMatched := matchesAnchors(anchorIDs, entityRecord.ID)
 			if len(req.AnchorIDs) > 0 && !anchorMatched {
 				continue
 			}
@@ -171,7 +172,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			score := e.graphExpansionScoreLocked(graphSeeds, *factRecord)
+			score := e.graphExpansionScoreLocked(graphSeeds, *factRecord, req.Temporal, index)
 			if score <= 0 {
 				continue
 			}
@@ -187,7 +188,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				Reasons:     []string{"graph_expansion"},
 			})
 			seenHits["fact:"+factRecord.ID] = true
-			addGraphSeeds(expandedSeeds, score, factRecord.ID, e.canonicalEntityIDLocked(factRecord.SubjectID), e.canonicalEntityIDLocked(factRecord.ObjectID))
+			addGraphSeeds(expandedSeeds, score, factRecord.ID, e.canonicalEntityIDAtLocked(factRecord.SubjectID, req.Temporal, index), e.canonicalEntityIDAtLocked(factRecord.ObjectID, req.Temporal, index))
 			addGraphSeeds(expandedSeeds, score, factRecord.SupportingEpisodeIDs...)
 		}
 		for _, fact := range e.facts {
@@ -198,7 +199,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			score := e.graphExpansionScoreLocked(expandedSeeds, *factRecord)
+			score := e.graphExpansionScoreLocked(expandedSeeds, *factRecord, req.Temporal, index)
 			if score <= 0 {
 				continue
 			}
@@ -244,6 +245,7 @@ type sparseCorpusStats struct {
 }
 
 func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID string, index *temporalIndex) *sparseCorpusStats {
+	anchorIDs := e.canonicalEntityIDsAtLocked(req.AnchorIDs, req.Temporal, index)
 	stats := &sparseCorpusStats{DF: map[string]int{}}
 	observe := func(text string) {
 		tokens := tokenize(text)
@@ -264,7 +266,7 @@ func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID st
 			if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 				continue
 			}
-			if len(req.AnchorIDs) > 0 && !matchesAnchors(req.AnchorIDs, append([]string{factRecord.ID, e.canonicalEntityIDLocked(factRecord.SubjectID), e.canonicalEntityIDLocked(factRecord.ObjectID)}, factRecord.SupportingEpisodeIDs...)...) {
+			if len(anchorIDs) > 0 && !matchesAnchors(anchorIDs, append([]string{factRecord.ID, e.canonicalEntityIDAtLocked(factRecord.SubjectID, req.Temporal, index), e.canonicalEntityIDAtLocked(factRecord.ObjectID, req.Temporal, index)}, factRecord.SupportingEpisodeIDs...)...) {
 				continue
 			}
 			observe(factRecord.ValueText + " " + factRecord.Predicate + " " + factRecord.SubjectID + " " + factRecord.ObjectID)
@@ -275,7 +277,7 @@ func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID st
 			if episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, req.Temporal) || !matchesScopeForEpisode(episode, req.Scope, e.sources) {
 				continue
 			}
-			if len(req.AnchorIDs) > 0 && !matchesAnchors(req.AnchorIDs, episode.ID, episode.SourceID) {
+			if len(anchorIDs) > 0 && !matchesAnchors(anchorIDs, episode.ID, episode.SourceID) {
 				continue
 			}
 			observe(episode.Content)
@@ -287,7 +289,7 @@ func (e *engine) searchCorpusStats(types []string, req SearchRequest, spaceID st
 			if entityRecord == nil || entityRecord.SpaceID != spaceID || !matchesEntityType(*entityRecord, req.Scope.EntityTypes) || entityMarkedDuplicate(*entityRecord) {
 				continue
 			}
-			if len(req.AnchorIDs) > 0 && !matchesAnchors(req.AnchorIDs, entityRecord.ID) {
+			if len(anchorIDs) > 0 && !matchesAnchors(anchorIDs, entityRecord.ID) {
 				continue
 			}
 			observe(entityRecord.CanonicalName + " " + strings.Join(entityRecord.Aliases, " "))
@@ -326,13 +328,21 @@ func recordPassesSearchFilters(ctx context.Context, eng Engine, core *engine, re
 		}
 		subjectID := value.SubjectID
 		objectID := value.ObjectID
+		var historyIndex *temporalIndex
 		if core != nil {
 			core.mu.RLock()
-			subjectID = core.canonicalEntityIDLocked(subjectID)
-			objectID = core.canonicalEntityIDLocked(objectID)
+			historyIndex = newTemporalIndex(core)
+			subjectID = core.canonicalEntityIDAtLocked(subjectID, req.Temporal, historyIndex)
+			objectID = core.canonicalEntityIDAtLocked(objectID, req.Temporal, historyIndex)
 			core.mu.RUnlock()
 		}
-		if !matchesAnchors(req.AnchorIDs, append([]string{value.ID, subjectID, objectID}, value.SupportingEpisodeIDs...)...) {
+		anchorIDs := req.AnchorIDs
+		if core != nil {
+			core.mu.RLock()
+			anchorIDs = core.canonicalEntityIDsAtLocked(req.AnchorIDs, req.Temporal, historyIndex)
+			core.mu.RUnlock()
+		}
+		if !matchesAnchors(anchorIDs, append([]string{value.ID, subjectID, objectID}, value.SupportingEpisodeIDs...)...) {
 			return false
 		}
 		if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, value.Predicate) {
@@ -484,9 +494,9 @@ func addGraphSeeds(seeds map[string]float64, score float64, ids ...string) {
 // graphExpansionScoreLocked scores a fact against graph seeds using the
 // canonical forms of its endpoints, so an expansion seeded from the canonical
 // entity reaches facts stored against a merged duplicate.
-func (e *engine) graphExpansionScoreLocked(seeds map[string]float64, fact Fact) float64 {
+func (e *engine) graphExpansionScoreLocked(seeds map[string]float64, fact Fact, filter TemporalFilter, index *temporalIndex) float64 {
 	best := 0.0
-	for _, id := range append([]string{e.canonicalEntityIDLocked(fact.SubjectID), e.canonicalEntityIDLocked(fact.ObjectID)}, fact.SupportingEpisodeIDs...) {
+	for _, id := range append([]string{e.canonicalEntityIDAtLocked(fact.SubjectID, filter, index), e.canonicalEntityIDAtLocked(fact.ObjectID, filter, index)}, fact.SupportingEpisodeIDs...) {
 		if score := seeds[id] * 0.45; score > best {
 			best = score
 		}

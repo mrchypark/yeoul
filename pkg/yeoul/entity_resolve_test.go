@@ -291,6 +291,23 @@ func TestResolveEntityExcludesMarkedDuplicates(t *testing.T) {
 	}
 }
 
+func TestResolveEntityCanIncludeMarkedDuplicatesForGuards(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	seedResolveEntities(t, e, Entity{
+		ID:            "person:duplicate",
+		Type:          "Person",
+		CanonicalName: "Alex",
+		Metadata:      map[string]any{"duplicate_of": "person:canonical"},
+	})
+	resp, err := e.ResolveEntity(ctx, EntityResolveRequest{Type: "Person", CanonicalName: "Alex", IncludeMarkedDuplicates: true})
+	if err != nil {
+		t.Fatalf("resolve marked duplicate: %v", err)
+	}
+	if got := resolveIDs(resp); !slices.Equal(got, []string{"person:duplicate"}) {
+		t.Fatalf("expected marked duplicate in guard resolution, got %v", got)
+	}
+}
+
 func TestResolveEntityFoldedCanonicalNameIsDrift(t *testing.T) {
 	e, ctx := openIdentityTestEngine(t)
 	seedResolveEntities(t, e, Entity{

@@ -53,6 +53,9 @@ type EntityResolveRequest struct {
 	// stays off for ordinary identity resolution, where a stable key is a
 	// stronger identity claim than a display name.
 	IncludeKeyDrift bool `json:"include_key_drift,omitempty"`
+	// IncludeMarkedDuplicates is reserved for mutation guards that must detect
+	// an existing merge marker instead of treating it as absent.
+	IncludeMarkedDuplicates bool `json:"include_marked_duplicates,omitempty"`
 }
 
 // EntityResolveResponse reports every entity that matches an identity tuple.

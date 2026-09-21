@@ -119,17 +119,22 @@ from the drifted input.
 
 1. **Resolve by identity before writing.** Run `yeoul entity resolve` (or the Go
    `ResolveEntity` API) to check whether an entity already matches the identity tuple.
+   For example, resolve a keyed person with:
+   `yeoul entity resolve --db memory.ltdb --namespace people --type Person --name Alex --stable-key alex-123`.
+   Use the returned entity ID for the assertion; do not reconstruct an ID from a
+   drifted namespace or type.
 2. **Fail closed on a near duplicate.** When the derived entity ID is new but an existing
    entity already matches the same identity under a different ID, `fact assert` with
    `--upsert-subject` or `--upsert-object` fails with `YEOUL_ENTITY_NEAR_DUPLICATE`
    (exit 2) instead of creating a second entity. The caller reuses the existing entity ID.
-3. **Reconcile recorded drift.** A pair that differs only by namespace/type case, by
-   empty-vs-populated namespace, or that agrees on canonical name or alias is reported
-   and mergeable through `entity merge-preview` and `entity merge`. Each preview
-   candidate reports `drift_name`, `drift_namespace`, and `drift_type` when its
-   sources differ from the target in canonical name, namespace, or type. Genuine scope
-   conflicts (different canonical names, different stable keys, different spaces) are
-   still refused.
+   The guard is conservative: an exact same-scope match may reuse a legacy ID, but an
+   ambiguous display-name/key or namespace/type drift requires an explicit ID and does not guess.
+3. **Reconcile recorded drift explicitly.** `entity merge-preview` groups only
+   canonical-name identity candidates and may report namespace/type-case or
+   empty-vs-populated namespace drift for an operator to review. Alias overlap is
+   checked by direct `entity merge`, not inferred by preview grouping. `entity merge`
+   still refuses different populated namespaces, different types, conflicting stable
+   keys, and already-marked sources; same-scope explicit name renames remain mergeable.
 4. **Read merged duplicates through their canonical entity.** A fact attached to an entity
    marked `duplicate_of X` is returned when the caller filters by X. This is a read-time
    interpretation; stored facts are not rewritten.

@@ -23,8 +23,8 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 	// A fact stored against a merged duplicate still names the duplicate, so
 	// both the requested anchors and the fact endpoint are compared in
 	// canonical form. Nothing is rewritten: this is a read-time view.
-	subjectAnchors := e.canonicalEntityIDsLocked(req.SubjectIDs)
-	objectAnchors := e.canonicalEntityIDsLocked(req.ObjectIDs)
+	subjectAnchors := e.canonicalEntityIDsAtLocked(req.SubjectIDs, req.Temporal, index)
+	objectAnchors := e.canonicalEntityIDsAtLocked(req.ObjectIDs, req.Temporal, index)
 
 	facts := make([]Fact, 0)
 	for _, fact := range e.facts {
@@ -32,13 +32,13 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 			continue
 		}
-		if len(subjectAnchors) > 0 && !slices.Contains(subjectAnchors, e.canonicalEntityIDLocked(factRecord.SubjectID)) {
+		if len(subjectAnchors) > 0 && !slices.Contains(subjectAnchors, e.canonicalEntityIDAtLocked(factRecord.SubjectID, req.Temporal, index)) {
 			continue
 		}
 		if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
 			continue
 		}
-		if len(objectAnchors) > 0 && !slices.Contains(objectAnchors, e.canonicalEntityIDLocked(factRecord.ObjectID)) {
+		if len(objectAnchors) > 0 && !slices.Contains(objectAnchors, e.canonicalEntityIDAtLocked(factRecord.ObjectID, req.Temporal, index)) {
 			continue
 		}
 		if req.ObjectText != "" && !strings.Contains(strings.ToLower(factRecord.ValueText), strings.ToLower(req.ObjectText)) {
@@ -77,6 +77,7 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
+	anchorIDs := e.canonicalEntityIDsAtLocked(req.AnchorIDs, req.Temporal, index)
 
 	nodeMap := make(map[string]GraphNode)
 	edgeMap := make(map[string]GraphEdge)
@@ -130,10 +131,10 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 		addNode(GraphNode{ID: factRecord.ID, Type: "Fact", Label: factRecord.Predicate})
 		// The edge targets the canonical entity so a fact attached to a merged
 		// duplicate still connects to the entity that absorbed it.
-		subjectID := e.canonicalEntityIDLocked(factRecord.SubjectID)
+		subjectID := e.canonicalEntityIDAtLocked(factRecord.SubjectID, req.Temporal, index)
 		addEdge(GraphEdge{ID: compositeID("edge", "SUBJECT", factRecord.ID, subjectID), Type: "SUBJECT", FromID: factRecord.ID, ToID: subjectID})
 		if factRecord.ObjectID != "" {
-			objectID := e.canonicalEntityIDLocked(factRecord.ObjectID)
+			objectID := e.canonicalEntityIDAtLocked(factRecord.ObjectID, req.Temporal, index)
 			addEdge(GraphEdge{ID: compositeID("edge", "OBJECT", factRecord.ID, objectID), Type: "OBJECT", FromID: factRecord.ID, ToID: objectID})
 		}
 		for _, episodeID := range factRecord.SupportingEpisodeIDs {
@@ -150,7 +151,7 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 
 	dist := make(map[string]int)
 	queue := make([]string, 0, len(req.AnchorIDs))
-	for _, anchorID := range req.AnchorIDs {
+	for _, anchorID := range anchorIDs {
 		if _, ok := nodeMap[anchorID]; !ok {
 			continue
 		}
@@ -294,6 +295,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	defer e.mu.RUnlock()
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
+	anchorIDs := e.canonicalEntityIDsAtLocked(req.AnchorIDs, temporal, index)
 
 	entries := make([]timelineEntry, 0)
 	allowedEvents := req.EventTypes
@@ -306,7 +308,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	}
 
 	for _, episode := range e.episodes {
-		if episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, temporal) || !matchesScopeForEpisode(episode, req.Scope, e.sources) || !matchesAnchors(req.AnchorIDs, episode.ID, episode.SourceID) {
+		if episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, temporal) || !matchesScopeForEpisode(episode, req.Scope, e.sources) || !matchesAnchors(anchorIDs, episode.ID, episode.SourceID) {
 			continue
 		}
 		event := TimelineEvent{
@@ -327,7 +329,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	revisionsByFact := e.factRevisionsByFact()
 	for _, fact := range e.facts {
 		factRecord := e.factVersionAt(fact, temporal, index)
-		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, temporal, index) || !matchesAnchors(req.AnchorIDs, append([]string{e.canonicalEntityIDLocked(factRecord.SubjectID), e.canonicalEntityIDLocked(factRecord.ObjectID), factRecord.ID}, factRecord.SupportingEpisodeIDs...)...) {
+		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, temporal, index) || !matchesAnchors(anchorIDs, append([]string{e.canonicalEntityIDAtLocked(factRecord.SubjectID, temporal, index), e.canonicalEntityIDAtLocked(factRecord.ObjectID, temporal, index), factRecord.ID}, factRecord.SupportingEpisodeIDs...)...) {
 			continue
 		}
 		createdEvent := TimelineEvent{
@@ -532,7 +534,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 		}
 		root.Label = entityRecord.CanonicalName
 		nodes = append(nodes, root)
-		canonicalID := e.canonicalEntityIDLocked(entityRecord.ID)
+		canonicalID := e.canonicalEntityIDAtLocked(entityRecord.ID, req.Temporal, index)
 		for _, fact := range e.facts {
 			factRecord := e.factVersionAt(fact, req.Temporal, index)
 			if factRecord == nil || factRecord.SpaceID != spaceID {
@@ -540,8 +542,8 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 			}
 			// A fact attached to a merged duplicate counts as attached to the
 			// canonical entity the anchor resolves to.
-			subjectID := e.canonicalEntityIDLocked(factRecord.SubjectID)
-			objectID := e.canonicalEntityIDLocked(factRecord.ObjectID)
+			subjectID := e.canonicalEntityIDAtLocked(factRecord.SubjectID, req.Temporal, index)
+			objectID := e.canonicalEntityIDAtLocked(factRecord.ObjectID, req.Temporal, index)
 			if subjectID != canonicalID && objectID != canonicalID {
 				continue
 			}

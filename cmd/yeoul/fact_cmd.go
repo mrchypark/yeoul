@@ -19,31 +19,48 @@ import (
 // derived ID is left to the ordinary upsert path, which reports its own
 // identity conflict.
 func guardEntityNearDuplicate(ctx context.Context, eng yeoul.Engine, role, derivedID, namespace, entityType, canonicalName, stableKey string) error {
-	if _, err := eng.GetEntity(ctx, derivedID); err == nil {
-		return nil
+	markedDerived := false
+	if existing, err := eng.GetEntity(ctx, derivedID); err == nil {
+		if duplicateOf(existing.Metadata) == "" {
+			return nil
+		}
+		markedDerived = true
 	}
 	resp, err := eng.ResolveEntity(ctx, yeoul.EntityResolveRequest{
-		SpaceID:         "default",
-		Namespace:       namespace,
-		Type:            entityType,
-		CanonicalName:   canonicalName,
-		StableKey:       stableKey,
-		IncludeKeyDrift: true,
+		SpaceID:                 "default",
+		Namespace:               namespace,
+		Type:                    entityType,
+		CanonicalName:           canonicalName,
+		StableKey:               stableKey,
+		IncludeKeyDrift:         true,
+		IncludeMarkedDuplicates: true,
 	})
 	if err != nil {
 		var apiErr *yeoul.Error
 		if errors.As(err, &apiErr) && apiErr.Code == yeoul.ErrEntityNotFound {
+			if markedDerived {
+				return &yeoul.Error{Code: yeoul.ErrEntityNearDuplicate, Message: "the derived entity id is already marked as a duplicate; reuse its canonical id", Details: map[string]any{"role": role, "derived_id": derivedID}}
+			}
 			return nil
 		}
 		return err
 	}
 	existingIDs := make([]string, 0, len(resp.Matches))
+	markedMatch := markedDerived
 	for _, match := range resp.Matches {
 		if match.ID != derivedID {
 			existingIDs = append(existingIDs, match.ID)
 		}
+		if duplicateOf(match.Metadata) != "" {
+			markedMatch = true
+		}
 	}
-	if len(existingIDs) == 0 {
+	if len(resp.Matches) == 1 && !markedMatch && len(resp.Drifted) == 0 &&
+		resp.Matches[0].ID == yeoul.LegacyEntityID(namespace, entityType, fallbackString(stableKey, canonicalName)) &&
+		resp.Matches[0].SpaceID == "default" {
+		return nil
+	}
+	if len(resp.Matches) == 0 && !markedMatch {
 		return nil
 	}
 	return &yeoul.Error{
@@ -713,18 +730,27 @@ func mergeEntities(ctx context.Context, eng yeoul.Engine, targetID string, sourc
 		if err != nil {
 			return nil, nil, err
 		}
+		if redirect := duplicateOf(source.Metadata); redirect != "" {
+			return nil, nil, fmt.Errorf("entity merge source %s is already a duplicate of %s", source.ID, redirect)
+		}
 		if source.SpaceID != target.SpaceID {
 			return nil, nil, fmt.Errorf("entity merge source %s has a different space_id than target %s (source=%q, target=%q)", source.ID, target.ID, source.SpaceID, target.SpaceID)
+		}
+		targetKey := yeoulStableKey(target.Metadata)
+		sourceKey := yeoulStableKey(source.Metadata)
+		if targetKey != "" && sourceKey != "" && targetKey != sourceKey {
+			return nil, nil, fmt.Errorf("entity merge source %s has a different stable_key than target %s", source.ID, target.ID)
 		}
 		// A namespace or type difference is accepted only when the two entities
 		// agree exactly on their canonical name or on an alias: that recorded
 		// overlap is what makes the difference drift on one entity rather than
 		// a scope conflict. Everything else keeps the original rejection.
 		namesOverlap := entityNamesOverlap(target, source)
-		if source.Namespace != target.Namespace && !namesOverlap {
+		if source.Namespace != target.Namespace &&
+			((strings.TrimSpace(source.Namespace) != "" && strings.TrimSpace(target.Namespace) != "" && normalizeKey(source.Namespace) != normalizeKey(target.Namespace)) || !namesOverlap) {
 			return nil, nil, fmt.Errorf("entity merge source %s has a different namespace than target %s (source=%q, target=%q)", source.ID, target.ID, source.Namespace, target.Namespace)
 		}
-		if source.Type != target.Type && !namesOverlap {
+		if source.Type != target.Type && normalizeKey(source.Type) != normalizeKey(target.Type) {
 			return nil, nil, fmt.Errorf("entity merge source %s has a different type than target %s (source=%q, target=%q)", source.ID, target.ID, source.Type, target.Type)
 		}
 		sources = append(sources, source)

@@ -320,6 +320,17 @@ func TestCLIEntityMergeKeepsPopulatedNamespaceDriftApart(t *testing.T) {
 	}
 }
 
+func TestCLIEntityMergePreviewDoesNotGuessBlankNamespaceScope(t *testing.T) {
+	payload := &exportFile{Entities: []yeoul.EntityInput{
+		{ID: "person:blank-a", Namespace: "", Type: "Person", CanonicalName: "Alex"},
+		{ID: "person:a", Namespace: "repo-a", Type: "Person", CanonicalName: "Alex"},
+		{ID: "person:b", Namespace: "repo-b", Type: "Person", CanonicalName: "Alex"},
+	}}
+	if got := buildEntityDriftCandidates(payload); len(got) != 0 {
+		t.Fatalf("blank namespace must not be attached to one of multiple scopes, got %#v", got)
+	}
+}
+
 // TestCLIEntityMergeKeepsNameDriftApart pins that a merge whose names do not
 // overlap is still refused even when the namespace differs.
 func TestCLIEntityMergeKeepsNameDriftApart(t *testing.T) {
