@@ -100,7 +100,6 @@ docs/
 Related bundles:
 
 - `agent-pack/` — agent-facing skills, instructions, ontology, episode rules, and search recipes.
-- `skills/yeoul-memory/` — reusable agent skill backed by the same CLI workflows.
 - `evals/` — evaluation evidence for agent-facing guidance.
 - `yeoul-docs-scope/` — compatibility pointer to the current scope documents.
 

@@ -25,7 +25,7 @@ For the full Codex placement guide, including the CLI, user-level database, reus
 ```bash
 export YEOUL_LOADED_SKILL_DIR="/absolute/path/to/loaded/yeoul-memory"
 mkdir -p "$YEOUL_LOADED_SKILL_DIR"
-cp -R /path/to/yeoul/skills/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
+cp -R /path/to/skill-repository/yeoul-memory/. "$YEOUL_LOADED_SKILL_DIR/"
 ```
 
 Replace the placeholder with the directory the active host actually loads for `yeoul-memory`.
@@ -38,7 +38,7 @@ Replace the placeholder with the directory the active host actually loads for `y
 Use the `yeoul-memory` skill when a task depends on prior decisions, constraints, ownership, status changes, or provenance in this repository.
 
 Search Yeoul before answering when prior project memory may matter.
-Prefer the workflows documented in `skills/yeoul-memory/SKILL.md` and `skills/yeoul-memory/references/cli-workflows.md`.
+Prefer the workflows documented in the loaded `yeoul-memory` skill and the repository `agent-pack/`.
 
 When writing memory, preserve provenance and lifecycle semantics. Do not overwrite old facts when the state changes.
 ```
@@ -59,15 +59,15 @@ Gemini CLI does not use Codex-style `SKILL.md` packages. The closest equivalent 
 
 ### 1. Add or merge `GEMINI.md` in your repository root
 
-Gemini CLI supports `@path` imports, so the simplest setup is to reuse Yeoul's existing skill files:
+Gemini CLI supports `@path` imports, so the simplest setup is to reuse the loaded `yeoul-memory` skill files:
 
 ```md
 # Yeoul Memory
 
 Use Yeoul as the durable temporal memory for this repository.
 
-@skills/yeoul-memory/SKILL.md
-@skills/yeoul-memory/references/cli-workflows.md
+@/absolute/path/to/loaded/yeoul-memory/SKILL.md
+@/absolute/path/to/loaded/yeoul-memory/references/cli-workflows.md
 ```
 
 ### 2. Optional: add a reusable Gemini command
@@ -109,15 +109,15 @@ Claude Code also does not use Codex-style `SKILL.md` packages directly. Its equi
 
 ### 1. Add or merge `CLAUDE.md` in your repository root
 
-Claude Code supports `@path` imports, so you can reuse the Yeoul skill text directly:
+Claude Code supports `@path` imports, so you can reuse the loaded `yeoul-memory` skill text directly:
 
 ```md
 # Yeoul Memory
 
 Use Yeoul as the durable temporal memory for this repository.
 
-@skills/yeoul-memory/SKILL.md
-@skills/yeoul-memory/references/cli-workflows.md
+@/absolute/path/to/loaded/yeoul-memory/SKILL.md
+@/absolute/path/to/loaded/yeoul-memory/references/cli-workflows.md
 ```
 
 ### 2. Optional: add a reusable Claude command

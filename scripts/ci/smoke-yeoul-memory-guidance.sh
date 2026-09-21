@@ -8,7 +8,12 @@ if [ ! -x "${yeoul_bin}" ]; then
 fi
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
-source_skill_path=$(CDPATH= cd "${script_dir}/../../skills/yeoul-memory" && pwd -P)
+# This smoke proves the recipe-backed search workflow works against a real
+# policy directory. When YEOUL_INSTALLED_SKILL_PATH is unset, use the
+# repository agent-pack/, which carries both SKILL.md and search_recipes.yaml,
+# as the installed skill source; an active host's loaded yeoul-memory directory
+# can be supplied through YEOUL_INSTALLED_SKILL_PATH instead.
+source_skill_path=$(CDPATH= cd "${script_dir}/../../agent-pack" && pwd -P)
 
 temp_root=$(CDPATH= cd "${TMPDIR:-/tmp}" && pwd -P)
 case "${temp_root}" in

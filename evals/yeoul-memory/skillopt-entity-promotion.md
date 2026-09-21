@@ -4,7 +4,7 @@
 
 This report records aggregate evaluation evidence for the Yeoul memory instructions. It contains no raw session text, private session content, session identifiers, or user names. Intentional product and repository-relative references identify the evaluated artifact; no absolute local filesystem paths are included.
 
-The optimized artifact is `skills/yeoul-memory/SKILL.md`. The target model, harness, tools, and scoring rubric remained fixed during baseline, candidate selection, and slow update.
+The optimized artifact is `SKILL.md` in the `yeoul-memory` skill, which now lives in the global skill repository the active host loads. The target model, harness, tools, and scoring rubric remained fixed during baseline, candidate selection, and slow update.
 
 ## Corpus evidence
 
