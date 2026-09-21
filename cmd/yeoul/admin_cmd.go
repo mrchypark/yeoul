@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -429,6 +430,16 @@ func syncPrivateFileDir(dir string) error {
 	syncErr := directory.Sync()
 	closeErr := directory.Close()
 	if syncErr != nil {
+		// Directory fsync is not portable: Windows cannot flush a directory
+		// handle (FlushFileBuffers is refused with "Access is denied"), so the
+		// durability barrier is a documented no-op there, matching the migration
+		// protocol's syncDirectory. The publish above already renamed the
+		// complete file into place, so only the platform's refusal is tolerated:
+		// every other platform still takes the barrier and reports a genuine
+		// failure, and a non-Windows sync failure still fails the export.
+		if runtime.GOOS == "windows" {
+			return closeErr
+		}
 		return syncErr
 	}
 	return closeErr

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	latticedb "github.com/mrchypark/latticedb-go"
@@ -72,6 +73,14 @@ func hashDatabaseTree(t *testing.T, root string) string {
 		}
 		if entry.IsDir() {
 			fmt.Fprintf(h, "d:%s\n", rel)
+			return nil
+		}
+		// Native lock files are markers for an OS lock, not database bytes, and a
+		// live writer holds them locked. Windows refuses even a read of a byte
+		// range another handle has locked, so hashing them would fail the
+		// comparison before the behavior under test ran. The other database-tree
+		// helpers in this package skip them for the same reason.
+		if strings.HasSuffix(entry.Name(), ".lock") {
 			return nil
 		}
 		data, err := os.ReadFile(path)

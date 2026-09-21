@@ -238,6 +238,41 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 	}, nil
 }
 
+// timelineEntry pairs an event with the position it holds in its own record's
+// history. A record's events are derived in causal order (a fact's creation,
+// then the transitions its revision log recorded), so that position is what
+// orders two of the record's events recorded at the same instant. The timestamp
+// alone cannot order them: a coarse platform clock can stamp ordered transitions
+// with one instant, and the event ID text is not a substitute, because
+// "...:retracted" sorts before "...:superseded" although it was recorded later.
+type timelineEntry struct {
+	event TimelineEvent
+	order int
+}
+
+// timelineEntryBefore is the timeline's total event order: timestamp first, then
+// a deterministic tie-break for events that share one instant. Facts and
+// episodes live in maps, so their append order is not stable across runs; the
+// record ID groups a record's events, the per-record causal order sequences
+// them, and the event ID is the final fallback. Every component is derived from
+// the records rather than from map iteration, so the order does not depend on
+// which fact a map scan happened to visit first.
+func timelineEntryBefore(left, right timelineEntry, descending bool) bool {
+	if !left.event.Timestamp.Equal(right.event.Timestamp) {
+		if descending {
+			return left.event.Timestamp.After(right.event.Timestamp)
+		}
+		return left.event.Timestamp.Before(right.event.Timestamp)
+	}
+	if left.event.RecordID != right.event.RecordID {
+		return left.event.RecordID < right.event.RecordID
+	}
+	if left.order != right.order {
+		return left.order < right.order
+	}
+	return left.event.EventID < right.event.EventID
+}
+
 func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineResponse, error) {
 	_ = ctx
 	offset, err := decodeCursor(req.Page.Cursor)
@@ -251,14 +286,14 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
 
-	events := make([]TimelineEvent, 0)
+	entries := make([]timelineEntry, 0)
 	allowedEvents := req.EventTypes
 
-	addIfAllowed := func(event TimelineEvent) {
+	addIfAllowed := func(event TimelineEvent, order int) {
 		if len(allowedEvents) > 0 && !slices.Contains(allowedEvents, event.EventType) {
 			return
 		}
-		events = append(events, event)
+		entries = append(entries, timelineEntry{event: event, order: order})
 	}
 
 	for _, episode := range e.episodes {
@@ -276,7 +311,7 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 		if !timelineEventVisible(event, temporal) {
 			continue
 		}
-		addIfAllowed(event)
+		addIfAllowed(event, 0)
 	}
 	// Index the append-only revision log once instead of rescanning it for every
 	// fact, which would make timeline construction O(F x R).
@@ -294,26 +329,27 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 			Timestamp:  chooseTime(factRecord.ObservedAt, factRecord.CreatedAt),
 			Summary:    factRecord.Predicate,
 		}
+		recordOrder := 0
 		if timelineEventVisible(createdEvent, temporal) {
-			addIfAllowed(createdEvent)
+			addIfAllowed(createdEvent, recordOrder)
+			recordOrder++
 		}
 		for _, event := range e.factLifecycleEvents(*factRecord, revisionsByFact[factRecord.ID], temporal) {
 			if !timelineEventVisible(event, temporal) {
 				continue
 			}
-			addIfAllowed(event)
+			addIfAllowed(event, recordOrder)
+			recordOrder++
 		}
 	}
 
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].Timestamp.Equal(events[j].Timestamp) {
-			return events[i].EventID < events[j].EventID
-		}
-		if req.Descending {
-			return events[i].Timestamp.After(events[j].Timestamp)
-		}
-		return events[i].Timestamp.Before(events[j].Timestamp)
+	sort.Slice(entries, func(i, j int) bool {
+		return timelineEntryBefore(entries[i], entries[j], req.Descending)
 	})
+	events := make([]TimelineEvent, 0, len(entries))
+	for _, entry := range entries {
+		events = append(events, entry.event)
+	}
 
 	eventPage, nextCursor, err := paginate(events, offset, req.Page.Limit)
 	if err != nil {

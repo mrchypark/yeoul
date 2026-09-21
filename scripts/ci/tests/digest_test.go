@@ -27,7 +27,12 @@ func repoRoot(t *testing.T) string {
 func runVerifier(t *testing.T, env []string, args ...string) (string, error) {
 	t.Helper()
 	root := repoRoot(t)
-	cmd := exec.Command(filepath.Join(root, "scripts", "ci", "verify-runtime-digest.sh"), args...)
+	// The verifier is a shell script, which Windows cannot execute directly (it
+	// reports "%1 is not a valid Win32 application"). Running it through the
+	// shell keeps the same committed verifier under test on every OS instead of
+	// skipping the check where that OS cannot fork the script.
+	script := filepath.Join(root, "scripts", "ci", "verify-runtime-digest.sh")
+	cmd := exec.Command("sh", append([]string{script}, args...)...)
 	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err

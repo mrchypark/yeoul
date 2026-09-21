@@ -727,7 +727,17 @@ func (e *engine) RetractFact(ctx context.Context, factID string, reason string) 
 			return nil
 		}
 
+		// Ordered transitions of one fact must not share an instant. The
+		// historical cut is expressed as a time, so a supersession and the
+		// retraction that followed it are indistinguishable when both are stamped
+		// with the same instant: a prefix taken at the supersession would still
+		// expose the retraction. A POSIX wall clock resolves finely enough that
+		// successive commits read distinct times, but Windows can report one
+		// instant for both, so the stamp is carried past the transition it follows.
 		now := e.txNow()
+		if !now.After(fact.UpdatedAt) {
+			now = fact.UpdatedAt.Add(time.Nanosecond)
+		}
 		fact.Status = factStatusRetracted
 		fact.RetractedAt = now
 		fact.RetractionReason = reason
