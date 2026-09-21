@@ -225,8 +225,21 @@ Inspect or manage entities.
 
 #### Subcommands
 - `get`
-- `merge-preview` — list merge candidates from export payloads
+- `resolve` — look up an entity by identity tuple (namespace, type, canonical name, stable key); exits `3` when no entity matches
+- `merge-preview` — list merge candidates from export payloads; each candidate reports `drift_namespace`, `drift_type`, and `drift_name` when its sources differ from the target in namespace, type, or canonical name
 - `merge` — apply entity merge markers (`--target`, `--source IDS`, `--reason`)
+
+#### `resolve` flags
+- `--db PATH` required
+- `--type TYPE` required
+- `--namespace NS`
+- `--name NAME`
+- `--stable-key KEY`
+- `--space ID`
+- `--json`
+
+At least one of `--name` or `--stable-key` must be provided. Exit code `3` when no
+entity matches the identity tuple.
 
 ### `yeoul policy`
 Validate and inspect policy packs.
@@ -313,3 +326,7 @@ The CLI should support:
 - exit codes aligned with `error-model.md`
 
 Exit codes: `0` success, `2` usage/input/lifecycle/unsupported errors, `3` not-found errors, `4` query failures, `1` other failures.
+
+The `YEOUL_ENTITY_NEAR_DUPLICATE` code maps to exit `2`; it is a fail-closed guard
+that prevents creating a second entity when an existing entity already matches the
+identity under a different ID.

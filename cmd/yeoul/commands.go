@@ -129,6 +129,14 @@ type entityMergeCandidate struct {
 	Namespace     string   `json:"namespace,omitempty"`
 	Type          string   `json:"type"`
 	CanonicalName string   `json:"canonical_name"`
+	// DriftNamespace and DriftType mark a group that is mergeable only because
+	// the recorded identity drifted: the namespace is empty on one side, or the
+	// type differs only by case.
+	DriftNamespace bool `json:"drift_namespace,omitempty"`
+	DriftType      bool `json:"drift_type,omitempty"`
+	// DriftName marks a candidate whose canonical name differs exactly across
+	// the recorded drift, for example only by case.
+	DriftName bool `json:"drift_name,omitempty"`
 }
 
 type factDuplicateCandidate struct {

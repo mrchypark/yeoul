@@ -10,10 +10,9 @@ import (
 	"github.com/mrchypark/yeoul/pkg/yeoul"
 )
 
-// entityIdentityKey is a comparable identity for automatic duplicate detection.
-// Fields are compared exactly (no case folding or trimming) and the stable key
-// is part of the identity, so entities that share a display name but carry
-// different strong identities are never marked as duplicates.
+// entityIdentityKey is the exact identity used by automatic compaction. Keep
+// this grouping conservative: drift belongs to explicit merge-preview and
+// merge, never to destructive compaction.
 type entityIdentityKey struct {
 	SpaceID       string
 	Namespace     string
@@ -30,6 +29,46 @@ func entityIdentityOf(entity yeoul.EntityInput, stableKey string) entityIdentity
 		CanonicalName: entity.CanonicalName,
 		StableKey:     stableKey,
 	}
+}
+
+// partitionEntityDriftGroups splits one identity group into the subgroups that
+// may be merged together. Two populated namespaces that differ after folding
+// stay in separate subgroups, while a blank namespace joins the populated
+// subgroup so an empty-vs-populated pair is reported as one drifted candidate.
+func partitionEntityDriftGroups(entities []yeoul.EntityInput) [][]yeoul.EntityInput {
+	buckets := make(map[string][]yeoul.EntityInput)
+	blank := make([]yeoul.EntityInput, 0)
+	for _, entity := range entities {
+		folded := normalizeKey(entity.Namespace)
+		if folded == "" {
+			blank = append(blank, entity)
+			continue
+		}
+		buckets[folded] = append(buckets[folded], entity)
+	}
+	if len(buckets) == 0 {
+		if len(blank) == 0 {
+			return nil
+		}
+		return [][]yeoul.EntityInput{blank}
+	}
+	keys := make([]string, 0, len(buckets))
+	for key := range buckets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	subgroups := make([][]yeoul.EntityInput, 0, len(keys))
+	for _, key := range keys {
+		subgroup := buckets[key]
+		if len(buckets) == 1 {
+			subgroup = append(append([]yeoul.EntityInput{}, blank...), subgroup...)
+		}
+		subgroups = append(subgroups, subgroup)
+	}
+	if len(buckets) > 1 && len(blank) > 0 {
+		subgroups = append(subgroups, blank)
+	}
+	return subgroups
 }
 
 // entityStableKey returns the stored stable key and whether the entity is
@@ -72,6 +111,9 @@ func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
 		if len(entities) < 2 {
 			continue
 		}
+		if len(entities) < 2 {
+			continue
+		}
 		sort.Slice(entities, func(i, j int) bool { return entities[i].ID < entities[j].ID })
 		sourceIDs := make([]string, 0, len(entities)-1)
 		for _, entity := range entities[1:] {
@@ -86,6 +128,117 @@ func buildEntityMergeCandidates(payload *exportFile) []entityMergeCandidate {
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].TargetID < candidates[j].TargetID })
+	return candidates
+}
+
+// entityDriftGroupKey groups entities for the user-facing drift preview. The
+// stable key is deliberately absent: a keyed entity and its unkeyed drift form
+// must land in the same group even though the strict compaction key would keep
+// them apart. The type and canonical name are folded so a case-only difference
+// groups together.
+type entityDriftGroupKey struct {
+	SpaceID       string
+	Type          string
+	CanonicalName string
+}
+
+// buildEntityDriftCandidates reports the identity drift that the strict admin
+// compaction path (buildEntityMergeCandidates) cannot act on: a keyed entity
+// paired with its unkeyed drift form, and a stable-key conflict that still
+// shares a display identity. Admin compaction keeps its strict grouping; only
+// entity merge-preview reads this wider view.
+func buildEntityDriftCandidates(payload *exportFile) []entityMergeCandidate {
+	groups := make(map[entityDriftGroupKey][]yeoul.EntityInput)
+	for _, entity := range payload.Entities {
+		if duplicateOf(entity.Metadata) != "" {
+			continue
+		}
+		if _, eligible := entityStableKey(entity.Metadata); !eligible {
+			continue
+		}
+		key := entityDriftGroupKey{
+			SpaceID:       entity.SpaceID,
+			Type:          normalizeKey(entity.Type),
+			CanonicalName: normalizeKey(entity.CanonicalName),
+		}
+		groups[key] = append(groups[key], entity)
+	}
+	candidates := make([]entityMergeCandidate, 0)
+	for _, entities := range groups {
+		for _, subgroup := range partitionEntityDriftGroups(entities) {
+			candidates = append(candidates, entityDriftCandidatesForSubgroup(subgroup)...)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].TargetID < candidates[j].TargetID })
+	return candidates
+}
+
+// entityDriftCandidatesForSubgroup buckets one namespace subgroup by exact
+// stable key and pairs a lone keyed bucket with the unkeyed bucket. Two or more
+// distinct keys stay apart, because a conflicting strong key proves distinct
+// identity. Buckets with fewer than two entities are dropped.
+func entityDriftCandidatesForSubgroup(subgroup []yeoul.EntityInput) []entityMergeCandidate {
+	keyed := make(map[string][]yeoul.EntityInput)
+	unkeyed := make([]yeoul.EntityInput, 0, len(subgroup))
+	for _, entity := range subgroup {
+		key, _ := entityStableKey(entity.Metadata)
+		if key == "" {
+			unkeyed = append(unkeyed, entity)
+			continue
+		}
+		keyed[key] = append(keyed[key], entity)
+	}
+	keys := make([]string, 0, len(keyed))
+	for key := range keyed {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	buckets := make([][]yeoul.EntityInput, 0, len(keys)+1)
+	if len(keys) == 1 {
+		// Exactly one keyed identity, so its unkeyed drift form joins it in one
+		// candidate rather than standing alone.
+		buckets = append(buckets, append(append([]yeoul.EntityInput{}, keyed[keys[0]]...), unkeyed...))
+	} else {
+		for _, key := range keys {
+			buckets = append(buckets, keyed[key])
+		}
+		buckets = append(buckets, unkeyed)
+	}
+
+	candidates := make([]entityMergeCandidate, 0, len(buckets))
+	for _, bucket := range buckets {
+		if len(bucket) < 2 {
+			continue
+		}
+		sort.Slice(bucket, func(i, j int) bool { return bucket[i].ID < bucket[j].ID })
+		target := bucket[0]
+		sourceIDs := make([]string, 0, len(bucket)-1)
+		driftNamespace := false
+		driftType := false
+		driftName := false
+		for _, entity := range bucket[1:] {
+			sourceIDs = append(sourceIDs, entity.ID)
+			if entity.Namespace != target.Namespace {
+				driftNamespace = true
+			}
+			if entity.Type != target.Type {
+				driftType = true
+			}
+			if entity.CanonicalName != target.CanonicalName {
+				driftName = true
+			}
+		}
+		candidates = append(candidates, entityMergeCandidate{
+			TargetID:       target.ID,
+			SourceIDs:      sourceIDs,
+			Namespace:      target.Namespace,
+			Type:           target.Type,
+			CanonicalName:  target.CanonicalName,
+			DriftNamespace: driftNamespace,
+			DriftType:      driftType,
+			DriftName:      driftName,
+		})
+	}
 	return candidates
 }
 
@@ -264,6 +417,73 @@ func duplicateOf(metadata map[string]any) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+// entityNamesOverlap reports whether two entities agree on their display
+// identity: the canonical name or any alias, compared case-insensitively
+// because a case-only display-name difference is recorded drift. A conflicting
+// stable key still proves distinct identity even when the names agree, so two
+// populated-but-different keys never overlap; an equal key confirms the
+// overlap.
+func entityNamesOverlap(left, right *yeoul.Entity) bool {
+	leftKey := yeoulStableKey(left.Metadata)
+	rightKey := yeoulStableKey(right.Metadata)
+	if leftKey != "" && rightKey != "" {
+		return leftKey == rightKey
+	}
+	names := make(map[string]struct{}, len(left.Aliases)+1)
+	names[normalizeKey(left.CanonicalName)] = struct{}{}
+	for _, alias := range left.Aliases {
+		names[normalizeKey(alias)] = struct{}{}
+	}
+	if _, ok := names[normalizeKey(right.CanonicalName)]; ok {
+		return true
+	}
+	for _, alias := range right.Aliases {
+		if _, ok := names[normalizeKey(alias)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// yeoulStableKey reads the stored stable key exactly as written. A non-string
+// legacy value carries no comparable identity, so it reads as blank.
+func yeoulStableKey(metadata map[string]any) string {
+	value, ok := metadata["stable_key"].(string)
+	if !ok {
+		return ""
+	}
+	return value
+}
+
+// mergeDriftSummary renders the drift a target absorbed from its sources for
+// one field, as "target value -> source value". A single drift is a string and
+// several are a string list, so the summary stays readable in JSON output. It
+// returns nil when the field did not drift at all.
+func mergeDriftSummary(target *yeoul.Entity, sources []*yeoul.Entity, field string) any {
+	values := make([]string, 0, len(sources))
+	for _, source := range sources {
+		var targetValue, sourceValue string
+		switch field {
+		case "merge_drift_namespace":
+			targetValue, sourceValue = target.Namespace, source.Namespace
+		case "merge_drift_type":
+			targetValue, sourceValue = target.Type, source.Type
+		}
+		if targetValue == sourceValue {
+			continue
+		}
+		values = append(values, fmt.Sprintf("%s -> %s", targetValue, sourceValue))
+	}
+	switch len(values) {
+	case 0:
+		return nil
+	case 1:
+		return values[0]
+	default:
+		return values
+	}
 }
 
 func mergeMaps(base, extra map[string]any) map[string]any {

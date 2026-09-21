@@ -86,6 +86,46 @@ func TestCLIEntityMergeRejectsAlreadyDuplicateTarget(t *testing.T) {
 	}
 }
 
+func TestCLIEntityMergeRejectsAlreadyMarkedSourceWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "merge-marked-source.ltdb")
+	ingestPath := filepath.Join(tmpDir, "merge-marked-source.json")
+	payload := `{"entities":[
+  {"id":"project:a","type":"Project","canonical_name":"Yeoul"},
+  {"id":"project:b","type":"Project","canonical_name":"Yeoul"},
+  {"id":"project:c","type":"Project","canonical_name":"Yeoul"}
+]}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+	runCLI := func(args ...string) (string, error) {
+		var stdout, stderr strings.Builder
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
+	}
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if _, err := runCLI("entity", "merge", "--confirm", "--db", dbPath, "--target", "project:a", "--source", "project:b", "--reason", "first merge"); err != nil {
+		t.Fatalf("first merge: %v", err)
+	}
+	beforeB, _ := runCLI("entity", "get", "--db", dbPath, "--id", "project:b")
+	beforeC, _ := runCLI("entity", "get", "--db", dbPath, "--id", "project:c")
+	_, err := runCLI("entity", "merge", "--confirm", "--db", dbPath, "--target", "project:c", "--source", "project:b", "--reason", "redirect overwrite")
+	if err == nil || !strings.Contains(err.Error(), "already a duplicate") {
+		t.Fatalf("expected marked-source rejection, got %v", err)
+	}
+	afterB, _ := runCLI("entity", "get", "--db", dbPath, "--id", "project:b")
+	afterC, _ := runCLI("entity", "get", "--db", dbPath, "--id", "project:c")
+	if beforeB != afterB || beforeC != afterC {
+		t.Fatalf("rejected redirect overwrite mutated entities:\nbefore=%s%safter=%s%s", beforeB, beforeC, afterB, afterC)
+	}
+}
+
 func TestCLIEntityMergeRejectsIncompatibleScope(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -149,6 +189,42 @@ func TestCLIEntityMergeRejectsIncompatibleScope(t *testing.T) {
 	}
 	if strings.Contains(afterSource, `"duplicate_of"`) {
 		t.Fatalf("rejected merge marked source as a duplicate, got %q", afterSource)
+	}
+}
+
+func TestCLIEntityMergeRejectsConflictingStableKeysWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "merge-stable-key-conflict.ltdb")
+	ingestPath := filepath.Join(tmpDir, "merge-stable-key-conflict.json")
+	payload := `{"entities":[
+  {"id":"person:alpha","type":"Person","canonical_name":"Alex","stable_key":"alpha"},
+  {"id":"person:beta","type":"Person","canonical_name":"Alex","stable_key":"beta"}
+]}`
+	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write ingest payload: %v", err)
+	}
+	runCLI := func(args ...string) (string, error) {
+		var stdout, stderr strings.Builder
+		err := run(ctx, args, &stdout, &stderr)
+		return stdout.String(), err
+	}
+	if _, err := runCLI("init", "--db", dbPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := runCLI("ingest", "json", "--db", dbPath, "--file", ingestPath); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	beforeTarget, _ := runCLI("entity", "get", "--db", dbPath, "--id", "person:alpha")
+	beforeSource, _ := runCLI("entity", "get", "--db", dbPath, "--id", "person:beta")
+	_, err := runCLI("entity", "merge", "--confirm", "--db", dbPath, "--target", "person:alpha", "--source", "person:beta", "--reason", "conflicting keys")
+	if err == nil || !strings.Contains(err.Error(), "stable_key") {
+		t.Fatalf("expected stable-key conflict, got %v", err)
+	}
+	afterTarget, _ := runCLI("entity", "get", "--db", dbPath, "--id", "person:alpha")
+	afterSource, _ := runCLI("entity", "get", "--db", dbPath, "--id", "person:beta")
+	if beforeTarget != afterTarget || beforeSource != afterSource {
+		t.Fatalf("rejected stable-key merge mutated entities:\nbefore=%s%safter=%s%s", beforeTarget, beforeSource, afterTarget, afterSource)
 	}
 }
 

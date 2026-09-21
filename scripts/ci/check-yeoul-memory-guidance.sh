@@ -62,6 +62,11 @@ require_text agent-pack/integrations/README.md '/absolute/path/to/loaded/yeoul-m
 require_text scripts/ci/smoke-yeoul-memory-guidance.sh 'YEOUL_INSTALLED_SKILL_PATH'
 require_text docs/10-examples/quickstart.md 'Run these commands from the repository root'
 require_text evals/yeoul-memory/skillopt-entity-promotion.md 'Secrets, credentials, and private keys are always omitted; sensitive personal or customer data requires explicit authorization for a defined scope and must be minimized or redacted.'
+require_text agent-pack/SKILL.md 'yeoul entity resolve'
+require_text agent-pack/SKILL.md 'YEOUL_ENTITY_NEAR_DUPLICATE'
+require_text agent-pack/SKILL.md 'fail closed'
+require_text agent-pack/agent_instructions.md 'yeoul entity resolve'
+require_text agent-pack/agent_instructions.md 'YEOUL_ENTITY_NEAR_DUPLICATE'
 
 forbid_text README.md '~/.codex/skills/yeoul-memory'
 forbid_text agent-pack/integrations/README.md '~/.codex/skills/yeoul-memory'

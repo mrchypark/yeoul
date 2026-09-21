@@ -261,10 +261,32 @@ func applyEntityMergeCandidate(ctx context.Context, eng yeoul.Engine, candidate 
 	if err != nil {
 		return 0, err
 	}
-	targetMeta := mergeMaps(target.Metadata, map[string]any{
+	sources := make([]*yeoul.Entity, 0, len(candidate.SourceIDs))
+	for _, sourceID := range candidate.SourceIDs {
+		source, err := eng.GetEntity(ctx, sourceID)
+		if err != nil {
+			return 0, err
+		}
+		sources = append(sources, source)
+	}
+	// A candidate that only grouped through recorded drift records the drift on
+	// both sides, so the reconciliation is inspectable from the target and from
+	// each absorbed duplicate.
+	targetDrift := map[string]any{}
+	if candidate.DriftNamespace {
+		if drift := mergeDriftSummary(target, sources, "merge_drift_namespace"); drift != nil {
+			targetDrift["merge_drift_namespace"] = drift
+		}
+	}
+	if candidate.DriftType {
+		if drift := mergeDriftSummary(target, sources, "merge_drift_type"); drift != nil {
+			targetDrift["merge_drift_type"] = drift
+		}
+	}
+	targetMeta := mergeMaps(target.Metadata, mergeMaps(map[string]any{
 		"compaction_entity_duplicates": mergeStringSlices(anyStrings(target.Metadata["compaction_entity_duplicates"]), candidate.SourceIDs),
 		"compaction_marked":            marked,
-	})
+	}, targetDrift))
 	if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
 		ID:            target.ID,
 		SpaceID:       target.SpaceID,
@@ -277,10 +299,13 @@ func applyEntityMergeCandidate(ctx context.Context, eng yeoul.Engine, candidate 
 		return 0, err
 	}
 	count := 0
-	for _, sourceID := range candidate.SourceIDs {
-		source, err := eng.GetEntity(ctx, sourceID)
-		if err != nil {
-			return count, err
+	for _, source := range sources {
+		sourceDrift := map[string]any{}
+		if candidate.DriftNamespace && source.Namespace != target.Namespace {
+			sourceDrift["merge_drift_namespace"] = fmt.Sprintf("%s -> %s", target.Namespace, source.Namespace)
+		}
+		if candidate.DriftType && source.Type != target.Type {
+			sourceDrift["merge_drift_type"] = fmt.Sprintf("%s -> %s", target.Type, source.Type)
 		}
 		if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
 			ID:            source.ID,
@@ -289,10 +314,10 @@ func applyEntityMergeCandidate(ctx context.Context, eng yeoul.Engine, candidate 
 			Type:          source.Type,
 			CanonicalName: source.CanonicalName,
 			Aliases:       source.Aliases,
-			Metadata: mergeMaps(source.Metadata, map[string]any{
+			Metadata: mergeMaps(source.Metadata, mergeMaps(map[string]any{
 				"duplicate_of":      target.ID,
 				"compaction_marked": marked,
-			}),
+			}, sourceDrift)),
 		}); err != nil {
 			return count, err
 		}

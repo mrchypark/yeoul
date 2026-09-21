@@ -30,6 +30,12 @@ func legacyEntityID(namespace, entityType, canonical string) string {
 	return readableIdentitySlug(namespace, entityType, canonical)
 }
 
+// LegacyEntityID returns the pre-fingerprint entity ID used for compatibility
+// reuse. Callers must still verify the full identity tuple and space.
+func LegacyEntityID(namespace, entityType, canonical string) string {
+	return legacyEntityID(namespace, entityType, canonical)
+}
+
 // legacySourceID is the source ID format written by releases before the
 // fingerprint suffix (space-qualified readable slug) and stays a checked
 // compatibility lookup target.

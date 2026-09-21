@@ -18,6 +18,80 @@ func entityMarkedDuplicate(entity Entity) bool {
 	return strings.TrimSpace(fmt.Sprint(value)) != ""
 }
 
+// canonicalEntityIDLocked follows the current duplicate chain. Historical
+// callers must use canonicalEntityIDAtLocked so a later merge is not visible
+// before its transaction time.
+func (e *engine) canonicalEntityIDLocked(id string) string {
+	return e.canonicalEntityIDAtLocked(id, TemporalFilter{}, nil)
+}
+
+// canonicalEntityIDAtLocked resolves a duplicate chain in the entity version
+// visible to filter. Any dangling, cross-space, invalid, cyclic, or bounded
+// chain fails closed to the original raw ID; returning a partial endpoint could
+// expose facts through an untrusted redirect.
+func (e *engine) canonicalEntityIDAtLocked(id string, filter TemporalFilter, index *temporalIndex) string {
+	original := id
+	if strings.TrimSpace(id) == "" {
+		return id
+	}
+	if index == nil {
+		index = newTemporalIndex(e)
+	}
+	current := id
+	visited := map[string]struct{}{current: {}}
+	const maxHops = 64
+	for hop := 0; hop < maxHops; hop++ {
+		stored, ok := e.entities[current]
+		if !ok {
+			return original
+		}
+		entity := e.entityVersionAt(stored, filter, index)
+		if entity == nil {
+			return original
+		}
+		rawNext, marked := entity.Metadata["duplicate_of"]
+		if !marked {
+			return current
+		}
+		next, ok := rawNext.(string)
+		if !ok || strings.TrimSpace(next) == "" || next == current {
+			return original
+		}
+		targetStored, ok := e.entities[next]
+		if !ok {
+			return original
+		}
+		target := e.entityVersionAt(targetStored, filter, index)
+		if target == nil || normalizeSpaceID(target.SpaceID) != normalizeSpaceID(entity.SpaceID) {
+			return original
+		}
+		if _, seen := visited[next]; seen {
+			return original
+		}
+		visited[next] = struct{}{}
+		current = next
+	}
+	return original
+}
+
+// canonicalEntityIDsLocked maps every id through canonicalEntityIDLocked so a
+// caller-supplied anchor set and a stored fact endpoint are compared in the
+// same canonical namespace.
+func (e *engine) canonicalEntityIDsLocked(ids []string) []string {
+	return e.canonicalEntityIDsAtLocked(ids, TemporalFilter{}, nil)
+}
+
+func (e *engine) canonicalEntityIDsAtLocked(ids []string, filter TemporalFilter, index *temporalIndex) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, e.canonicalEntityIDAtLocked(id, filter, index))
+	}
+	return out
+}
+
 func factProvenanceMeta(fact Fact) map[string]any {
 	meta := map[string]any{
 		"status": fact.Status,

@@ -28,11 +28,45 @@ type Engine interface {
 	Neighborhood(ctx context.Context, req NeighborhoodRequest) (*NeighborhoodResponse, error)
 	Timeline(ctx context.Context, req TimelineRequest) (*TimelineResponse, error)
 	Provenance(ctx context.Context, req ProvenanceRequest) (*ProvenanceResponse, error)
+	ResolveEntity(ctx context.Context, req EntityResolveRequest) (*EntityResolveResponse, error)
 
 	GetEpisode(ctx context.Context, id string) (*Episode, error)
 	GetEntity(ctx context.Context, id string) (*Entity, error)
 	GetFact(ctx context.Context, id string) (*Fact, error)
 	GetSource(ctx context.Context, id string) (*Source, error)
+}
+
+// EntityResolveRequest looks an entity up by identity tuple instead of by ID.
+// The ID itself is a hash of the exact tuple, so a caller that only knows the
+// identity cannot compute the canonical ID when the stored namespace or type
+// drifted (issue #139).
+type EntityResolveRequest struct {
+	SpaceID       string `json:"space_id,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	Type          string `json:"type"`
+	CanonicalName string `json:"canonical_name,omitempty"`
+	StableKey     string `json:"stable_key,omitempty"`
+
+	// IncludeKeyDrift widens the identity rule for the upsert near-duplicate
+	// guard: a stored entity that carries a stable key also matches a request
+	// that carries none (and the reverse) when the display names overlap. It
+	// stays off for ordinary identity resolution, where a stable key is a
+	// stronger identity claim than a display name.
+	IncludeKeyDrift bool `json:"include_key_drift,omitempty"`
+	// IncludeMarkedDuplicates is reserved for mutation guards that must detect
+	// an existing merge marker instead of treating it as absent.
+	IncludeMarkedDuplicates bool `json:"include_marked_duplicates,omitempty"`
+}
+
+// EntityResolveResponse reports every entity that matches an identity tuple.
+// Matches is never reduced to a single winner: a caller that sees more than one
+// match has an ambiguity to resolve, not a canonical entity to guess at.
+type EntityResolveResponse struct {
+	// Matches are all matching entities, ordered by ID.
+	Matches []Entity `json:"matches"`
+	// Drifted is the subset of Matches that only matched after tolerating
+	// namespace/type or display-name drift.
+	Drifted []Entity `json:"drifted,omitempty"`
 }
 
 // Snapshotter is implemented by engines that can expose a consistent database snapshot.

@@ -45,6 +45,14 @@ func TestBuildEntityMergeCandidatesRespectsStableKeys(t *testing.T) {
 			candidates: 1,
 		},
 		{
+			name: "keyed name is not an unkeyed display-name duplicate",
+			entities: []yeoul.EntityInput{
+				entity("person:a", "Alex", map[string]any{"stable_key": "SAM"}),
+				entity("person:b", "SAM", nil),
+			},
+			candidates: 0,
+		},
+		{
 			name: "case-different names stay distinct",
 			entities: []yeoul.EntityInput{
 				entity("person:a", "Alex", nil),
