@@ -3057,6 +3057,144 @@ func TestTimelineRetractionKeepsEarlierSupersession(t *testing.T) {
 	}
 }
 
+// TestTimelineRetractionOrderingSurvivesOneInstant pins the retraction's
+// ordering when the clock cannot separate the transitions. A coarse platform
+// clock (Windows advances roughly every 15ms) reports one instant for a
+// supersession and the retraction that follows it, and the timeline expresses
+// the historical cut as a time. If the two transitions share the instant, an
+// as_of prefix taken at the supersession still exposes the retraction, so the
+// retraction has to be stamped strictly after the transition it follows.
+func TestTimelineRetractionOrderingSurvivesOneInstant(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	// One instant for every clock read: no transition can be separated by the
+	// clock alone, which is what a coarse Windows clock reports.
+	frozen := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	eng.(*engine).now = func() time.Time { return frozen }
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-one-instant", Kind: "note", Content: "one instant", Source: SourceInput{Kind: "note", ExternalRef: "one-instant"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:one-instant", Type: "Thing", CanonicalName: "One Instant"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	factA, err := eng.AssertFact(ctx, FactInput{ID: "fact:one-instant", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "a", SupportingEpisodeIDs: []string{episode.EpisodeID}})
+	if err != nil {
+		t.Fatalf("assert a: %v", err)
+	}
+	if _, err := eng.SupersedeFact(ctx, factA.ID, FactInput{ID: "fact:one-instant-b", Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: "b", SupportingEpisodeIDs: []string{episode.EpisodeID}}, "replaced"); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if _, err := eng.RetractFact(ctx, factA.ID, "reverted"); err != nil {
+		t.Fatalf("retract: %v", err)
+	}
+
+	timeline, err := eng.Timeline(ctx, TimelineRequest{AnchorIDs: []string{entity.ID}})
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	var supersededAt, retractedAt time.Time
+	for _, event := range timeline.Events {
+		switch event.EventID {
+		case "evt:" + factA.ID + ":superseded":
+			supersededAt = event.Timestamp
+		case "evt:" + factA.ID + ":retracted":
+			retractedAt = event.Timestamp
+		}
+	}
+	if supersededAt.IsZero() || retractedAt.IsZero() {
+		t.Fatalf("expected both lifecycle events, got %#v", timeline.Events)
+	}
+	if !retractedAt.After(supersededAt) {
+		t.Fatalf("expected the retraction after the supersession even on one instant, got superseded=%s retracted=%s", supersededAt, retractedAt)
+	}
+
+	// The same cut as the Windows failure: the prefix taken at the supersession
+	// keeps the supersession and drops the retraction that came after it.
+	asOf := supersededAt
+	prefix, err := eng.Timeline(ctx, TimelineRequest{AnchorIDs: []string{entity.ID}, Temporal: TemporalFilter{AsOf: &asOf}})
+	if err != nil {
+		t.Fatalf("timeline as_of: %v", err)
+	}
+	if !timelineHasEvent(prefix.Events, "evt:"+factA.ID+":superseded") || timelineHasEvent(prefix.Events, "evt:"+factA.ID+":retracted") {
+		t.Fatalf("expected as_of prefix to keep supersession and drop retraction, got %#v", prefix.Events)
+	}
+}
+
+// TestTimelineOrdersEventsSharingOneInstantByRecord pins the tie-break for
+// events recorded at the same instant across different records. Facts live in a
+// map, so without a deterministic tie-break the page order of two facts' events
+// can differ between runs; a coarse platform clock (Windows advances roughly
+// every 15ms) makes every event of one transaction share that instant, so the
+// tie-break is the only thing ordering them. The order is asserted through the
+// page limit: it can only be deterministic if the events before the cut are.
+func TestTimelineOrdersEventsSharingOneInstantByRecord(t *testing.T) {
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{InMemory: true})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	// Every event of this transaction shares one instant, as a coarse platform
+	// clock reports.
+	frozen := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	eng.(*engine).now = func() time.Time { return frozen }
+
+	episode, err := eng.IngestEpisode(ctx, EpisodeInput{ID: "ep-tie", Kind: "note", Content: "tie", Source: SourceInput{Kind: "note", ExternalRef: "tie"}})
+	if err != nil {
+		t.Fatalf("ingest episode: %v", err)
+	}
+	entity, err := eng.UpsertEntity(ctx, EntityInput{ID: "entity:tie", Type: "Thing", CanonicalName: "Tie"})
+	if err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	for _, id := range []string{"fact:tie:a", "fact:tie:b", "fact:tie:c"} {
+		if _, err := eng.AssertFact(ctx, FactInput{ID: id, Predicate: "HAS_STATE", SubjectID: entity.ID, ValueText: id, SupportingEpisodeIDs: []string{episode.EpisodeID}}); err != nil {
+			t.Fatalf("assert %s: %v", id, err)
+		}
+	}
+
+	request := TimelineRequest{AnchorIDs: []string{entity.ID}}
+	first, err := eng.Timeline(ctx, request)
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	// Rebuild the engine over the same records to prove the order is derived
+	// from the records and not from the map iteration of one process.
+	second, err := eng.Timeline(ctx, request)
+	if err != nil {
+		t.Fatalf("timeline again: %v", err)
+	}
+	if len(first.Events) != len(second.Events) {
+		t.Fatalf("timeline length changed between builds: %d then %d", len(first.Events), len(second.Events))
+	}
+	for i := range first.Events {
+		if first.Events[i].EventID != second.Events[i].EventID {
+			t.Fatalf("timeline order is not deterministic at %d: %s then %s", i, first.Events[i].EventID, second.Events[i].EventID)
+		}
+	}
+	// The anchored facts were all recorded at one instant, so they are ordered
+	// by record ID: a, then b, then c. The episode is not anchored to the
+	// entity, so only the fact events are in scope.
+	recordIDs := make([]string, 0, len(first.Events))
+	for _, event := range first.Events {
+		recordIDs = append(recordIDs, event.RecordID)
+	}
+	want := []string{"fact:tie:a", "fact:tie:b", "fact:tie:c"}
+	if len(recordIDs) != len(want) {
+		t.Fatalf("expected one event per record, got %#v", recordIDs)
+	}
+	for i := range want {
+		if recordIDs[i] != want[i] {
+			t.Fatalf("expected records ordered by id %#v, got %#v", want, recordIDs)
+		}
+	}
+}
+
 // lifecycleRevisionAllocationBudget bounds the bytes a timeline over a fact
 // revision log may allocate per known revision. A single indexed pass copies
 // each revision once (one FactRevision) and derives a couple of small events,
