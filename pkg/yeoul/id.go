@@ -97,6 +97,40 @@ func entityIdentityMatches(entity Entity, input EntityInput) bool {
 	return entity.CanonicalName == input.CanonicalName
 }
 
+// EntityInputsMatchIdentity applies the same tolerant identity rules used by
+// entity resolution to two pending automatic entity inputs. It is used by
+// callers that must validate a batch before either input exists in storage.
+func EntityInputsMatchIdentity(left, right EntityInput) bool {
+	if normalizeSpaceID(left.SpaceID) != normalizeSpaceID(right.SpaceID) {
+		return false
+	}
+	match := func(stored Entity, request EntityInput) bool {
+		matched, _ := entityMatchesResolveRequest(stored, EntityResolveRequest{
+			Namespace:       request.Namespace,
+			Type:            request.Type,
+			CanonicalName:   request.CanonicalName,
+			StableKey:       request.StableKey,
+			IncludeKeyDrift: true,
+		})
+		return matched
+	}
+	return match(entityFromInput(left), right) || match(entityFromInput(right), left)
+}
+
+func entityFromInput(input EntityInput) Entity {
+	metadata := map[string]any{}
+	if strings.TrimSpace(input.StableKey) != "" {
+		metadata["stable_key"] = input.StableKey
+	}
+	return Entity{
+		Namespace:     input.Namespace,
+		Type:          input.Type,
+		CanonicalName: input.CanonicalName,
+		Aliases:       input.Aliases,
+		Metadata:      metadata,
+	}
+}
+
 func legacyEntityIdentityMatches(entity Entity, input EntityInput) bool {
 	if entity.Namespace != input.Namespace || entity.Type != input.Type {
 		return false

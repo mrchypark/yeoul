@@ -320,6 +320,11 @@ Usage:
 	}
 
 	batch := yeoul.BatchInput{}
+	pendingAutomatic := make([]struct {
+		role      string
+		input     yeoul.EntityInput
+		derivedID string
+	}, 0, 2)
 	if upsertSubject {
 		subjectInput := yeoul.EntityInput{
 			ID:            subjectID,
@@ -334,6 +339,11 @@ Usage:
 				_ = closeEngine(ctx, eng)
 				return guardErr
 			}
+			pendingAutomatic = append(pendingAutomatic, struct {
+				role      string
+				input     yeoul.EntityInput
+				derivedID string
+			}{role: "subject", input: subjectInput, derivedID: subjectID})
 		}
 		batch.Entities = append(batch.Entities, subjectInput)
 	}
@@ -351,8 +361,31 @@ Usage:
 				_ = closeEngine(ctx, eng)
 				return guardErr
 			}
+			pendingAutomatic = append(pendingAutomatic, struct {
+				role      string
+				input     yeoul.EntityInput
+				derivedID string
+			}{role: "object", input: objectInput, derivedID: objectID})
 		}
 		batch.Entities = append(batch.Entities, objectInput)
+	}
+	for i := 0; i < len(pendingAutomatic); i++ {
+		for j := i + 1; j < len(pendingAutomatic); j++ {
+			left, right := pendingAutomatic[i], pendingAutomatic[j]
+			if left.derivedID == right.derivedID || !yeoul.EntityInputsMatchIdentity(left.input, right.input) {
+				continue
+			}
+			_ = closeEngine(ctx, eng)
+			return &yeoul.Error{
+				Code:    yeoul.ErrEntityNearDuplicate,
+				Message: "pending automatic entities match the same identity but derive different ids; use an explicit canonical id",
+				Details: map[string]any{
+					"roles":       []string{left.role, right.role},
+					"derived_ids": []string{left.derivedID, right.derivedID},
+				},
+				Timestamp: time.Now().UTC(),
+			}
+		}
 	}
 
 	factInput := yeoul.FactInput{

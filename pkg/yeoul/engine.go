@@ -875,10 +875,6 @@ func (e *engine) ResolveEntity(ctx context.Context, req EntityResolveRequest) (*
 	defer e.mu.RUnlock()
 
 	spaceID := normalizeSpaceID(req.SpaceID)
-	fold := func(value string) string {
-		return strings.ToLower(strings.TrimSpace(value))
-	}
-
 	type resolution struct {
 		entity Entity
 		drift  bool
@@ -889,62 +885,9 @@ func (e *engine) ResolveEntity(ctx context.Context, req EntityResolveRequest) (*
 			continue
 		}
 
-		// Type: an exact match is a clean match; a folded-only match is drift.
-		drift := false
-		if entity.Type != req.Type {
-			if fold(entity.Type) != fold(req.Type) {
-				continue
-			}
-			drift = true
-		}
-
-		// Namespace: two populated namespaces must agree after folding, and a
-		// blank on exactly one side is tolerated drift.
-		storedNamespaceBlank := strings.TrimSpace(entity.Namespace) == ""
-		requestedNamespaceBlank := strings.TrimSpace(req.Namespace) == ""
-		switch {
-		case storedNamespaceBlank && requestedNamespaceBlank:
-		case storedNamespaceBlank || requestedNamespaceBlank:
-			drift = true
-		case entity.Namespace != req.Namespace:
-			if fold(entity.Namespace) != fold(req.Namespace) {
-				continue
-			}
-			drift = true
-		}
-
-		// Identity: a strong key on both sides is compared exactly and the
-		// display name is not consulted. When exactly one side carries a key,
-		// only the near-duplicate guard (IncludeKeyDrift) widens the rule, and
-		// then only on overlapping display names. With no key on either side
-		// the display name decides, and a folded match (canonical name or
-		// alias) is reported as drift so a caller sees the ambiguity instead
-		// of silently reusing or duplicating the entity.
-		storedKey := metadataStableKey(entity.Metadata)
-		requestKeyed := strings.TrimSpace(req.StableKey) != ""
-		storedKeyed := strings.TrimSpace(storedKey) != ""
-		switch {
-		case requestKeyed && storedKeyed:
-			if req.StableKey != storedKey {
-				continue
-			}
-		case requestKeyed != storedKeyed:
-			if !req.IncludeKeyDrift || !entityDisplayNameMatches(entity, req.CanonicalName, fold) {
-				continue
-			}
-			drift = true
-		default:
-			switch {
-			case entity.CanonicalName == req.CanonicalName:
-			case fold(entity.CanonicalName) == fold(req.CanonicalName):
-				drift = true
-			case slices.Contains(entity.Aliases, req.CanonicalName):
-				drift = true
-			case entityDisplayNameMatches(entity, req.CanonicalName, fold):
-				drift = true
-			default:
-				continue
-			}
+		matched, drift := entityMatchesResolveRequest(entity, req)
+		if !matched {
+			continue
 		}
 
 		resolutions = append(resolutions, resolution{entity: entity, drift: drift})
@@ -973,6 +916,56 @@ func (e *engine) ResolveEntity(ctx context.Context, req EntityResolveRequest) (*
 		}
 	}
 	return response, nil
+}
+
+func entityMatchesResolveRequest(entity Entity, req EntityResolveRequest) (bool, bool) {
+	fold := func(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+	drift := false
+	if entity.Type != req.Type {
+		if fold(entity.Type) != fold(req.Type) {
+			return false, false
+		}
+		drift = true
+	}
+	storedNamespaceBlank := strings.TrimSpace(entity.Namespace) == ""
+	requestedNamespaceBlank := strings.TrimSpace(req.Namespace) == ""
+	switch {
+	case storedNamespaceBlank && requestedNamespaceBlank:
+	case storedNamespaceBlank || requestedNamespaceBlank:
+		drift = true
+	case entity.Namespace != req.Namespace:
+		if fold(entity.Namespace) != fold(req.Namespace) {
+			return false, false
+		}
+		drift = true
+	}
+	storedKey := metadataStableKey(entity.Metadata)
+	requestKeyed := strings.TrimSpace(req.StableKey) != ""
+	storedKeyed := strings.TrimSpace(storedKey) != ""
+	switch {
+	case requestKeyed && storedKeyed:
+		if req.StableKey != storedKey {
+			return false, false
+		}
+	case requestKeyed != storedKeyed:
+		if !req.IncludeKeyDrift || !entityDisplayNameMatches(entity, req.CanonicalName, fold) {
+			return false, false
+		}
+		drift = true
+	default:
+		switch {
+		case entity.CanonicalName == req.CanonicalName:
+		case fold(entity.CanonicalName) == fold(req.CanonicalName):
+			drift = true
+		case slices.Contains(entity.Aliases, req.CanonicalName):
+			drift = true
+		case entityDisplayNameMatches(entity, req.CanonicalName, fold):
+			drift = true
+		default:
+			return false, false
+		}
+	}
+	return true, drift
 }
 
 // entityDisplayNameMatches reports whether a request display name overlaps the
