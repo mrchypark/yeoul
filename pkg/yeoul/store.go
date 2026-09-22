@@ -12,6 +12,7 @@ import (
 // driver cannot read. The wrapped sentinel lets callers distinguish a
 // conversion the caller declined from an unrelated open failure.
 var errMigrationRequired = errors.New("database migration is required")
+var errFactCandidateUnavailable = errors.New("fact candidate capability unavailable")
 
 const (
 	// openStoreAttempts bounds the retries an open may spend on recovery or on
@@ -35,6 +36,16 @@ type stateStore interface {
 	Load() (*persistedState, error)
 	Save(state persistedState) error
 	Close() error
+}
+
+// factCandidateStore exposes an optional, read-only candidate source. The
+// lookup layer must still apply every public filter after candidate selection.
+type factCandidateStore interface {
+	FactCandidates(ctx context.Context, subjectIDs, objectIDs []string) ([]string, error)
+}
+
+type factCandidateReadiness interface {
+	FactCandidateReady() bool
 }
 
 type checkpointStore interface {
@@ -262,6 +273,19 @@ func (s *ownershipStore) Checkpoint() error {
 		}, nil)
 	}
 	return checkpoint.Checkpoint()
+}
+
+func (s *ownershipStore) FactCandidates(ctx context.Context, subjectIDs, objectIDs []string) ([]string, error) {
+	candidates, ok := s.stateStore.(factCandidateStore)
+	if !ok {
+		return nil, errFactCandidateUnavailable
+	}
+	return candidates.FactCandidates(ctx, subjectIDs, objectIDs)
+}
+
+func (s *ownershipStore) FactCandidateReady() bool {
+	ready, ok := s.stateStore.(factCandidateReadiness)
+	return ok && ready.FactCandidateReady()
 }
 
 // acquireOpenOwnership takes the ownership lock that an open holds for the

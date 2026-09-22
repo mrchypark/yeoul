@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/LadybugDB/go-ladybug v0.17.0
 	github.com/goccy/go-json v0.10.6
-	github.com/mrchypark/latticedb-go v0.7.0
+	github.com/mrchypark/latticedb-go v0.9.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )

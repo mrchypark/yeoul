@@ -70,3 +70,53 @@ Any new index addition should include:
 - benchmark before/after
 - write amplification consideration
 - storage cost note
+
+## LookupFacts endpoint candidates
+
+The initial LatticeDB optimization applies only to current-time `LookupFacts`
+requests that name a small subject or object anchor set. It resolves the
+persisted `Entity.id` index, follows incoming `SUBJECT` or `OBJECT_ENTITY`
+adjacency, and hydrates the returned fact IDs through the normal in-memory
+filters. It does not add indexes during lookup or backfill fact properties.
+
+The optimization falls back to the legacy full scan for `as_of` reads,
+unsupported or legacy stores, missing readiness metadata, adjacency fanout
+above 4096, storage capability errors, or more than 8 expanded raw entity
+IDs. The last guard is conservative: canonical alias expansion is currently
+O(number of loaded entities), and broad anchors measured slower with native
+candidate collection. Candidate results are never limited before filtering,
+ordering, or pagination.
+
+The readiness marker is Yeoul-written atomic state, trusted as the writer's
+statement that the complete graph projection was established; it is not a
+corruption detector or an independent edge-integrity validator. It is written
+only for a new empty LatticeDB that is then saved with the complete graph
+projection. An existing nonempty database without the marker remains on the
+full-scan fallback; an unrelated incremental save cannot claim endpoint-edge
+completeness. Read-only lookup never creates or updates the marker.
+
+The native candidate path checks the request context before collection and
+between entity/edge/node calls, including while walking a bounded adjacency.
+This provides cooperative cancellation between native operations; it is not a
+hard wall-clock cancellation guarantee for an individual native call.
+
+Benchmark command:
+
+```sh
+go test ./pkg/yeoul -run '^$' -bench BenchmarkLookupFactsCandidateReduction -benchtime=100ms -count=3
+```
+
+Repeated sample on Apple M1; values below are medians across three runs:
+
+| Request | 16 entities / 2,000 facts | 140 entities / 300 facts | 1,024 entities / 2,000 facts |
+| --- | ---: | ---: | ---: |
+| selective subject, indexed | 27,714 ns/op | 65,336 ns/op | 181,234 ns/op |
+| selective subject, baseline | 767,894 ns/op | 105,103 ns/op | 659,786 ns/op |
+| broad anchors, guarded path | n/a | 313,357 ns/op | 5,067,622 ns/op |
+| broad anchors, baseline | n/a | 322,311 ns/op | 5,091,485 ns/op |
+
+The selective path measured about 1.6x at 140 entities and 3.6x at 1,024
+entities; the 16-entity fixture measured about 27.7x. These are workload-
+specific measurements, not a global performance claim. The 8-request-anchor
+guard rejects broad requests before canonical expansion or native collection;
+their guarded and baseline medians are correspondingly close.
