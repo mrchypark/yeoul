@@ -69,6 +69,16 @@ func TestBatchBindsFactReferenceToReusedLegacyEntity(t *testing.T) {
 	}
 }
 
+func TestEntityInputsMatchIdentityNormalizesSpace(t *testing.T) {
+	base := EntityInput{Type: "Project", CanonicalName: "Yeoul"}
+	if !EntityInputsMatchIdentity(base, EntityInput{SpaceID: "default", Type: "Project", CanonicalName: "Yeoul"}) {
+		t.Fatal("empty and default spaces should describe the same identity scope")
+	}
+	if EntityInputsMatchIdentity(base, EntityInput{SpaceID: "other", Type: "Project", CanonicalName: "Yeoul"}) {
+		t.Fatal("distinct spaces must not describe the same identity")
+	}
+}
+
 func TestEntityStableKeyMetadataCannotBeOverwritten(t *testing.T) {
 	e, ctx := openIdentityTestEngine(t)
 	first, err := e.UpsertEntity(ctx, EntityInput{Type: "Feature", CanonicalName: "key", StableKey: "key"})

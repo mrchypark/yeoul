@@ -647,7 +647,8 @@ func (e *engine) assembleIncludes(include Include, scope ScopeFilter, temporal T
 			}
 			return &episode, true
 		case "entity":
-			entity, ok := e.entities[id]
+			canonicalID := e.canonicalEntityIDAtLocked(id, temporal, index)
+			entity, ok := e.entities[canonicalID]
 			if !ok {
 				return nil, false
 			}

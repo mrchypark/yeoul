@@ -240,3 +240,107 @@ func TestCanonicalEntityIDLockedStopsOnCycles(t *testing.T) {
 		t.Fatalf("expected a blank id to pass through, got %q", got)
 	}
 }
+
+func TestIncludedRelatedEntitiesUseTemporalCanonicalEndpoints(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	canonical, duplicate, fact := seedCanonicalPair(t, e)
+	mergeAt := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+	e.mu.Lock()
+	storedFact := e.facts[fact.ID]
+	storedFact.CreatedAt = mergeAt.Add(15 * time.Minute)
+	storedFact.UpdatedAt = storedFact.CreatedAt
+	storedFact.ObservedAt = storedFact.CreatedAt
+	e.facts[fact.ID] = storedFact
+	duplicate.UpdatedAt = mergeAt.Add(time.Hour)
+	e.entities[duplicate.ID] = *duplicate
+	e.entityRevisions["entityrev-related-before-merge"] = EntityRevision{
+		ID: "entityrev-related-before-merge", EntityID: duplicate.ID, SpaceID: duplicate.SpaceID,
+		RevisionKind: "assert", TxTime: mergeAt, Type: duplicate.Type,
+		CanonicalName: duplicate.CanonicalName, CreatedAt: mergeAt.Add(-time.Hour), UpdatedAt: mergeAt,
+	}
+	e.mu.Unlock()
+
+	current, err := e.LookupFacts(ctx, FactLookupRequest{
+		Include: Include{SupportingFacts: true, RelatedEntities: true},
+	})
+	if err != nil {
+		t.Fatalf("current lookup: %v", err)
+	}
+	if len(current.Included.Entities) != 1 || current.Included.Entities[0].ID != canonical.ID {
+		t.Fatalf("expected one current canonical related entity, got %+v", current.Included.Entities)
+	}
+	if len(current.Included.Facts) != 1 || current.Included.Facts[0].SubjectID != duplicate.ID || current.Included.Facts[0].ObjectID != duplicate.ID {
+		t.Fatalf("included fact endpoints must remain raw, got %+v", current.Included.Facts)
+	}
+
+	old := mergeAt.Add(30 * time.Minute)
+	historical, err := e.LookupFacts(ctx, FactLookupRequest{
+		Temporal: TemporalFilter{AsOf: &old},
+		Include:  Include{SupportingFacts: true, RelatedEntities: true},
+	})
+	if err != nil {
+		t.Fatalf("historical lookup: %v", err)
+	}
+	if len(historical.Included.Entities) != 1 || historical.Included.Entities[0].ID != duplicate.ID {
+		t.Fatalf("expected the pre-merge raw endpoint at historical time, got %+v", historical.Included.Entities)
+	}
+}
+
+func TestIncludedRelatedEntitiesRejectInvalidCanonicalTarget(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	_, duplicate, fact := seedCanonicalPair(t, e)
+	e.mu.Lock()
+	duplicate.Metadata["duplicate_of"] = "cross-space"
+	e.entities[duplicate.ID] = *duplicate
+	e.entities["cross-space"] = Entity{ID: "cross-space", SpaceID: "other", Type: "Project", CanonicalName: "Other"}
+	e.mu.Unlock()
+
+	resp, err := e.LookupFacts(ctx, FactLookupRequest{
+		SubjectIDs: []string{duplicate.ID}, Include: Include{RelatedEntities: true},
+	})
+	if err != nil {
+		t.Fatalf("lookup invalid redirect: %v", err)
+	}
+	if len(resp.Facts) != 1 || resp.Facts[0].ID != fact.ID {
+		t.Fatalf("expected the raw fact to remain queryable, got %+v", resp.Facts)
+	}
+	if len(resp.Included.Entities) != 0 {
+		t.Fatalf("invalid cross-space target must not be included, got %+v", resp.Included.Entities)
+	}
+}
+
+func TestRecordPassesSearchFiltersCanonicalizesEntityAnchorsAtTemporalScope(t *testing.T) {
+	e, ctx := openIdentityTestEngine(t)
+	canonical, duplicate, _ := seedCanonicalPair(t, e)
+	currentReq := SearchRequest{AnchorIDs: []string{duplicate.ID}}
+	if !RecordPassesSearchFilters(ctx, e, canonical, currentReq) {
+		t.Fatal("expected a raw duplicate anchor to match the canonical entity")
+	}
+	if len(currentReq.AnchorIDs) != 1 || currentReq.AnchorIDs[0] != duplicate.ID {
+		t.Fatalf("filter helper mutated caller anchors: %#v", currentReq.AnchorIDs)
+	}
+
+	mergeAt := time.Date(2026, 1, 2, 1, 0, 0, 0, time.UTC)
+	e.mu.Lock()
+	duplicate.UpdatedAt = mergeAt.Add(time.Hour)
+	e.entities[duplicate.ID] = *duplicate
+	e.entityRevisions["entityrev-filter-before-merge"] = EntityRevision{
+		ID: "entityrev-filter-before-merge", EntityID: duplicate.ID, SpaceID: duplicate.SpaceID,
+		RevisionKind: "assert", TxTime: mergeAt, Type: duplicate.Type,
+		CanonicalName: duplicate.CanonicalName, CreatedAt: mergeAt.Add(-time.Hour), UpdatedAt: mergeAt,
+	}
+	unrelated := Entity{ID: "project:unrelated", SpaceID: "default", Type: "Project", CanonicalName: "Unrelated"}
+	e.entities[unrelated.ID] = unrelated
+	e.mu.Unlock()
+
+	old := mergeAt.Add(30 * time.Minute)
+	if RecordPassesSearchFilters(ctx, e, canonical, SearchRequest{Temporal: TemporalFilter{AsOf: &old}, AnchorIDs: []string{duplicate.ID}}) {
+		t.Fatal("pre-merge canonical entity must not match a duplicate anchor")
+	}
+	if !RecordPassesSearchFilters(ctx, e, duplicate, SearchRequest{Temporal: TemporalFilter{AsOf: &old}, AnchorIDs: []string{duplicate.ID}}) {
+		t.Fatal("pre-merge duplicate entity must match its raw anchor")
+	}
+	if RecordPassesSearchFilters(ctx, e, &unrelated, currentReq) {
+		t.Fatal("unrelated entity must remain excluded")
+	}
+}

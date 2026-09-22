@@ -420,7 +420,16 @@ func recordPassesSearchFilters(ctx context.Context, eng Engine, core *engine, re
 		if entityMarkedDuplicate(*value) {
 			return false
 		}
-		if !matchesAnchors(req.AnchorIDs, value.ID) {
+		anchorIDs := req.AnchorIDs
+		entityID := value.ID
+		if core != nil {
+			core.mu.RLock()
+			historyIndex := newTemporalIndex(core)
+			entityID = core.canonicalEntityIDAtLocked(entityID, req.Temporal, historyIndex)
+			anchorIDs = core.canonicalEntityIDsAtLocked(req.AnchorIDs, req.Temporal, historyIndex)
+			core.mu.RUnlock()
+		}
+		if !matchesAnchors(anchorIDs, entityID) {
 			return false
 		}
 		return len(req.Predicates) == 0 && matchesEntityType(*value, req.Scope.EntityTypes)
