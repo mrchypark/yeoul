@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	latticeMetaVersion  = "yeoul.state.version"
-	latticeMetaSequence = "yeoul.state.sequence"
+	latticeMetaVersion           = "yeoul.state.version"
+	latticeMetaSequence          = "yeoul.state.sequence"
+	latticeMetaFactEndpointEdges = "yeoul.fact.endpoint_edges"
 )
 
 // errUnsupportedStateVersion marks the rejection of a persisted
@@ -48,10 +49,11 @@ var latticeLabels = []string{
 }
 
 type latticeStore struct {
-	cfg       Config
-	store     *lstore.Store
-	lastState persistedState
-	loaded    bool
+	cfg                    Config
+	store                  *lstore.Store
+	lastState              persistedState
+	loaded                 bool
+	factEndpointEdgesReady bool
 }
 
 func newLatticeStore(cfg Config) (stateStore, error) {
@@ -112,6 +114,11 @@ func (s *latticeStore) Load() (*persistedState, error) {
 			if err != nil {
 				return fmt.Errorf("decode state sequence: %w", err)
 			}
+		}
+		if value, ok, err := tx.GetAppMetadata([]byte(latticeMetaFactEndpointEdges)); err != nil {
+			return err
+		} else {
+			s.factEndpointEdgesReady = ok && string(value) == "1"
 		}
 
 		loaders := map[string]func(string, []byte) error{
@@ -232,6 +239,9 @@ func (s *latticeStore) Load() (*persistedState, error) {
 		return nil, errorf(ErrStorageFailed, "load lattice graph state", map[string]any{
 			"database_path": s.cfg.DatabasePath,
 		}, err)
+	}
+	if !s.factEndpointEdgesReady && len(state.Sources) == 0 && len(state.Episodes) == 0 && len(state.Entities) == 0 && len(state.Facts) == 0 && len(state.FactRevisions) == 0 && len(state.EntityRevisions) == 0 {
+		s.factEndpointEdgesReady = true
 	}
 	s.lastState = clonePersistedState(state)
 	s.loaded = true
@@ -485,6 +495,11 @@ func (s *latticeStore) Save(state persistedState) error {
 		if err := tx.PutAppMetadata([]byte(latticeMetaSequence), []byte(strconv.FormatUint(state.Sequence, 10))); err != nil {
 			return err
 		}
+		if s.factEndpointEdgesReady {
+			if err := tx.PutAppMetadata([]byte(latticeMetaFactEndpointEdges), []byte("1")); err != nil {
+				return err
+			}
+		}
 
 		nodes, err := s.reconcileNodes(tx, delta)
 		if err != nil {
@@ -714,4 +729,35 @@ func (s *latticeStore) Checkpoint() error {
 		return nil
 	}
 	return s.store.Checkpoint()
+}
+
+// FactCandidates uses the persisted fact endpoint edges as a current-state
+// candidate source. It deliberately does not inspect fact payloads or create
+// indexes: old/read-only databases remain readable and the caller can fall
+// back when this capability is unavailable or not semantically safe.
+func (s *latticeStore) FactCandidates(ctx context.Context, subjectIDs, objectIDs []string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(subjectIDs) == 0 && len(objectIDs) == 0 {
+		return nil, nil
+	}
+	if !s.factEndpointEdgesReady {
+		return nil, errFactCandidateUnavailable
+	}
+	ids, err := s.store.FactCandidates(ctx, subjectIDs, objectIDs)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		if errors.Is(err, lstore.ErrFactCandidateOverflow) {
+			return nil, errFactCandidateUnavailable
+		}
+		return nil, errorf(ErrStorageFailed, "query fact endpoint candidates", map[string]any{"database_path": s.cfg.DatabasePath}, err)
+	}
+	return ids, nil
+}
+
+func (s *latticeStore) FactCandidateReady() bool {
+	return s != nil && s.factEndpointEdgesReady
 }

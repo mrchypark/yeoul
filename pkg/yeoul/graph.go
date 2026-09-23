@@ -2,6 +2,7 @@ package yeoul
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -10,8 +11,14 @@ import (
 	"time"
 )
 
+const maxFactCandidateEntityIDs = 8
+
+var factCandidateExpansionObserver func()
+
 func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactLookupResponse, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	offset, err := decodeCursor(req.Page.Cursor)
 	if err != nil {
 		return nil, err
@@ -25,26 +32,51 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 	// canonical form. Nothing is rewritten: this is a read-time view.
 	subjectAnchors := e.canonicalEntityIDsAtLocked(req.SubjectIDs, req.Temporal, index)
 	objectAnchors := e.canonicalEntityIDsAtLocked(req.ObjectIDs, req.Temporal, index)
+	candidates, useCandidates, err := e.lookupFactCandidates(ctx, req, subjectAnchors, objectAnchors, index)
+	if err != nil {
+		return nil, err
+	}
 
 	facts := make([]Fact, 0)
-	for _, fact := range e.facts {
+	visit := func(fact Fact) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		factRecord := e.factVersionAt(fact, req.Temporal, index)
 		if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
-			continue
+			return nil
 		}
 		if len(subjectAnchors) > 0 && !slices.Contains(subjectAnchors, e.canonicalEntityIDAtLocked(factRecord.SubjectID, req.Temporal, index)) {
-			continue
+			return nil
 		}
 		if len(req.Predicates) > 0 && !slices.Contains(req.Predicates, factRecord.Predicate) {
-			continue
+			return nil
 		}
 		if len(objectAnchors) > 0 && !slices.Contains(objectAnchors, e.canonicalEntityIDAtLocked(factRecord.ObjectID, req.Temporal, index)) {
-			continue
+			return nil
 		}
 		if req.ObjectText != "" && !strings.Contains(strings.ToLower(factRecord.ValueText), strings.ToLower(req.ObjectText)) {
-			continue
+			return nil
 		}
 		facts = append(facts, *factRecord)
+		return nil
+	}
+	if useCandidates {
+		for factID := range candidates {
+			fact, ok := e.facts[factID]
+			if !ok {
+				continue
+			}
+			if err := visit(fact); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		for _, fact := range e.facts {
+			if err := visit(fact); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	sort.SliceStable(facts, func(i, j int) bool {
@@ -65,6 +97,81 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 	resp.Meta.NextCursor = nextCursor
 	resp.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, factLookupHits(factPage), spaceID, index)
 	return resp, nil
+}
+
+func (e *engine) lookupFactCandidates(ctx context.Context, req FactLookupRequest, subjectAnchors, objectAnchors []string, index *temporalIndex) (map[string]struct{}, bool, error) {
+	// Persisted endpoint edges describe the current fact payload. Historical
+	// reads must scan because a revision can move an endpoint without changing
+	// the persisted edge for the Fact node.
+	if req.Temporal.AsOf != nil || (len(subjectAnchors) == 0 && len(objectAnchors) == 0) {
+		return nil, false, nil
+	}
+	if len(req.SubjectIDs)+len(req.ObjectIDs) > maxFactCandidateEntityIDs {
+		return nil, false, nil
+	}
+	store, ok := e.store.(factCandidateStore)
+	if !ok {
+		return nil, false, nil
+	}
+	if readiness, ok := e.store.(factCandidateReadiness); ok && !readiness.FactCandidateReady() {
+		return nil, false, nil
+	}
+	entityIDs := func(anchors []string) ([]string, bool, error) {
+		if len(anchors) == 0 {
+			return nil, true, nil
+		}
+		wanted := make(map[string]struct{}, len(anchors))
+		for _, anchor := range anchors {
+			wanted[anchor] = struct{}{}
+		}
+		ids := make([]string, 0, len(wanted))
+		if factCandidateExpansionObserver != nil {
+			factCandidateExpansionObserver()
+		}
+		for id := range e.entities {
+			if err := ctx.Err(); err != nil {
+				return nil, false, err
+			}
+			if _, ok := wanted[e.canonicalEntityIDAtLocked(id, req.Temporal, index)]; ok {
+				ids = append(ids, id)
+			}
+		}
+		for _, anchor := range anchors {
+			if _, ok := e.entities[anchor]; !ok {
+				return nil, false, nil
+			}
+		}
+		return ids, len(ids) > 0, nil
+	}
+	subjectIDs, subjectOK, err := entityIDs(subjectAnchors)
+	if err != nil {
+		return nil, false, err
+	}
+	objectIDs, objectOK, err := entityIDs(objectAnchors)
+	if err != nil {
+		return nil, false, err
+	}
+	if (len(subjectAnchors) > 0 && !subjectOK) || (len(objectAnchors) > 0 && !objectOK) {
+		return nil, false, nil
+	}
+	if len(subjectIDs)+len(objectIDs) > maxFactCandidateEntityIDs {
+		return nil, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	ids, err := store.FactCandidates(ctx, subjectIDs, objectIDs)
+	if errors.Is(err, errFactCandidateUnavailable) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	candidates := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		candidates[id] = struct{}{}
+	}
+	return candidates, true, nil
 }
 
 func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*NeighborhoodResponse, error) {

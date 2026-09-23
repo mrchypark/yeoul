@@ -7,11 +7,12 @@ repo_root=$(CDPATH='' cd "${script_dir}/../.." && pwd)
 matches=$(
   git -C "${repo_root}" grep -n -E '"(MATCH|CREATE|MERGE|DELETE|RETURN|CALL) ' -- '*.go' \
     ':!internal/storage/ladybug/**' \
+    ':!internal/storage/lattice/**' \
     ':!*_test.go' || true
 )
 
 if [ -n "${matches}" ]; then
-  printf 'raw Cypher must stay in internal/storage/ladybug:\n%s\n' "${matches}" >&2
+  printf 'raw Cypher must stay in an authorized storage adapter:\n%s\n' "${matches}" >&2
   exit 1
 fi
 
