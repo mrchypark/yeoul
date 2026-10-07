@@ -44,10 +44,6 @@ jobs:
         if: matrix.goos == 'linux'
         run: sh scripts/ci/check-storage-boundaries.sh
 
-      - name: Validate legacy helper module
-        if: matrix.goos == 'linux'
-        run: sh scripts/ci/check-legacy-helper-module.sh
-
       - name: Test release installers
         if: matrix.goos == 'linux'
         run: sh scripts/ci/test-installers.sh
@@ -62,21 +58,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install Linux packaging dependency
-        if: matrix.goos == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y patchelf
-
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           install-only: true
-
-      - name: Prepare Ladybug runtime
-        run: |
-          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
-          scripts/ci/setup-ladybug.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
 
       - name: Validate GoReleaser config
         run: goreleaser check
@@ -85,10 +70,6 @@ jobs:
         env:
           RELEASE_TARGET: "${{ matrix.goos }}-${{ matrix.goarch }}"
         run: goreleaser build --snapshot --clean --single-target
-
-      - name: Smoke v0.2.2 migration bridge
-        if: matrix.goos == 'linux'
-        run: sh scripts/ci/smoke-v022-migration-bridge.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
 
       - name: Smoke Yeoul memory guidance
         if: matrix.goos == 'linux'
@@ -106,27 +87,11 @@ jobs:
             printf 'no built Yeoul binary found under dist/*/bin/yeoul\n' >&2
             exit 1
           fi
-          module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
-          runtime_dir="$PWD/dist/runtime/${{ matrix.goos }}_${{ matrix.goarch }}/lib"
-          export LD_LIBRARY_PATH="${module_dir}/lib:${runtime_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
           export YEOUL_BIN="${yeoul_bin}"
           scripts/ci/smoke-yeoul-memory-guidance.sh
 
       - name: Run tests
-        run: |
-          module_dir="$(go list -m -f '{{.Dir}}' github.com/LadybugDB/go-ladybug)"
-          case "${{ matrix.goos }}/${{ matrix.goarch }}" in
-            darwin/*)
-              export DYLD_LIBRARY_PATH="${module_dir}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
-              ;;
-            linux/amd64)
-              export LD_LIBRARY_PATH="${module_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-              ;;
-            linux/arm64)
-              export LD_LIBRARY_PATH="${module_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-              ;;
-          esac
-          go test ./...
+        run: CGO_ENABLED=0 go test ./...
 
   verify-windows:
     name: Verify (windows/amd64)
@@ -146,7 +111,6 @@ jobs:
           install: >-
             curl
             git
-            mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-go
             unzip
 
@@ -168,11 +132,6 @@ jobs:
       - name: Install GoReleaser
         run: go install github.com/goreleaser/goreleaser/v2@v2.15.3
 
-      - name: Prepare Ladybug runtime
-        run: |
-          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
-          scripts/ci/setup-ladybug.sh windows amd64
-
       - name: Validate GoReleaser config
         run: goreleaser check
 
@@ -182,9 +141,7 @@ jobs:
         run: goreleaser build --snapshot --clean --single-target
 
       - name: Run tests
-        run: |
-          export PATH="$(go list -f '{{.Dir}}' -m github.com/LadybugDB/go-ladybug)/lib:$PATH"
-          go test ./...
+        run: CGO_ENABLED=0 go test ./...
 
   release-unix:
     name: Release Asset (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -222,17 +179,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install Linux packaging dependency
-        if: matrix.goos == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y patchelf
-
-      - name: Prepare Ladybug runtime
-        run: |
-          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
-          scripts/ci/setup-ladybug.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -263,7 +209,6 @@ jobs:
           install: >-
             curl
             git
-            mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-go
             unzip
 
@@ -280,11 +225,6 @@ jobs:
 
       - name: Install GoReleaser
         run: go install github.com/goreleaser/goreleaser/v2@v2.15.3
-
-      - name: Prepare Ladybug runtime
-        run: |
-          chmod +x scripts/ci/setup-ladybug.sh scripts/ci/stage-runtime.sh
-          scripts/ci/setup-ladybug.sh windows amd64
 
       - name: Run GoReleaser
         env:

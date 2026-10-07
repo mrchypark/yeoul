@@ -2,7 +2,6 @@ package yeoul
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,34 +148,5 @@ func TestOpenThroughASymlinkCreatesTheDatabaseAtTheRealPath(t *testing.T) {
 	}
 	if err := reopened.Close(ctx); err != nil {
 		t.Fatalf("close reopened engine: %v", err)
-	}
-}
-
-// TestMigrateDatabaseResolvesDirectorySymlinks pins the migration side of the
-// same property: the ownership lock the migration takes, the marker it writes,
-// and the paths it moves have to name the database the caller pointed at, so a
-// migration started through a symlink is not a second migration namespace.
-func TestMigrateDatabaseResolvesDirectorySymlinks(t *testing.T) {
-	realPath, linkPath := symlinkedDatabasePaths(t)
-	writeLatticeStateFixture(t, realPath, "1", false, nil)
-
-	result, err := MigrateDatabase(context.Background(), linkPath)
-	if err != nil {
-		t.Fatalf("migrate through a symlinked directory: %v", err)
-	}
-	// macOS resolves the temporary directory itself through a symlink, so the
-	// expected path is the resolved one rather than the spelling the test built.
-	resolvedReal, err := resolveDatabasePathAliases(realPath)
-	if err != nil {
-		t.Fatalf("resolve real database path: %v", err)
-	}
-	if result.DatabasePath != resolvedReal {
-		t.Fatalf("expected the migration to report the resolved database path: got %q want %q", result.DatabasePath, resolvedReal)
-	}
-	if result.SourceDriver != string(StorageDriverLattice) || result.TargetDriver != string(StorageDriverLattice) {
-		t.Fatalf("unexpected migration result: %#v", result)
-	}
-	if _, err := os.Stat(databaseMigrationMarkerPath(realPath)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no migration marker beside the resolved database, got %v", err)
 	}
 }

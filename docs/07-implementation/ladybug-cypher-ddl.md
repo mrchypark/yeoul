@@ -1,11 +1,10 @@
-# Ladybug Cypher DDL
+# Historical Ladybug Cypher DDL
 
-> The canonical, executable DDL now lives in
-> [`internal/storage/ladybug/cypher.go`](../../internal/storage/ladybug/cypher.go)
-> (`DDLStatements`). This document records the original design sketch below;
-> when the two differ, the code is authoritative.
+Status: retained as a record of the initial design only. It is not used by
+current releases; Yeoul now uses LatticeDB and does not read native Ladybug
+databases.
 
-This document records the initial schema DDL for Yeoul on Ladybug.
+This document records the original schema DDL for Yeoul on Ladybug.
 It is intentionally conservative and can be evolved through migrations.
 
 ## Principles

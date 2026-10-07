@@ -1,5 +1,7 @@
 # Alternatives
 
+Status: Historical design analysis; use current-scope and architecture docs for current behavior.
+
 This document records the major alternatives considered for Yeoul storage and architecture.
 
 ## Alternative 1: Keep Graphiti directly

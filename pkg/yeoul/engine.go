@@ -1063,7 +1063,13 @@ func (e *engine) applyState(state persistedState) {
 }
 
 func (e *engine) snapshotLocked() persistedState {
-	return clonePersistedState(persistedState{
+	return clonePersistedState(e.stateLocked())
+}
+
+// stateLocked borrows the engine maps. Callers must hold e.mu and must not
+// retain or mutate the returned state.
+func (e *engine) stateLocked() persistedState {
+	return persistedState{
 		Version:             currentStateVersion,
 		Sequence:            e.sequence,
 		Sources:             e.sources,
@@ -1073,14 +1079,14 @@ func (e *engine) snapshotLocked() persistedState {
 		FactRevisions:       e.factRevisions,
 		EntityRevisions:     e.entityRevisions,
 		MigrationWatermarks: e.migrationWatermarks,
-	})
+	}
 }
 
 func (e *engine) saveLocked() error {
 	if e.store == nil {
 		return nil
 	}
-	return e.store.Save(e.snapshotLocked())
+	return e.store.Save(e.stateLocked())
 }
 
 // mutatePreSaveHook runs after the mutation body returns and before the save

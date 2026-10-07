@@ -150,7 +150,6 @@ Inspect storage, schema, and counts.
 yeoul inspect schema --db ./yeoul.ltdb
 yeoul inspect counts --db ./yeoul.ltdb
 yeoul inspect entity --db ./yeoul.ltdb --id entity_project_yeoul
-yeoul admin migrate-db --db ./legacy-yeoul.lbug --json
 ```
 
 ### `yeoul neighborhood`

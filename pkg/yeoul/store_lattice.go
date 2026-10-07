@@ -328,11 +328,9 @@ func inspectStateVersionOnce(databasePath string, createIfMissing bool) error {
 // native engine will initialize on a writable open with Create:true: a path
 // that does not exist, or a directory that holds no native database files.
 //
-// The native engine derives its state path from the directory, so a directory
-// without a state file is an empty database it will create. Anything else is
-// left to the caller: a directory that holds a state file is an existing
-// database whose version this build could not read, and a regular file is a
-// serialized database the native engine has to open itself.
+// The native engine derives its state path from the directory. Its page files,
+// legacy recovery files, or ID reservations mean the directory is not empty,
+// even when version inspection could not open the files.
 func latticeDatabaseUninitialized(databasePath string) bool {
 	info, err := os.Stat(databasePath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -341,8 +339,7 @@ func latticeDatabaseUninitialized(databasePath string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	_, err = os.Stat(filepath.Join(databasePath, "state.json"))
-	return errors.Is(err, os.ErrNotExist)
+	return !latticeDatabaseHasEvidence(databasePath)
 }
 
 // latticeDatabaseUninitializedDirectory reports whether the path is an existing
@@ -356,8 +353,17 @@ func latticeDatabaseUninitializedDirectory(databasePath string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	_, err = os.Stat(filepath.Join(databasePath, "state.json"))
-	return errors.Is(err, os.ErrNotExist)
+	return !latticeDatabaseHasEvidence(databasePath)
+}
+
+func latticeDatabaseHasEvidence(databasePath string) bool {
+	for _, name := range []string{"state.json", "state.json.pages", "wal.base", "wal.log", "ids.json"} {
+		_, err := os.Stat(filepath.Join(databasePath, name))
+		if !errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+	}
+	return false
 }
 
 // readStateVersionReadOnly resolves the application-state version of an

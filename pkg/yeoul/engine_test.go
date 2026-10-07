@@ -1587,7 +1587,7 @@ func (s *countingStore) Load() (*persistedState, error) {
 
 func (s *countingStore) Save(state persistedState) error {
 	s.saveCount++
-	s.state = state
+	s.state = clonePersistedState(state)
 	return nil
 }
 
@@ -2278,6 +2278,10 @@ func TestCommittedMutationIsNotReportedAsCanceled(t *testing.T) {
 		errs <- err
 	}()
 	<-store.saveStarted
+	if eng.mu.TryRLock() {
+		eng.mu.RUnlock()
+		t.Fatal("expected the engine lock to remain held while Save is running")
+	}
 	cancel()
 	close(store.release)
 

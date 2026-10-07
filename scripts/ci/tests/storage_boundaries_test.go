@@ -4,9 +4,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "../../.."))
+}
 
 func runStorageBoundaryCheck(t *testing.T, files map[string]string) (string, error) {
 	t.Helper()
@@ -59,7 +69,6 @@ func rawCypherFixture(path string) map[string]string {
 
 func TestStorageBoundaryCheckerAllowsOnlyAuthorizedAdapters(t *testing.T) {
 	for _, path := range []string{
-		"internal/storage/ladybug/adapter.go",
 		"internal/storage/lattice/adapter.go",
 	} {
 		t.Run("allows "+path, func(t *testing.T) {

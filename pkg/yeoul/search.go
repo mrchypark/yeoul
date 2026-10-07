@@ -38,7 +38,10 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	hits := make([]SearchHit, 0)
 	graphSeeds := map[string]float64{}
 	seenHits := map[string]bool{}
-	stats := e.searchCorpusStats(types, req, spaceID, index)
+	var stats *sparseCorpusStats
+	if mode != SearchModeKeyword {
+		stats = e.searchCorpusStats(types, req, spaceID, index)
+	}
 
 	if slices.Contains(types, "fact") {
 		for _, fact := range e.facts {
@@ -533,11 +536,12 @@ func matchSearchWithStats(mode SearchMode, query, text string, stats *sparseCorp
 			return true, 1.0, "hybrid_keyword_match"
 		}
 	}
+	if mode == SearchModeKeyword {
+		return false, 0, ""
+	}
 
 	score := sparseTermScore(query, text, stats)
 	switch mode {
-	case SearchModeKeyword:
-		return false, 0, ""
 	case SearchModeSemantic:
 		if score <= 0 {
 			vectorScore := charNgramCosine(query, text)

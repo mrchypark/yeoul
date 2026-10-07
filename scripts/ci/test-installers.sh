@@ -7,7 +7,7 @@
 # actual script behaviour instead of a reimplementation of it.
 #
 # Covered findings:
-#   REL-02  historical releases without the migration helper still install
+#   REL-02  historical and pure-Go releases install without special payload checks
 #   REL-03  an explicit version wins over the latest release metadata
 #   REL-04  a missing checksum verifier fails before installation state changes
 #   REL-05  install roots and wrapper paths survive unrelated working directories
@@ -150,12 +150,10 @@ create_release_fixture() {
   tree_name="yeoul_${version}_${os}_${arch}"
   tree="${fixture_dir}/${tree_name}"
 
-  mkdir -p "${tree}/bin" "${tree}/lib"
+  mkdir -p "${tree}/bin"
   printf '#!/bin/sh\necho yeoul %s\n' "${tag}" > "${tree}/bin/yeoul"
   printf '#!/bin/sh\necho yeould %s\n' "${tag}" > "${tree}/bin/yeould"
   chmod +x "${tree}/bin/yeoul" "${tree}/bin/yeould"
-  printf 'runtime for %s\n' "${tag}" > "${tree}/lib/libladybug.txt"
-
   if [ "${with_helper}" = "yes" ]; then
     mkdir -p "${tree}/libexec/ladybug-v0131"
     printf '#!/bin/sh\necho migrate %s\n' "${tag}" > "${tree}/libexec/ladybug-v0131/yeoul-migrate-v0131"
@@ -167,9 +165,8 @@ create_release_fixture() {
     > "${fixture_dir}/checksums_${os}-${arch}.txt"
 }
 
-# v0.1.0 and v0.5.0 predate the helper; v0.5.1 is the first release that ships
-# it. v0.5.6 is the release served as "latest" and is intentionally incomplete,
-# so a rejected archive is distinguishable from an accepted one.
+# v0.5.5 models a historical helper-era archive. v0.5.6 models a complete
+# pure-Go release without native runtime or migration-helper payloads.
 create_release_fixture "v0.1.0" "no"
 create_release_fixture "v0.5.0" "no"
 create_release_fixture "v0.5.5" "yes"
@@ -315,24 +312,23 @@ assert_eq "v0.5.0 installs without a migration helper" "0" "${rel02_prev_rc}"
 
 rel02_cur_rc=$(install_with "${sandbox_verified}" "${work_dir}" "${work_dir}/rel02-cur.log" "v0.5.5" \
   --install-root "${rel02_root}" --bin-dir "${rel02_bin}")
-assert_eq "v0.5.5 installs with its migration helper" "0" "${rel02_cur_rc}"
-assert_present "v0.5.5 migration helper is installed" \
+assert_eq "historical v0.5.5 installs with its helper-era archive" "0" "${rel02_cur_rc}"
+assert_present "historical v0.5.5 helper is preserved when present" \
   "${rel02_root}/v0.5.5/libexec/ladybug-v0131/yeoul-migrate-v0131"
 
 rel02_incomplete_rc=$(install_with "${sandbox_verified}" "${work_dir}" "${work_dir}/rel02-incomplete.log" "v0.5.6" \
   --install-root "${rel02_root}" --bin-dir "${rel02_bin}")
-assert_eq "v0.5.6 without the helper is rejected" "1" "${rel02_incomplete_rc}"
-assert_file_contains "rejection names the missing helper" "${work_dir}/rel02-incomplete.log" \
-  "missing the version-pinned Ladybug migration helper"
-assert_absent "rejected archive leaves no v0.5.6 directory" "${rel02_root}/v0.5.6"
+assert_eq "pure-Go v0.5.6 installs without the retired helper" "0" "${rel02_incomplete_rc}"
+assert_present "pure-Go binaries are installed" "${rel02_root}/v0.5.6/bin/yeoul"
+assert_absent "pure-Go archive has no native runtime payload" "${rel02_root}/v0.5.6/lib"
+assert_absent "pure-Go archive has no migration helper payload" "${rel02_root}/v0.5.6/libexec"
 
 YEOUL_TEST_CURL_LOG="${work_dir}/rel02-latest.log.curl"
 export YEOUL_TEST_CURL_LOG
 rel02_latest_rc=$(install_with "${sandbox_verified}" "${work_dir}" "${work_dir}/rel02-latest.log" "" \
   --install-root "${rel02_root}" --bin-dir "${rel02_bin}")
-assert_eq "incomplete latest release is rejected too" "1" "${rel02_latest_rc}"
-assert_file_contains "latest rejection names the missing helper" "${work_dir}/rel02-latest.log" \
-  "missing the version-pinned Ladybug migration helper"
+assert_eq "latest pure-Go release installs without helper checks" "0" "${rel02_latest_rc}"
+assert_present "latest pure-Go binary is installed" "${rel02_root}/v0.5.6/bin/yeoul"
 
 # --- REL-03: explicit version wins over latest metadata -------------------
 
@@ -431,8 +427,6 @@ unpinned_examples=$(awk '
 ' "${readme}")
 
 assert_eq "every version-pinned install example pins YEOUL_VERSION" "0" "${unpinned_examples}"
-assert_file_contains "README documents the helper compatibility policy" "${readme}" \
-  'Releases from `v0.5.1` on must ship the version-pinned Ladybug migration helper'
 
 # --- SEC-01: workstation inventory ----------------------------------------
 

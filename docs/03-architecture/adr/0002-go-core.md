@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted at the time. The Ladybug binding and cgo consequences below are historical; current releases use LatticeDB only.
 
 ## Context
 

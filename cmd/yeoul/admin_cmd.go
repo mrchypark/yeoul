@@ -18,7 +18,6 @@ func (c cli) runAdmin(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
   yeoul admin checkpoint --db PATH [--json]
-  yeoul admin migrate-db --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json]
   yeoul admin export --db PATH --out FILE [--json]
   yeoul admin import --db PATH --in FILE [--json] [--confirm]
@@ -29,8 +28,6 @@ Usage:
 	switch args[0] {
 	case "checkpoint":
 		return c.runAdminCheckpoint(ctx, args[1:])
-	case "migrate-db":
-		return c.runAdminMigrateDatabase(ctx, args[1:])
 	case "compact":
 		return c.runAdminCompact(ctx, args[1:])
 	case "export":
@@ -43,41 +40,6 @@ Usage:
 	default:
 		return &usageError{message: usage}
 	}
-}
-
-func (c cli) runAdminMigrateDatabase(ctx context.Context, args []string) error {
-	usage := strings.TrimSpace(`
-Usage:
-  yeoul admin migrate-db --db PATH [--json]
-`)
-	fs := newFlagSet("admin migrate-db")
-	var dbPath string
-	var jsonOut bool
-	fs.StringVar(&dbPath, "db", "", "database path")
-	fs.BoolVar(&jsonOut, "json", false, "emit JSON output")
-	handled, err := parseFlagSet(fs, usage, args, c.stdout)
-	if err != nil || handled {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return &usageError{message: usage}
-	}
-	if err := requireDB(dbPath, usage); err != nil {
-		return err
-	}
-	result, err := yeoul.MigrateDatabase(ctx, dbPath)
-	if err != nil {
-		return err
-	}
-	if jsonOut {
-		return writeJSON(c.stdout, result)
-	}
-	if result.Migrated {
-		_, err = fmt.Fprintf(c.stdout, "migrated %s (backup: %s)\n", result.DatabasePath, result.BackupPath)
-		return err
-	}
-	_, err = fmt.Fprintf(c.stdout, "already lattice: %s\n", result.DatabasePath)
-	return err
 }
 
 func (c cli) runAdminCheckpoint(ctx context.Context, args []string) error {
@@ -287,18 +249,7 @@ func applyEntityMergeCandidate(ctx context.Context, eng yeoul.Engine, candidate 
 		"compaction_entity_duplicates": mergeStringSlices(anyStrings(target.Metadata["compaction_entity_duplicates"]), candidate.SourceIDs),
 		"compaction_marked":            marked,
 	}, targetDrift))
-	if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
-		ID:            target.ID,
-		SpaceID:       target.SpaceID,
-		Namespace:     target.Namespace,
-		Type:          target.Type,
-		CanonicalName: target.CanonicalName,
-		Aliases:       target.Aliases,
-		Metadata:      targetMeta,
-	}); err != nil {
-		return 0, err
-	}
-	count := 0
+	batch := yeoul.BatchInput{Entities: make([]yeoul.EntityInput, 0, len(sources)+1)}
 	for _, source := range sources {
 		sourceDrift := map[string]any{}
 		if candidate.DriftNamespace && source.Namespace != target.Namespace {
@@ -307,7 +258,7 @@ func applyEntityMergeCandidate(ctx context.Context, eng yeoul.Engine, candidate 
 		if candidate.DriftType && source.Type != target.Type {
 			sourceDrift["merge_drift_type"] = fmt.Sprintf("%s -> %s", target.Type, source.Type)
 		}
-		if _, err := eng.UpsertEntity(ctx, yeoul.EntityInput{
+		batch.Entities = append(batch.Entities, yeoul.EntityInput{
 			ID:            source.ID,
 			SpaceID:       source.SpaceID,
 			Namespace:     source.Namespace,
@@ -318,12 +269,21 @@ func applyEntityMergeCandidate(ctx context.Context, eng yeoul.Engine, candidate 
 				"duplicate_of":      target.ID,
 				"compaction_marked": marked,
 			}, sourceDrift)),
-		}); err != nil {
-			return count, err
-		}
-		count++
+		})
 	}
-	return count, nil
+	batch.Entities = append(batch.Entities, yeoul.EntityInput{
+		ID:            target.ID,
+		SpaceID:       target.SpaceID,
+		Namespace:     target.Namespace,
+		Type:          target.Type,
+		CanonicalName: target.CanonicalName,
+		Aliases:       target.Aliases,
+		Metadata:      targetMeta,
+	})
+	if _, err := eng.IngestBatch(ctx, batch); err != nil {
+		return 0, err
+	}
+	return len(sources), nil
 }
 
 func (c cli) runAdminExport(ctx context.Context, args []string) error {

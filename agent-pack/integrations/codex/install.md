@@ -43,7 +43,13 @@ Add `~/.local/bin` to your shell startup file if it is not already on `PATH`.
 
 ## 2. Create the User-Level Database
 
-For normal Codex work, use one user-level Yeoul database:
+For normal Codex work, use one user-level Yeoul database.
+Only initialize a new path. If the target already contains data, do not use
+`yeoul init` or `--force` on it.
+If the existing user database is native Ladybug, stop: current releases cannot
+migrate it. Use a compatible older release to migrate before upgrading rather
+than initializing a new empty database. A migrated LatticeDB database may keep
+its `.lbug` path; the extension alone does not identify the format.
 
 ```sh
 export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.ltdb"
@@ -51,8 +57,9 @@ mkdir -p "$(dirname "$YEOUL_DB")"
 yeoul init --db "$YEOUL_DB"
 ```
 
-Use project-local `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable debugging.
-Before initializing a new user-level database, check whether the legacy `work-memory.lbug` exists. If it does, keep using that explicit path until migration and any rename are verified so memory is not split across two databases.
+Use project-local `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable debugging. Never initialize or force-create a database over an existing path containing user data.
+
+Current Yeoul releases use LatticeDB only and do not migrate native Ladybug databases. If `work-memory.lbug` is a genuine, unmigrated Ladybug database, migrate it with a compatible older Yeoul release before upgrading. Keep the timestamped `.ladybug-backup-*` copy until counts, search, revisions, and lifecycle state are verified. A migrated LatticeDB directory may still have a `.lbug` suffix; the extension alone does not identify the format, so do not migrate or rename an already-migrated database based on its name.
 One global database keeps decisions and durable facts reusable across projects.
 Use `--group-id` or stable subject namespaces to keep repository-specific records scoped.
 
@@ -191,15 +198,7 @@ yeoul search --db "$YEOUL_DB" \
   --limit 3
 ```
 
-For a legacy Ladybug database, point `YEOUL_DB` at the existing `.lbug` path and use the verified in-place migration workflow:
-
-```sh
-yeoul admin migrate-db --db "$YEOUL_DB" --json
-yeoul inspect counts --db "$YEOUL_DB" --json
-yeoul fact lookup --db "$YEOUL_DB" --include-inactive --limit 10 --json
-```
-
-The command writes and verifies a staging LatticeDB database before replacement and reports the retained `.ladybug-backup-*` path. Keep that backup until counts, search, revisions, and lifecycle state have been verified. Existing `.lbug` paths remain valid after migration and contain LatticeDB data. With all Yeoul processes stopped, the verified migrated directory may then be renamed to `work-memory.ltdb`; update `YEOUL_DB` at the same time.
+Do not run the current release against a native Ladybug database. Migrate it with a compatible older Yeoul release before upgrading, and retain the reported `.ladybug-backup-*` copy until the migrated records and lifecycle state are verified. A migrated LatticeDB directory can remain at its `.lbug` path.
 
 Restart Codex after updating the skill.
 
@@ -208,5 +207,5 @@ Restart Codex after updating the skill.
 - If Codex does not mention `yeoul-memory`, confirm the agent host's actual loaded skill directory contains `yeoul-memory/SKILL.md`, then restart Codex.
 - If `yeoul` is not found, run `~/.local/bin/yeoul --help` and add `~/.local/bin` to `PATH`.
 - If records appear in `./yeoul.ltdb`, switch commands back to `$HOME/.local/share/yeoul/work-memory.ltdb` unless you are running an isolated test.
-- If the default `.ltdb` path is empty or absent but `work-memory.lbug` exists, stop and use the legacy path until its migration and optional rename are verified.
+- If a native Ladybug database remains, stop before initializing a replacement; use a compatible older Yeoul release to migrate it before upgrading.
 - Always omit secrets, credentials, and private keys. Store sensitive personal or customer data only with explicit authorization for a defined write scope, and minimize or redact it before storage. Non-sensitive stable preferences and commitments may be stored when applicable write authority and supporting provenance are present. Read-only or no-write instructions always win.

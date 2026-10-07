@@ -231,7 +231,7 @@ type IncludedRecords struct {
 ### Semantics
 
 - `mode=hybrid` is the default and may combine sparse text matching and graph-aware expansion. Yeoul runs retrieval in-process and has no backend rerank stage.
-- `mode=semantic` may use sparse token relevance plus a dependency-free character n-gram vector fallback for near-text matches.
+- `mode=semantic` uses local sparse-token relevance and a dependency-free character n-gram fallback for near-text matches; it does not use pretrained or learned embeddings.
 - `anchor_ids` bias results toward graph-local context without exposing raw traversal details.
 - `types` restrict the result set; default is `fact, episode, entity`.
 - `predicates` act as a hard exclusion when searching facts: any fact whose
@@ -497,7 +497,7 @@ Canonical query error codes:
   "meta": {
     "space_id": "default"
   },
-  "query_text": "what changed about Ladybug concurrency",
+  "query_text": "what changed about LatticeDB concurrency",
   "mode": "hybrid",
   "scope": {
     "group_ids": ["project:yeoul"],

@@ -62,12 +62,9 @@ irm https://github.com/mrchypark/yeoul/releases/download/v0.1.0/install.ps1 | ie
 ```
 
 Both installers validate the archive layout promised by the selected release.
-Releases from `v0.5.1` on must ship the version-pinned Ladybug migration helper; earlier tags ship only the binaries, and they install without one.
 An explicit version always wins over the `latest` release metadata.
 
-Windows builds currently target `x64`. Release archives include a version-pinned
-Ladybug migration helper and runtime; they are used only when converting an
-existing database.
+Windows builds currently target `x64`.
 
 Homebrew:
 
@@ -88,22 +85,9 @@ See the full product-specific guide in [`agent-pack/integrations/README.md`](./a
 
 ## Local Development
 
-Requirements: Go 1.27+ and the `gcc` toolchain (cgo for the legacy migration reader).
+Requirements: Go 1.27+.
 
-LatticeDB is the default storage engine. The Ladybug runtime is retained only
-to build and test automatic migration from legacy databases, and must be staged
-into the Go module cache once per machine:
-
-```bash
-bash scripts/ci/setup-ladybug.sh darwin arm64   # darwin arm64|amd64, linux amd64|arm64, windows amd64
-```
-
-`setup-ladybug.sh` and the release `stage-runtime.sh` verify each downloaded
-native archive against the committed SHA-256 pins in
-`scripts/ci/runtime-digests.txt` before extracting or staging it. An asset with
-no pin, or bytes that do not match its pin, is refused, so rebuilding the same
-Yeoul source cannot silently accept a replaced upstream binary. Add or update a
-pin only when intentionally moving to a new upstream release.
+LatticeDB is the only storage engine used by current releases.
 
 Then build, vet, and test normally:
 
@@ -116,40 +100,18 @@ go test ./...
 Yeoul search runs fully in-process over LatticeDB and requires no external
 retrieval runtime or native retrieval library.
 
-## Database Migration
+## Existing Databases
 
-A writable open of an existing Ladybug database with the default driver
-automatically converts it to LatticeDB. Yeoul writes and verifies a staging
-database first, keeps the original as a timestamped `.ladybug-backup-*`
-sibling, and then installs the verified Lattice database at the original path.
-New databases use the standard `.ltdb` extension. An existing `.lbug` path
-remains valid after in-place migration for backward compatibility.
+Current releases use LatticeDB only and do not read or migrate native Ladybug
+databases. If you have a genuine, unmigrated Ladybug database, use a compatible
+older Yeoul release to migrate it before upgrading. Keep the timestamped
+`.ladybug-backup-*` copy until counts, search, revisions, and lifecycle state
+are verified. Never initialize or force-create a database at a path that
+contains existing data.
 
-A read-only open is a no-mutation open. It never converts a legacy database:
-when the default driver cannot read the database it reports
-`YEOUL_NOT_SUPPORTED: database requires migration before it can be opened
-read-only` and leaves every source file and format unchanged. Inspection and
-backup callers therefore cannot trigger a conversion by accident. To convert a
-database from a read-only caller, run `yeoul admin migrate-db` explicitly, or
-open through the embedded API with `Config.AllowMigration` set.
-Yeoul v0.5.2 and later use the bundled Ladybug v0.13.1 helper for databases
-created by Yeoul v0.2.2. Migration fails without modifying the source database
-when that helper or its matching runtime is unavailable. Do not use Yeoul
-v0.5.0 or v0.5.1 to migrate a pristine v0.2.2 database; v0.5.1 does not isolate
-the helper runtime from Linux Homebrew's inherited library path.
-Stop other Yeoul processes before migrating a database; migration requires
-exclusive ownership of the database path.
-
-Run the same operation explicitly with:
-
-```bash
-yeoul admin migrate-db --db "$HOME/.local/share/yeoul/work-memory.lbug" --json
-```
-
-After verification and while all Yeoul processes are stopped, the migrated
-directory may be renamed to `work-memory.ltdb`. Update `YEOUL_DB` at the same
-time; never initialize a new empty `.ltdb` database while the legacy path still
-contains the authoritative data.
+The path extension does not identify the database format: a migrated LatticeDB
+directory may still be named with a `.lbug` suffix. Do not migrate or rename an
+already-migrated database just because of its extension.
 
 ## Separation Rule
 

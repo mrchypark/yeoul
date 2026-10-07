@@ -2,6 +2,7 @@
 
 This quickstart shows the intended first-run experience for Yeoul.
 Run these commands from the repository root, where `agent-pack/` exists, or replace `"$PWD/agent-pack"` with an absolute path to a policy pack.
+Use a new database path: never initialize or force-create over a path containing existing data.
 
 ## Goal
 Create a local Yeoul database, ingest a simple episode, and retrieve the resulting memory.

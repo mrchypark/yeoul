@@ -351,29 +351,6 @@ func TestCLIIndexBuildStatusAndVerify(t *testing.T) {
 	}
 }
 
-func TestCLIAdminMigrateDatabase(t *testing.T) {
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "current.ltdb")
-	current, err := yeoul.Open(ctx, yeoul.Config{
-		DatabasePath:    dbPath,
-		CreateIfMissing: true,
-	})
-	if err != nil {
-		t.Fatalf("open lattice database: %v", err)
-	}
-	if err := current.Close(ctx); err != nil {
-		t.Fatalf("close lattice database: %v", err)
-	}
-
-	var stdout strings.Builder
-	if err := run(ctx, []string{"admin", "migrate-db", "--db", dbPath, "--json"}, &stdout, &strings.Builder{}); err != nil {
-		t.Fatalf("run admin migrate-db: %v", err)
-	}
-	if !strings.Contains(stdout.String(), `"migrated": false`) || !strings.Contains(stdout.String(), `"source_driver": "lattice"`) {
-		t.Fatalf("unexpected migration output: %s", stdout.String())
-	}
-}
-
 func TestProjectionIncludesRevisionText(t *testing.T) {
 	projections, manifest := buildProjectionArtifacts("test.ltdb", &exportFile{
 		Entities: []yeoul.EntityInput{{

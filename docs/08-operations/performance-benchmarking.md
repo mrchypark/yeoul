@@ -49,7 +49,7 @@ Benchmark reports should include:
 - machine profile
 - OS
 - Go version
-- Ladybug version
+- LatticeDB version
 - Yeoul version or git SHA
 - dataset shape
 - policy pack used

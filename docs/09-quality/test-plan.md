@@ -55,9 +55,16 @@ This document defines the release-oriented quality plan for Yeoul.
 - optional macOS runner if packaging requires it
 
 ## Release gate
-A release candidate should not be cut unless:
+The active release workflow checks its configured build and test jobs. A
+benchmark regression threshold is planned, but is not currently measured or
+enforced by `release.yml`; do not treat it as an active release gate until a
+baseline and check are implemented.
+
+## Planned benchmark gate
+When a measured threshold is defined and wired into the release workflow, a
+release candidate should not be cut unless:
 - core functional suite passes
 - persistence suite passes
 - lifecycle suite passes
 - policy validation suite passes
-- benchmark regression check is within threshold
+- benchmark regression check passes the documented threshold

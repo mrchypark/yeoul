@@ -11,11 +11,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# The version-pinned Ladybug migration helper first shipped inside the v0.5.1
-# archives. Older tags only carry the binaries, so requiring the helper for
-# them would reject supported historical installs.
-$MigrationHelperMinVersion = "v0.5.1"
-
 # Resolve the install root once so PATH entries and staged directories stay
 # absolute even when the caller passes a relative path.
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
@@ -35,29 +30,6 @@ function Resolve-Tag {
         throw "Failed to resolve latest release tag."
     }
     return $release.tag_name
-}
-
-function Test-VersionAtLeast {
-    param([string]$Version, [string]$Minimum)
-
-    $have = @($Version.TrimStart('v') -split '\.')
-    $want = @($Minimum.TrimStart('v') -split '\.')
-    $count = [Math]::Max($have.Count, $want.Count)
-
-    for ($i = 0; $i -lt $count; $i++) {
-        $left = 0
-        $right = 0
-        if ($i -lt $have.Count) {
-            [void][int]::TryParse(($have[$i] -replace '[^0-9].*$', ''), [ref]$left)
-        }
-        if ($i -lt $want.Count) {
-            [void][int]::TryParse(($want[$i] -replace '[^0-9].*$', ''), [ref]$right)
-        }
-        if ($left -ne $right) {
-            return ($left -gt $right)
-        }
-    }
-    return $true
 }
 
 function Test-InstallerOwnedBinDir {
@@ -220,13 +192,6 @@ try {
         }
     }
 
-    if (Test-VersionAtLeast -Version $tag -Minimum $MigrationHelperMinVersion) {
-        $migrationHelper = Join-Path $stagingDir "libexec\ladybug-v0131\yeoul-migrate-v0131.exe"
-        if (-not (Test-Path -LiteralPath $migrationHelper)) {
-            throw "Archive is missing the version-pinned Ladybug migration helper."
-        }
-    }
-
     $hasBackup = $false
     $targetMoved = $false
     try {
@@ -261,7 +226,6 @@ try {
     if (-not $SkipPathUpdate) {
         Write-Host "Added $binDir to the user PATH, ahead of any other installed Yeoul version. Open a new shell to pick it up everywhere."
     }
-    Write-Host "If Windows reports a missing runtime, install the Microsoft Visual C++ 2015-2022 Redistributable (x64)."
 }
 finally {
     if ($stagingDir -and (Test-Path -LiteralPath $stagingDir)) {

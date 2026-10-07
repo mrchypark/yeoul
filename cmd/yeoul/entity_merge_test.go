@@ -301,6 +301,7 @@ type failBatchEngine struct {
 	yeoul.Engine
 	err         error
 	upsertCalls int
+	batchCalls  int
 }
 
 func (e *failBatchEngine) UpsertEntity(ctx context.Context, input yeoul.EntityInput) (*yeoul.Entity, error) {
@@ -309,6 +310,7 @@ func (e *failBatchEngine) UpsertEntity(ctx context.Context, input yeoul.EntityIn
 }
 
 func (e *failBatchEngine) IngestBatch(context.Context, yeoul.BatchInput) (*yeoul.BatchResult, error) {
+	e.batchCalls++
 	return nil, e.err
 }
 
