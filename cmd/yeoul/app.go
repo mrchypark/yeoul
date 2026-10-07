@@ -119,7 +119,6 @@ Usage:
   yeoul index status --root DIR [--json]
   yeoul index verify --db PATH --root DIR [--json]
   yeoul admin checkpoint --db PATH [--json]
-  yeoul admin migrate-db --db PATH [--json]
   yeoul admin compact --db PATH [--apply] [--json] [--confirm]
   yeoul admin export --db PATH --out FILE [--json]
   yeoul admin import --db PATH --in FILE [--json] [--confirm]

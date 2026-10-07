@@ -7,11 +7,6 @@ version="${YEOUL_VERSION:-latest}"
 install_root="${YEOUL_INSTALL_ROOT:-${HOME}/.local/share/yeoul}"
 bin_dir="${YEOUL_BIN_DIR:-${HOME}/.local/bin}"
 
-# The version-pinned Ladybug migration helper first shipped inside the v0.5.1
-# archives. Older tags only carry the binaries, so requiring the helper for
-# them would reject supported historical installs.
-migration_helper_min_version="v0.5.1"
-
 absolute_path() {
   # Resolve "$1" against the current directory so generated wrappers keep
   # working when they are invoked from an unrelated working directory.
@@ -114,27 +109,6 @@ resolve_tag() {
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1
 }
 
-# version_at_least <tag> <minimum-tag>
-# Compares dotted release tags like v0.5.1 without relying on "sort -V", which
-# BusyBox sort does not implement.
-version_at_least() {
-  awk -v have="$1" -v want="$2" 'BEGIN {
-    sub(/^v/, "", have)
-    sub(/^v/, "", want)
-    n = split(have, h, ".")
-    m = split(want, w, ".")
-    count = (n > m) ? n : m
-    for (i = 1; i <= count; i++) {
-      a = (i <= n) ? h[i] + 0 : 0
-      b = (i <= m) ? w[i] + 0 : 0
-      if (a != b) {
-        if (a > b) { exit 0 } else { exit 1 }
-      }
-    }
-    exit 0
-  }'
-}
-
 tag="$(resolve_tag)"
 if [[ -z "${tag}" ]]; then
   echo "failed to resolve release tag" >&2
@@ -209,13 +183,6 @@ for executable in yeoul yeould; do
     exit 1
   fi
 done
-
-if version_at_least "${tag}" "${migration_helper_min_version}"; then
-  if [[ ! -x "${staging_dir}/libexec/ladybug-v0131/yeoul-migrate-v0131" ]]; then
-    echo "archive is missing the version-pinned Ladybug migration helper" >&2
-    exit 1
-  fi
-fi
 
 if [[ -e "${target_dir}" || -L "${target_dir}" ]]; then
   mv "${target_dir}" "${backup_dir}"

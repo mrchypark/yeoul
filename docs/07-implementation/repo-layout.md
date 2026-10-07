@@ -18,7 +18,6 @@ yeoul/
   internal/
     storage/
       lattice/
-      ladybug/
     core/
     query/
     policy/
@@ -47,9 +46,6 @@ Planned local daemon entrypoint; not implemented in current releases.
 
 ### `internal/storage/lattice`
 Canonical storage adapter: owns database initialization, queries, and transaction helpers for the default LatticeDB engine.
-
-### `internal/storage/ladybug`
-Legacy migration reader: reads Ladybug databases only so they can be converted to LatticeDB. It never receives default canonical writes.
 
 ### `internal/core`
 Owns domain models and core memory operations.

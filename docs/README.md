@@ -74,7 +74,7 @@ docs/
 
   07-implementation/
     repo-layout.md
-    ladybug-cypher-ddl.md
+    ladybug-cypher-ddl.md (historical only)
     indexing.md
     transactions.md
     testing-strategy.md

@@ -19,7 +19,9 @@ consume, so a pack cannot report valid while changing nothing:
   list of strings), and `window_days` (integer). These are the only filters
   applied to a search request.
 - `expand`: `entity_types` (list of strings) is applied to the search scope.
-  `hops` is accepted as advisory metadata and must be an integer.
+  `hops` is accepted as advisory metadata and must be an integer, but is
+  ignored when building the query request. Set the hop limit through the API or
+  CLI when needed.
 - `extensions`: the only place arbitrary advisory content is allowed.
 
 Unknown keys outside `extensions` fail validation.

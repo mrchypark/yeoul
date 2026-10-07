@@ -4,6 +4,10 @@
 
 Accepted
 
+Historical decision record. The Ladybug reader and migration compatibility
+described below were transitional and are not included in current releases,
+which use LatticeDB only.
+
 ## Context
 
 Yeoul needs an embedded property graph that can preserve temporal records,

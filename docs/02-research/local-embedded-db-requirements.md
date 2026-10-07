@@ -1,6 +1,8 @@
 # Local Embedded DB Requirements
 
-This document defines the storage-engine requirements for Yeoul as a local-first memory system.
+Status: Historical storage-engine evaluation; current releases use LatticeDB only.
+
+This document records storage-engine requirements for Yeoul as a local-first memory system.
 
 ## Why this document exists
 Yeoul depends heavily on the behavior of its storage engine. The engine must support not only graph storage, but also a practical local development and runtime model.
@@ -77,6 +79,6 @@ A schema-first graph model is acceptable if it improves stability and performanc
 - Can Yeoul hide raw query language behind a stable API?
 - Is the Go integration practical enough for local packaging?
 
-## Current fit assessment
+## Fit assessment at the time of evaluation
 LatticeDB is the selected engine because it matches embedded operation, local persistence, graph structure, transactional writes, and Go-native packaging requirements.
-Its single-owner process model remains an explicit Yeoul operational constraint. Ladybug is retained only as a legacy migration reader.
+Its single-owner process model remains an explicit Yeoul operational constraint. Native Ladybug migration is not supported by current releases.

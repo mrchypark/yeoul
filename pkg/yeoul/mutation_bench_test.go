@@ -196,7 +196,10 @@ func BenchmarkMutationSnapshotCloneScaling(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if state := fixture.eng.snapshotLocked(); len(state.Facts) != fixture.facts {
+				fixture.eng.mu.RLock()
+				state := fixture.eng.snapshotLocked()
+				fixture.eng.mu.RUnlock()
+				if len(state.Facts) != fixture.facts {
 					b.Fatalf("unexpected snapshot shape: %d facts", len(state.Facts))
 				}
 			}
@@ -215,7 +218,9 @@ func BenchmarkMutationStoreDeltaScaling(b *testing.B) {
 		b.Run(fmt.Sprintf("history=%d", history), func(b *testing.B) {
 			fixture := newBenchMutationFixture(b, benchStoreLattice, history)
 			store := fixture.eng.store
+			fixture.eng.mu.RLock()
 			state := fixture.eng.snapshotLocked()
+			fixture.eng.mu.RUnlock()
 			if err := store.Save(state); err != nil {
 				b.Fatalf("prime store: %v", err)
 			}

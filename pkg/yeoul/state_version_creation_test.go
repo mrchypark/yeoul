@@ -142,6 +142,33 @@ func TestLatticeOpenRefusesInitializedDatabaseInAnEmptyLookingDirectory(t *testi
 	}
 }
 
+func TestLatticeOpenDoesNotTreatStorageEvidenceAsUninitialized(t *testing.T) {
+	for _, name := range []string{"state.json", "state.json.pages", "wal.base", "wal.log", "ids.json"} {
+		t.Run(name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "staged.ltdb")
+			prepareUninitializedDirectory(t, dbPath)
+			if err := os.WriteFile(filepath.Join(dbPath, name), []byte("unreadable storage evidence"), 0o600); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+			if latticeDatabaseUninitialized(dbPath) || latticeDatabaseUninitializedDirectory(dbPath) {
+				t.Fatalf("%s was classified as an uninitialized database", name)
+			}
+
+			barrierCalled := false
+			previous := writableOpenBarrier
+			writableOpenBarrier = func() { barrierCalled = true }
+			t.Cleanup(func() { writableOpenBarrier = previous })
+			err := inspectStateVersionBeforeWritableOpen(dbPath, true)
+			if err == nil {
+				t.Fatalf("expected %s to be refused because its version is unknown", name)
+			}
+			if barrierCalled {
+				t.Fatal("writable open barrier ran before the stored version was established")
+			}
+		})
+	}
+}
+
 // TestLatticeInspectionAcceptsOnlyTheCreationItMayInitialize checks the
 // inspection decision itself, so the creation policy is not inferred from a
 // later failure. The read-only policy must refuse the uninitialized directory

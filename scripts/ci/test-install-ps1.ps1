@@ -38,7 +38,7 @@ foreach ($definition in $functionDefinitions) {
     Invoke-Expression $definition.Extent.Text
 }
 
-foreach ($required in @("Test-VersionAtLeast", "Test-InstallerOwnedBinDir", "Get-UpdatedUserPath", "Add-ToUserPath")) {
+foreach ($required in @("Test-InstallerOwnedBinDir", "Get-UpdatedUserPath", "Add-ToUserPath")) {
     if (-not (Get-Command $required -CommandType Function -ErrorAction SilentlyContinue)) {
         throw "installer helper $required was not extracted from scripts/install.ps1"
     }
@@ -100,17 +100,6 @@ function New-TempPathStore {
 }
 
 try {
-    Write-Section "Test-VersionAtLeast"
-    Assert-True "v0.5.1 is at least v0.5.1" (Test-VersionAtLeast -Version "v0.5.1" -Minimum "v0.5.1")
-    Assert-True "v0.5.5 is at least v0.5.1" (Test-VersionAtLeast -Version "v0.5.5" -Minimum "v0.5.1")
-    Assert-True "v0.5.10 is newer than v0.5.9" (Test-VersionAtLeast -Version "v0.5.10" -Minimum "v0.5.9")
-    Assert-True "v0.6.0 is at least v0.5.1" (Test-VersionAtLeast -Version "v0.6.0" -Minimum "v0.5.1")
-    Assert-True "v1.0.0 is at least v0.5.1" (Test-VersionAtLeast -Version "v1.0.0" -Minimum "v0.5.1")
-    Assert-True "0.5.5 without prefix is at least v0.5.1" (Test-VersionAtLeast -Version "0.5.5" -Minimum "v0.5.1")
-    Assert-True "v0.5.0 is older than v0.5.1" (-not (Test-VersionAtLeast -Version "v0.5.0" -Minimum "v0.5.1"))
-    Assert-True "v0.1.0 is older than v0.5.1" (-not (Test-VersionAtLeast -Version "v0.1.0" -Minimum "v0.5.1"))
-    Assert-True "v0.4.99 is older than v0.5.1" (-not (Test-VersionAtLeast -Version "v0.4.99" -Minimum "v0.5.1"))
-
     Write-Section "Test-InstallerOwnedBinDir"
     $root = Join-Path $workDir "Programs/yeoul"
     Assert-True "own version bin dir is owned" (Test-InstallerOwnedBinDir -Candidate (Join-Path $root "v0.5.5/bin") -Root $root)

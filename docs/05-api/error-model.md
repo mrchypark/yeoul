@@ -31,7 +31,7 @@ Examples:
 Examples:
 - cannot open database
 - lock conflict
-- migration failure
+- schema migration failure
 - query execution failure
 
 ### Validation
@@ -63,13 +63,11 @@ Examples:
 - planned service-only feature in embedded mode
 - unsupported policy version
 - unsupported query operator
-- read-only open of a database that requires migration (`YEOUL_NOT_SUPPORTED`)
 
 ## Suggested error codes
 - `YEOUL_CONFIG_INVALID`
 - `YEOUL_DB_OPEN_FAILED`
 - `YEOUL_DB_LOCK_CONFLICT`
-- `YEOUL_DB_MIGRATION_FAILED`
 - `YEOUL_QUERY_FAILED`
 - `YEOUL_INPUT_INVALID`
 - `YEOUL_POLICY_INVALID`

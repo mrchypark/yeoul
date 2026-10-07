@@ -33,7 +33,6 @@ Scope:
 
 Requirements:
 - use the real default engine (LatticeDB)
-- cover the legacy Ladybug adapter through the migration compatibility tests
 - run on CI where supported
 - use isolated temp database paths
 

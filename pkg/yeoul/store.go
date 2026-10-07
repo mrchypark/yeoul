@@ -8,32 +8,21 @@ import (
 	"time"
 )
 
-// errMigrationRequired marks a read-only open that found a database the default
-// driver cannot read. The wrapped sentinel lets callers distinguish a
-// conversion the caller declined from an unrelated open failure.
-var errMigrationRequired = errors.New("database migration is required")
 var errFactCandidateUnavailable = errors.New("fact candidate capability unavailable")
 
 const (
-	// openStoreAttempts bounds the retries an open may spend on recovery or on
-	// converting a legacy database before it gives up.
-	openStoreAttempts = 4
-	// ownershipAcquireAttempts and ownershipRetryDelay bound how long an open
-	// waits for a contended ownership lock before reporting a running migration.
 	ownershipAcquireAttempts = 4
 	ownershipRetryDelay      = 25 * time.Millisecond
 )
 
 type StorageDriver string
 
-const (
-	StorageDriverLattice StorageDriver = "lattice"
-	// StorageDriverLadybug is retained for legacy compatibility and migration; it is never the default.
-	StorageDriverLadybug StorageDriver = "ladybug"
-)
+const StorageDriverLattice StorageDriver = "lattice"
 
 type stateStore interface {
 	Load() (*persistedState, error)
+	// Save consumes state synchronously and must not mutate or retain its maps
+	// or slices; it may retain an independent clone.
 	Save(state persistedState) error
 	Close() error
 }
@@ -151,103 +140,35 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 		}
 	}
 
-	// One attempt may be spent converting a legacy database, which has to
-	// happen while this open holds no ownership at all.
-	for attempt := 0; attempt < openStoreAttempts; attempt++ {
-		// Ownership is held across the driver open and the store's whole
-		// lifetime. An ordinary open holds the shared lock, so a migration needs
-		// the exclusive lock and can neither snapshot a database this store will
-		// keep changing nor install a replacement underneath it. A maintenance
-		// window holds the exclusive lock itself, so no other process can change
-		// the database while its operation runs.
-		lock, err := acquireOpenOwnership(cfg, databasePath, ownership)
-		if err != nil {
-			return nil, err
-		}
-
-		// A marker can only exist while a migration holds the exclusive lock or
-		// after one crashed. The lock this open holds rules out a live migration,
-		// so a marker here means recovery is due. Recovery changes the database
-		// namespace, so it runs under the exclusive lock.
-		//
-		// Recovery runs for a read-only open too, and deliberately so: the
-		// read-only contract below forbids starting a conversion, not finishing
-		// one. A marker is proof that a migration already began on this
-		// database, and the only complete snapshot may still be sitting in the
-		// staging path. Refusing to recover would leave the database unusable
-		// for a reader that never asked for a conversion, so completing the
-		// interrupted protocol is treated as part of opening, not as a mutation
-		// the caller must opt into with AllowMigration.
-		pending, pendingErr := migrationRecoveryPending(databasePath)
-		if pendingErr != nil {
-			_ = lock.Release()
-			return nil, pendingErr
-		}
-		if pending {
-			// A maintenance window already holds the exclusive lock recovery
-			// requires, so it recovers the marker itself instead of handing
-			// ownership back and forth.
-			if ownership == openStoreExclusiveOwnership {
-				recoveryErr := recoverDatabaseMigration(databasePath)
-				if releaseErr := lock.Release(); releaseErr != nil {
-					return nil, errors.Join(recoveryErr, releaseErr)
-				}
-				if recoveryErr != nil {
-					return nil, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
-						"database_path": databasePath,
-					}, recoveryErr)
-				}
-				continue
-			}
-			retry, recoverErr := recoverPendingMigration(lock, cfg, databasePath)
-			if recoverErr != nil {
-				return nil, recoverErr
-			}
-			if retry {
-				time.Sleep(ownershipRetryDelay)
-			}
-			continue
-		}
-
-		store, openErr := openDriverStore(cfg)
-		if openErr == nil {
-			return &ownershipStore{stateStore: store, ownership: lock, databasePath: databasePath}, nil
-		}
-		if releaseErr := lock.Release(); releaseErr != nil {
-			return nil, errors.Join(openErr, releaseErr)
-		}
-		if errors.Is(openErr, errUnsupportedStateVersion) {
-			// The database holds a LatticeDB state written under an application-state
-			// version this build cannot read. The legacy conversion below would replace
-			// the database, so the version rejection is reported as it stands.
-			return nil, openErr
-		}
-		if errors.Is(openErr, errLatticeStateVersionUnestablished) {
-			// The version could not be established through the read-only inspection,
-			// which is not evidence that this is a legacy database. Converting here
-			// could replace a database this build simply could not inspect, so the
-			// refusal is reported instead of deferring to the migration fallback.
-			return nil, openErr
-		}
-		if !openMayRequireMigration(cfg) {
-			if cfg.Driver == "" && cfg.ReadOnly && !cfg.AllowMigration && databasePathExists(cfg.DatabasePath) {
-				// The default driver could not read a database that exists, and this
-				// read-only open may not convert it. Report the migration
-				// requirement instead of mutating the source the caller only asked
-				// to inspect.
-				return nil, migrationRequiredError(cfg, openErr)
-			}
-			return nil, openErr
-		}
-		// The driver was left to the default, the path exists, and the canonical
-		// engine could not read it: convert the legacy database and retry.
-		if _, migrationErr := MigrateDatabase(context.Background(), databasePath); migrationErr != nil {
-			return nil, errors.Join(openErr, migrationErr)
-		}
+	lock, err := acquireOpenOwnership(cfg, databasePath, ownership)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errorf(ErrStorageFailed, "database ownership could not be established", map[string]any{
-		"database_path": databasePath,
-	}, nil)
+	pending, markerErr := migrationRecoveryPending(databasePath)
+	if markerErr != nil {
+		return nil, errors.Join(errorf(ErrStorageFailed, "inspect database migration marker", map[string]any{
+			"database_path": databasePath,
+		}, markerErr), lock.Release())
+	}
+	if pending {
+		return nil, errors.Join(errorf(ErrStorageFailed, "unfinished database migration marker found; manual recovery is required", map[string]any{
+			"database_path": databasePath,
+		}, nil), lock.Release())
+	}
+	if info, err := os.Stat(databasePath); err == nil && !info.IsDir() {
+		return nil, errors.Join(errorf(ErrNotSupported, "database path is a regular file; refusing to open or replace it", map[string]any{
+			"database_path": databasePath,
+		}, nil), lock.Release())
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, errors.Join(errorf(ErrStorageFailed, "inspect database path", map[string]any{
+			"database_path": databasePath,
+		}, err), lock.Release())
+	}
+	store, err := openDriverStore(cfg)
+	if err != nil {
+		return nil, errors.Join(err, lock.Release())
+	}
+	return &ownershipStore{stateStore: store, ownership: lock, databasePath: databasePath}, nil
 }
 
 // ownershipStore keeps the shared database ownership lock alive for the whole
@@ -332,73 +253,14 @@ func acquireOpenOwnership(cfg Config, databasePath string, ownership openStoreOw
 	return nil, migrationInProgressError(databasePath)
 }
 
-// migrationRecoveryPending reports whether an interrupted migration left a
-// marker that recovery has to complete before a driver open can observe the
-// database.
+// migrationRecoveryPending detects an interrupted conversion. Its source
+// engine is no longer available, so opening must fail without changing files.
 func migrationRecoveryPending(databasePath string) (bool, error) {
-	if _, err := os.Stat(databaseMigrationMarkerPath(databasePath)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
+	_, err := os.Stat(databaseMigrationMarkerPath(databasePath))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
-	return true, nil
-}
-
-// recoverPendingMigration completes an interrupted migration under exclusive
-// ownership, so no other opener can observe the half-finished protocol while it
-// runs. A crash after the source backup rename leaves the marker, the backup,
-// and the staging database behind without the original path, and an open that
-// created a fresh database there would strand the only complete snapshot in
-// staging.
-//
-// The caller's shared lock is released first, because the exclusive lock that
-// recovery requires cannot be taken while this process still holds the shared
-// one. Ownership is therefore acquired again, and recovery only runs when that
-// succeeds: recovery moves and replaces files, so it must never run without
-// ownership. A database whose ownership cannot be established keeps its pending
-// marker and reports the failure, which is safer than installing a recovery over
-// a database another process may be migrating.
-//
-// It reports retry when another opener is already recovering this database.
-func recoverPendingMigration(shared *databaseOwnershipLock, cfg Config, databasePath string) (bool, error) {
-	_ = cfg
-	exclusive := shared
-	if !shared.exclusive {
-		// A writable open already owns the database exclusively, so its
-		// ownership is kept rather than released and taken again: the gap
-		// between the two would let another owner change the database that
-		// recovery is about to act on.
-		if err := shared.Release(); err != nil {
-			return false, err
-		}
-		acquired, err := acquireDatabaseOwnership(databasePath, true)
-		if errors.Is(err, errDatabaseOwnershipBusy) {
-			return true, nil
-		}
-		if err != nil {
-			return false, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
-				"database_path": databasePath,
-				"reason":        "database ownership could not be established",
-			}, err)
-		}
-		exclusive = acquired
-	}
-	recoverErr := recoverDatabaseMigration(databasePath)
-	releaseErr := exclusive.Release()
-	if recoverErr != nil {
-		// A recovery that refuses the staged database already reports the reason
-		// as a typed error, and that reason is what tells the caller which
-		// database it cannot read. Wrapping it in a storage failure would hide
-		// the compatibility decision behind an unreadable database.
-		if unwrapYeoulError(recoverErr) != nil {
-			return false, recoverErr
-		}
-		return false, errorf(ErrStorageFailed, "recover interrupted database migration", map[string]any{
-			"database_path": databasePath,
-		}, recoverErr)
-	}
-	return false, releaseErr
+	return err == nil, err
 }
 
 func migrationInProgressError(databasePath string) error {
@@ -415,63 +277,19 @@ func databaseInUseError(databasePath string) error {
 	}, nil)
 }
 
+func databaseMigrationMarkerPath(databasePath string) string {
+	return databasePath + ".yeoul-migration.json"
+}
+
 func openDriverStore(cfg Config) (stateStore, error) {
-	switch resolveStorageDriver(cfg) {
-	case StorageDriverLattice:
+	switch cfg.Driver {
+	case "", StorageDriverLattice:
 		return newLatticeStore(cfg)
-	case StorageDriverLadybug:
-		return newLadybugStore(cfg)
 	default:
 		return nil, errorf(ErrConfigInvalid, "unsupported storage driver", map[string]any{
 			"driver": cfg.Driver,
 		}, nil)
 	}
-}
-
-// openMayRequireMigration reports whether a failed driver open can mean the
-// database is still a legacy database that the default driver has to convert.
-// An explicit driver never triggers an implicit migration.
-//
-// A read-only open is a no-mutation open: converting a legacy database replaces
-// its format in place, which an inspection or backup caller never asked for, so
-// the conversion only runs when the caller opted in with AllowMigration. A
-// writable open keeps converting automatically because the caller already
-// accepted a mutation of the database.
-func openMayRequireMigration(cfg Config) bool {
-	if cfg.Driver != "" {
-		return false
-	}
-	if cfg.ReadOnly && !cfg.AllowMigration {
-		return false
-	}
-	return databasePathExists(cfg.DatabasePath)
-}
-
-// databasePathExists reports whether a database file or directory exists at the
-// path. It is the evidence that a failed driver open might be a legacy database
-// rather than a database this open is about to create.
-func databasePathExists(databasePath string) bool {
-	_, err := os.Stat(databasePath)
-	return err == nil
-}
-
-// migrationRequiredError reports that a read-only open found a database the
-// default driver cannot read and that a conversion would be required. The open
-// does not convert on its own, so the caller decides between an explicit
-// migration and opening with the legacy driver.
-func migrationRequiredError(cfg Config, cause error) error {
-	return errorf(ErrNotSupported, "database requires migration before it can be opened read-only", map[string]any{
-		"database_path": cfg.DatabasePath,
-		"reason":        "read-only open does not convert a legacy database",
-		"remediation":   "run 'yeoul admin migrate-db --db <path>' or open with allow_migration set",
-	}, errors.Join(errMigrationRequired, cause))
-}
-
-func resolveStorageDriver(cfg Config) StorageDriver {
-	if cfg.Driver != "" {
-		return cfg.Driver
-	}
-	return StorageDriverLattice
 }
 
 func emptyPersistedState() persistedState {

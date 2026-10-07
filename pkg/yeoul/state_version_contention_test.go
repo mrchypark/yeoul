@@ -44,10 +44,7 @@ func TestLatticeOpenRefusesUninspectedDatabaseHeldByAWriter(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "contended.ltdb")
 	writeLatticeStateFixture(t, dbPath, "2", false, unknownFieldFixtureNodes())
-	appendWALByte(t, dbPath)
 
-	// The competing writer replays the pending native WAL as it opens, so the
-	// bytes to compare against are the ones that exist once it is in place.
 	writer := holdWritableLatticeHandle(t, dbPath)
 	before := hashDatabaseTree(t, dbPath)
 
@@ -111,10 +108,6 @@ func TestLatticeOpenReinspectsWhenAWriterFillsTheCreationWindow(t *testing.T) {
 			fill: func(t *testing.T, dbPath string) {},
 			install: func(t *testing.T, dbPath string) bool {
 				writeLatticeStateFixture(t, dbPath, "2", false, unknownFieldFixtureNodes())
-				// A pending native WAL tail is what a writable open would
-				// replay and checkpoint, so the database bytes show whether the
-				// version was resolved before that open.
-				appendWALByte(t, dbPath)
 				return false
 			},
 			keepBytes: true,

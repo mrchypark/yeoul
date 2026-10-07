@@ -16,6 +16,5 @@ Core는 AI를 모른다.
 Agent Pack은 Core를 사용하는 규칙만 제공한다.
 ```
 
-LatticeDB is the canonical embedded storage engine, and Yeoul assumes an embedded, schema-first,
-local-first architecture from the start. The Ladybug adapter is retained only to read legacy
-databases during migration, so it does not shape the architecture of current releases.
+LatticeDB is the only embedded storage engine in current releases. Native Ladybug database
+migration is not supported by current releases.

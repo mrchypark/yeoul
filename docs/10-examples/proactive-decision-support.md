@@ -18,7 +18,7 @@ export YEOUL_DB="$HOME/.local/share/yeoul/work-memory.ltdb"
 mkdir -p "$(dirname "$YEOUL_DB")"
 ```
 
-Use `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable local experiments. If only the legacy user-level `.lbug` database exists, keep using that path until migration and any rename are verified.
+Use `./yeoul.ltdb` only for quickstarts, isolated tests, or disposable local experiments. Current releases use LatticeDB only; follow the README transition note for native Ladybug data before upgrading. Never initialize over existing data.
 
 ## Privacy and authority
 

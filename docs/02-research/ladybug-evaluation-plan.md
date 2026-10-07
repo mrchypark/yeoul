@@ -1,6 +1,6 @@
 # Ladybug Evaluation Plan
 
-Status: superseded by [ADR 0005](../03-architecture/adr/0005-use-latticedb.md). This document is retained as historical evaluation context for the legacy migration reader.
+Status: historical evaluation, superseded by [ADR 0005](../03-architecture/adr/0005-use-latticedb.md). It does not describe current-release storage or migration support.
 
 ## Goal
 

@@ -299,3 +299,31 @@ func cloneSource(src Source) *Source {
 	dst.Metadata = cloneAnyMap(src.Metadata)
 	return &dst
 }
+
+func clonePersistedState(state persistedState) persistedState {
+	cloned := emptyPersistedState()
+	cloned.Version = state.Version
+	cloned.Sequence = state.Sequence
+	for id, source := range state.Sources {
+		cloned.Sources[id] = *cloneSource(source)
+	}
+	for id, episode := range state.Episodes {
+		cloned.Episodes[id] = *cloneEpisode(episode)
+	}
+	for id, entity := range state.Entities {
+		cloned.Entities[id] = *cloneEntity(entity)
+	}
+	for id, fact := range state.Facts {
+		cloned.Facts[id] = *cloneFact(fact)
+	}
+	for id, revision := range state.FactRevisions {
+		cloned.FactRevisions[id] = *cloneFactRevision(revision)
+	}
+	for id, revision := range state.EntityRevisions {
+		cloned.EntityRevisions[id] = *cloneEntityRevision(revision)
+	}
+	for id, watermark := range state.MigrationWatermarks {
+		cloned.MigrationWatermarks[id] = *cloneMigrationWatermark(watermark)
+	}
+	return cloned
+}

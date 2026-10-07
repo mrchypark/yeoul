@@ -1,5 +1,7 @@
 # Graphiti Analysis
 
+Status: Research snapshot; not a specification of current implementation details.
+
 This document explains what Yeoul should learn from Graphiti and what it should intentionally leave behind.
 
 ## Why Graphiti matters
@@ -44,7 +46,7 @@ Yeoul should resist becoming a broad orchestration framework.
 |---|---|---|
 | Core identity | AI agent memory framework | Temporal graph memory engine |
 | Runtime language | Python | Go |
-| Storage backend | Pluggable / graph backends | LatticeDB canonical; Ladybug migration-only |
+| Storage backend | Pluggable / graph backends | LatticeDB canonical; historical Ladybug migration support is retired |
 | Agent behavior | Central | Externalized |
 | LLM calls | Common in workflow | Explicitly outside core |
 | Policy files | Useful but secondary | First-class integration layer |

@@ -2,7 +2,7 @@
 
 This document lists the primary external references that informed the current Yeoul product documentation.
 
-## Ladybug official documentation
+## Ladybug official documentation (historical)
 - Official docs home
 - Getting started / persistence model
 - Connections and concurrency
