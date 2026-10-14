@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	lstore "github.com/mrchypark/yeoul/internal/storage/lattice"
 )
 
 var errFactCandidateUnavailable = errors.New("fact candidate capability unavailable")
@@ -35,6 +37,10 @@ type factCandidateStore interface {
 
 type factCandidateReadiness interface {
 	FactCandidateReady() bool
+}
+
+type nativeFullTextStore interface {
+	SearchCandidates(ctx context.Context, query string, counts map[string]int) (map[string]float64, error)
 }
 
 type checkpointStore interface {
@@ -182,6 +188,14 @@ type ownershipStore struct {
 
 func (s *ownershipStore) Close() error {
 	return errors.Join(s.stateStore.Close(), s.ownership.Release())
+}
+
+func (s *ownershipStore) SearchCandidates(ctx context.Context, query string, counts map[string]int) (map[string]float64, error) {
+	store, ok := s.stateStore.(nativeFullTextStore)
+	if !ok {
+		return nil, lstore.ErrSearchIndexUnavailable
+	}
+	return store.SearchCandidates(ctx, query, counts)
 }
 
 // Checkpoint forwards to the wrapped driver so a driver without checkpoint

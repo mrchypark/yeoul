@@ -2,15 +2,17 @@ package yeoul
 
 import (
 	"context"
+	"errors"
 	"math"
 	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	lstore "github.com/mrchypark/yeoul/internal/storage/lattice"
 )
 
 func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
-	_ = ctx
 	query := strings.TrimSpace(strings.ToLower(req.QueryText))
 	if query == "" {
 		return nil, errorf(ErrInputInvalid, "query_text is required", map[string]any{"field": "query_text"}, nil)
@@ -24,6 +26,14 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	if mode == "" {
 		mode = SearchModeHybrid
 	}
+	switch mode {
+	case SearchModeHybrid, SearchModeKeyword, SearchModeSemantic, SearchModeFullText:
+	default:
+		return nil, errorf(ErrInputInvalid, "unsupported search mode", map[string]any{"mode": mode}, nil)
+	}
+	if mode == SearchModeFullText && req.Temporal.AsOf != nil {
+		return nil, errorf(ErrNotSupported, "fulltext search does not support as_of; use keyword or hybrid mode", nil, nil)
+	}
 	offset, err := decodeCursor(req.Page.Cursor)
 	if err != nil {
 		return nil, err
@@ -31,6 +41,24 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	nativeScores := map[string]float64(nil)
+	if mode == SearchModeFullText {
+		store, ok := e.store.(nativeFullTextStore)
+		if !ok {
+			return nil, errorf(ErrNotSupported, "fulltext search requires a persisted LatticeDB index", nil, nil)
+		}
+		nativeScores, err = store.SearchCandidates(ctx, query, map[string]int{
+			"Fact":    len(e.facts),
+			"Episode": len(e.episodes),
+			"Entity":  len(e.entities),
+		})
+		if errors.Is(err, lstore.ErrSearchIndexUnavailable) {
+			return nil, errorf(ErrNotSupported, "fulltext search index is unavailable; open the database writable to build it", nil, err)
+		}
+		if err != nil {
+			return nil, errorf(ErrStorageFailed, "query native fulltext index", nil, err)
+		}
+	}
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
 	anchorIDs := e.canonicalEntityIDsAtLocked(req.AnchorIDs, req.Temporal, index)
@@ -39,12 +67,15 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	graphSeeds := map[string]float64{}
 	seenHits := map[string]bool{}
 	var stats *sparseCorpusStats
-	if mode != SearchModeKeyword {
+	if mode != SearchModeKeyword && mode != SearchModeFullText {
 		stats = e.searchCorpusStats(types, req, spaceID, index)
 	}
 
 	if slices.Contains(types, "fact") {
-		for _, fact := range e.facts {
+		for id, fact := range e.facts {
+			if mode == SearchModeFullText && !hasNativeSearchCandidate(nativeScores, "Fact", id) {
+				continue
+			}
 			factRecord := e.factVersionAt(fact, req.Temporal, index)
 			if factRecord == nil || factRecord.SpaceID != spaceID || !e.matchesScopeForFact(*factRecord, req.Scope, req.Temporal, index) {
 				continue
@@ -59,7 +90,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				continue
 			}
 			text := strings.ToLower(factRecord.ValueText + " " + factRecord.Predicate + " " + factRecord.SubjectID + " " + factRecord.ObjectID)
-			matched, baseScore, reason := matchSearchWithStats(mode, query, text, stats)
+			matched, baseScore, reason := matchSearchCandidate(mode, query, text, factRecord.ID, "Fact", stats, nativeScores)
 			if matched {
 				score := baseScore + 0.4
 				reasons := []string{reason}
@@ -89,7 +120,10 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 		}
 	}
 	if slices.Contains(types, "episode") {
-		for _, episode := range e.episodes {
+		for id, episode := range e.episodes {
+			if mode == SearchModeFullText && !hasNativeSearchCandidate(nativeScores, "Episode", id) {
+				continue
+			}
 			if episode.SpaceID != spaceID || !e.episodeVisibleAt(episode, req.Temporal) || !matchesScopeForEpisode(episode, req.Scope, e.sources) {
 				continue
 			}
@@ -100,7 +134,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			if len(req.AnchorIDs) > 0 && !anchorMatched {
 				continue
 			}
-			matched, baseScore, reason := matchSearchWithStats(mode, query, strings.ToLower(episode.Content), stats)
+			matched, baseScore, reason := matchSearchCandidate(mode, query, strings.ToLower(episode.Content), episode.ID, "Episode", stats, nativeScores)
 			if matched {
 				score := baseScore + 0.2
 				reasons := []string{reason}
@@ -125,7 +159,10 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 		}
 	}
 	if slices.Contains(types, "entity") {
-		for _, entity := range e.entities {
+		for id, entity := range e.entities {
+			if mode == SearchModeFullText && !hasNativeSearchCandidate(nativeScores, "Entity", id) {
+				continue
+			}
 			entityRecord := e.entityVersionAt(entity, req.Temporal, index)
 			if entityRecord == nil || entityRecord.SpaceID != spaceID || !matchesEntityType(*entityRecord, req.Scope.EntityTypes) {
 				continue
@@ -141,7 +178,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 				continue
 			}
 			text := strings.ToLower(entityRecord.CanonicalName + " " + strings.Join(entityRecord.Aliases, " "))
-			matched, baseScore, reason := matchSearchWithStats(mode, query, text, stats)
+			matched, baseScore, reason := matchSearchCandidate(mode, query, text, entityRecord.ID, "Entity", stats, nativeScores)
 			if matched {
 				score := baseScore
 				reasons := []string{reason}
@@ -165,7 +202,7 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 			}
 		}
 	}
-	if mode != SearchModeKeyword && slices.Contains(types, "fact") && len(graphSeeds) > 0 {
+	if mode != SearchModeKeyword && mode != SearchModeFullText && slices.Contains(types, "fact") && len(graphSeeds) > 0 {
 		expandedSeeds := map[string]float64{}
 		for _, fact := range e.facts {
 			factRecord := e.factVersionAt(fact, req.Temporal, index)
@@ -240,6 +277,23 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	response.Meta.NextCursor = nextCursor
 	response.Included = e.assembleIncludes(req.Include, req.Scope, req.Temporal, hitsPage, spaceID, index)
 	return response, nil
+}
+
+func matchSearchCandidate(mode SearchMode, query, text, id, label string, stats *sparseCorpusStats, nativeScores map[string]float64) (bool, float64, string) {
+	if mode == SearchModeFullText {
+		score, ok := nativeScores[nativeSearchCandidateKey(label, id)]
+		return ok, score, "native_fulltext"
+	}
+	return matchSearchWithStats(mode, query, text, stats)
+}
+
+func hasNativeSearchCandidate(candidates map[string]float64, label, id string) bool {
+	_, ok := candidates[nativeSearchCandidateKey(label, id)]
+	return ok
+}
+
+func nativeSearchCandidateKey(label, id string) string {
+	return label + "\x00" + id
 }
 
 type sparseCorpusStats struct {
@@ -461,13 +515,15 @@ func RecordSearchText(record any) string {
 	}
 }
 
-// RecordMatchesQuery reports whether a record matches a query under mode using
-// the same canonical text and matcher as core search. Derived indexes use it so
-// a native candidate is validated with core's semantics rather than a laxer
-// substring rule.
+// RecordMatchesQuery reports whether a record matches a query under an
+// in-process mode. Native full-text matches require the persisted index and
+// cannot be inferred from one record's text.
 func RecordMatchesQuery(mode SearchMode, query string, record any) bool {
 	if mode == "" {
 		mode = SearchModeHybrid
+	}
+	if mode == SearchModeFullText {
+		return false
 	}
 	matched, _, _ := matchSearchWithStats(mode, query, RecordSearchText(record), nil)
 	return matched

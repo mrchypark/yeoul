@@ -338,6 +338,7 @@ const (
 	SearchModeHybrid   SearchMode = "hybrid"
 	SearchModeKeyword  SearchMode = "keyword"
 	SearchModeSemantic SearchMode = "semantic"
+	SearchModeFullText SearchMode = "fulltext"
 )
 
 type SearchRequest struct {

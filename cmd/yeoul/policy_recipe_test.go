@@ -19,6 +19,10 @@ func recipePack(recipes map[string]policy.SearchRecipe) *policy.Pack {
 // controls must be rejected instead of silently ignored.
 func TestApplySearchRecipeAppliesSupportedControls(t *testing.T) {
 	pack := recipePack(map[string]policy.SearchRecipe{
+		"fulltext": {
+			Strategy: "fulltext",
+			Filters:  map[string]any{"fact_status": "active"},
+		},
 		"hybrid": {
 			Strategy: "hybrid",
 			Filters:  map[string]any{"fact_status": "active", "window_days": 30},
@@ -33,6 +37,13 @@ func TestApplySearchRecipeAppliesSupportedControls(t *testing.T) {
 			Filters:  map[string]any{"fact_status": "active", "predicate": []any{"SUPERSEDES", "CHANGED_TO"}},
 		},
 	})
+	fulltext, err := applySearchRecipe(pack, "fulltext", yeoul.SearchRequest{})
+	if err != nil {
+		t.Fatalf("apply fulltext recipe: %v", err)
+	}
+	if fulltext.Mode != yeoul.SearchModeFullText || !slices.Contains(fulltext.Scope.FactStatus, "active") {
+		t.Fatalf("fulltext recipe did not map to native mode and filter: %#v", fulltext)
+	}
 
 	hybrid, err := applySearchRecipe(pack, "hybrid", yeoul.SearchRequest{})
 	if err != nil {

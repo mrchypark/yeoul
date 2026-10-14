@@ -80,6 +80,7 @@ yeoul search --db ./yeoul.ltdb --query "recent decisions" --type fact,episode --
 #### Flags
 - `--query TEXT` required
 - `--type fact,episode,entity`
+- `--mode hybrid|keyword|semantic|fulltext` (default `hybrid`)
 - `--group-id IDS`
 - `--as-of`, `--valid-at`, `--valid-from`, `--valid-to` RFC3339
 - `--limit N`
@@ -89,6 +90,7 @@ yeoul search --db ./yeoul.ltdb --query "recent decisions" --type fact,episode --
 #### Behavior
 - keeps LatticeDB-backed Yeoul records as canonical truth
 - runs entirely in-process with no external retrieval runtime
+- `fulltext` uses the persisted LatticeDB token index, applies all Yeoul scopes before pagination, and does not support `--as-of`; a writable open builds a missing index
 
 ### `yeoul context`
 Build a bounded, factual context bundle from one scoped search response.

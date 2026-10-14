@@ -243,9 +243,38 @@ func (s *latticeStore) Load() (*persistedState, error) {
 	if !s.factEndpointEdgesReady && len(state.Sources) == 0 && len(state.Episodes) == 0 && len(state.Entities) == 0 && len(state.Facts) == 0 && len(state.FactRevisions) == 0 && len(state.EntityRevisions) == 0 {
 		s.factEndpointEdgesReady = true
 	}
+	if !s.cfg.ReadOnly {
+		ready, err := s.store.SearchIndexReady()
+		if err != nil {
+			return nil, errorf(ErrStorageFailed, "check lattice full-text search index", map[string]any{
+				"database_path": s.cfg.DatabasePath,
+			}, err)
+		}
+		if !ready {
+			if err := s.store.EnsureSearchIndexes(context.Background(), latticeSearchDocuments(state)); err != nil {
+				return nil, errorf(ErrStorageFailed, "ensure lattice full-text search index", map[string]any{
+					"database_path": s.cfg.DatabasePath,
+				}, err)
+			}
+		}
+	}
 	s.lastState = clonePersistedState(state)
 	s.loaded = true
 	return &state, nil
+}
+
+func latticeSearchDocuments(state persistedState) []lstore.SearchDocument {
+	documents := make([]lstore.SearchDocument, 0, len(state.Facts)+len(state.Episodes)+len(state.Entities))
+	for _, fact := range state.Facts {
+		documents = append(documents, lstore.SearchDocument{Label: "Fact", ID: fact.ID, Text: RecordSearchText(&fact)})
+	}
+	for _, episode := range state.Episodes {
+		documents = append(documents, lstore.SearchDocument{Label: "Episode", ID: episode.ID, Text: RecordSearchText(&episode)})
+	}
+	for _, entity := range state.Entities {
+		documents = append(documents, lstore.SearchDocument{Label: "Entity", ID: entity.ID, Text: RecordSearchText(&entity)})
+	}
+	return documents
 }
 
 // inspectStateVersionBeforeWritableOpen resolves the persisted application-state
@@ -548,13 +577,19 @@ func (s *latticeStore) reconcileNodes(tx *latticedb.Tx, delta map[string]lattice
 			if err := tx.SetProperty(nodeID, "payload", update.payload); err != nil {
 				return nil, err
 			}
+			if latticeSearchableLabel(label) {
+				if err := tx.SetProperty(nodeID, "search_text", update.searchText); err != nil {
+					return nil, err
+				}
+			}
 		} else {
+			properties := map[string]any{"id": id, "payload": update.payload}
+			if latticeSearchableLabel(label) {
+				properties["search_text"] = update.searchText
+			}
 			node, err := tx.CreateNode(latticedb.CreateNodeOptions{
-				Labels: []string{label},
-				Properties: map[string]any{
-					"id":      id,
-					"payload": update.payload,
-				},
+				Labels:     []string{label},
+				Properties: properties,
 			})
 			if err != nil {
 				return nil, err
@@ -583,8 +618,9 @@ func lookupLatticeNode(tx *latticedb.Tx, label, id string) (uint64, bool, error)
 // latticeRecordUpdate is one record the save has to write: its marshalled
 // payload, or a removal when present is false.
 type latticeRecordUpdate struct {
-	payload string
-	present bool
+	payload    string
+	searchText string
+	present    bool
 }
 
 // latticeRecordDelta returns only the records that differ between the previously
@@ -635,7 +671,7 @@ func deltaRecords[T any](delta map[string]latticeRecordUpdate, label string, pre
 		if err != nil {
 			return fmt.Errorf("marshal %s %q: %w", label, id, err)
 		}
-		delta[label+"\x00"+id] = latticeRecordUpdate{payload: string(payload), present: true}
+		delta[label+"\x00"+id] = latticeRecordUpdate{payload: string(payload), searchText: latticeRecordSearchText(value), present: true}
 	}
 	for id := range prev {
 		if _, ok := state[id]; !ok {
@@ -643,6 +679,23 @@ func deltaRecords[T any](delta map[string]latticeRecordUpdate, label string, pre
 		}
 	}
 	return nil
+}
+
+func latticeRecordSearchText(value any) string {
+	switch record := value.(type) {
+	case Episode:
+		return RecordSearchText(&record)
+	case Entity:
+		return RecordSearchText(&record)
+	case Fact:
+		return RecordSearchText(&record)
+	default:
+		return ""
+	}
+}
+
+func latticeSearchableLabel(label string) bool {
+	return label == "Fact" || label == "Episode" || label == "Entity"
 }
 
 func splitLatticeKey(key string) (string, string) {
@@ -728,6 +781,10 @@ func (s *latticeStore) Close() error {
 		return nil
 	}
 	return s.store.Close()
+}
+
+func (s *latticeStore) SearchCandidates(ctx context.Context, query string, counts map[string]int) (map[string]float64, error) {
+	return s.store.SearchCandidates(ctx, query, counts)
 }
 
 func (s *latticeStore) Checkpoint() error {
