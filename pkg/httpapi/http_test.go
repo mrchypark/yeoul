@@ -490,10 +490,9 @@ func TestDuplicateKeysNestedAndEscaped(t *testing.T) {
 	}
 }
 
-func TestRhizaHTTPPersistence(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "memory")
+func TestDefaultStorageHTTPPersistence(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "memory.ltdb")
 	engine, err := yeoul.Open(context.Background(), yeoul.Config{
-		Driver:          yeoul.StorageDriverRhiza,
 		DatabasePath:    databasePath,
 		CreateIfMissing: true,
 	})
@@ -510,13 +509,13 @@ func TestRhizaHTTPPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := yeoul.Open(context.Background(), yeoul.Config{Driver: yeoul.StorageDriverRhiza, DatabasePath: databasePath})
+	reopened, err := yeoul.Open(context.Background(), yeoul.Config{DatabasePath: databasePath})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		if err := reopened.Close(context.Background()); err != nil {
-			t.Errorf("close reopened Rhiza engine: %v", err)
+			t.Errorf("close reopened engine: %v", err)
 		}
 	})
 	got := request(NewHandler(reopened, Config{}), http.MethodGet, "http://example.test/v1/episodes/rhiza-http?space_id=default", "")
