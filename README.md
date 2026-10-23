@@ -1,10 +1,10 @@
 # Yeoul
 
-Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written in Go, backed by LatticeDB for durable on-disk storage, and designed to keep AI agent behavior outside the core through external skills, instructions, ontology files, episode rules, and search recipes.
+Yeoul (/jʌ.ul/, 여울) is a local-first Temporal Graph Memory Engine written in Go, backed by embedded Rhiza for new durable databases and by LatticeDB for existing databases, and designed to keep AI agent behavior outside the core through external skills, instructions, ontology files, episode rules, and search recipes.
 
 한국어 요약:
 
-여울은 Go와 LatticeDB로 구현하는 로컬 우선 Temporal Graph Memory Engine이다. durable on-disk 저장소는 LatticeDB를 기본으로 사용하며, Core는 AI agent 로직을 포함하지 않고 agent 전용 행동은 skill, instruction, ontology, episode rule, search recipe 파일로 외부화한다.
+여울은 Go와 Rhiza/LatticeDB로 구현하는 로컬 우선 Temporal Graph Memory Engine이다. 새 데이터베이스는 embedded Rhiza를 사용하고 기존 LatticeDB 데이터베이스는 계속 자동으로 인식한다. Core는 AI agent 로직을 포함하지 않고 agent 전용 행동은 skill, instruction, ontology, episode rule, search recipe 파일로 외부화한다.
 
 ## 왜 Yeoul인가
 
@@ -85,9 +85,17 @@ See the full product-specific guide in [`agent-pack/integrations/README.md`](./a
 
 ## Local Development
 
-Requirements: Go 1.27+.
+Requirements: Go 1.27.2+.
 
-LatticeDB is the only storage engine used by current releases.
+Released Yeoul v0.10.x databases use LatticeDB. This source version defaults new
+databases to embedded Rhiza in local-only mode on Linux and macOS, and continues
+to open existing LatticeDB directories by their on-disk signatures. On other
+platforms new databases fall back to Lattice; existing Rhiza paths fail with
+`ErrNotSupported` without initialization or modification. The pinned Rhiza
+package's qlog lock uses Unix-only `syscall.Flock`, so Yeoul isolates the native
+dependency and disables Rhiza storage on Windows until it is portable. Rhiza is
+not configured as a cluster, and Yeoul does not support mixed-version clustered
+deployments.
 
 Then build, vet, and test normally:
 
@@ -98,10 +106,11 @@ go test ./...
 ```
 
 Yeoul's hybrid, keyword, and semantic search modes run in-process. The opt-in
-`fulltext` mode uses LatticeDB's persistent standard-token FTS indexes; its
-token and scoring behavior is distinct from substring keyword search. Writable
-opens build the indexes transactionally from canonical record text, while a
-read-only open of an older database reports full-text search as unsupported.
+`fulltext` mode uses the selected storage backend's native text predicate.
+LatticeDB uses its persistent standard-token FTS indexes; Rhiza uses the
+public graph `@@` predicate and reports backend ranking as a Yeoul score, not
+LatticeDB term-frequency scoring. Both differ from substring keyword search.
+See [Local Storage](docs/08-operations/local-storage.md) for limits and migration.
 
 LatticeDB v0.12.0 warns that writing vectors converts the previous HNSW format,
 which is unreadable by v0.11.x. Yeoul does not write vectors as part of this
@@ -110,16 +119,21 @@ write using v0.12.0.
 
 ## Existing Databases
 
-Current releases use LatticeDB only and do not read or migrate native Ladybug
+Released binaries use LatticeDB and do not read or migrate native Ladybug
 databases. If you have a genuine, unmigrated Ladybug database, use a compatible
 older Yeoul release to migrate it before upgrading. Keep the timestamped
 `.ladybug-backup-*` copy until counts, search, revisions, and lifecycle state
 are verified. Never initialize or force-create a database at a path that
 contains existing data.
 
-The path extension does not identify the database format: a migrated LatticeDB
-directory may still be named with a `.lbug` suffix. Do not migrate or rename an
-already-migrated database just because of its extension.
+The path extension does not identify the database format: an existing LatticeDB
+directory may still be named with a `.lbug` suffix. Do not migrate or rename a
+database just because of its extension. To copy LatticeDB Yeoul state into a
+new Rhiza directory, use the explicit `yeoul migrate-storage` command described
+in [Local Storage](docs/08-operations/local-storage.md); the source is left
+unchanged and the target must be a new path.
+The migration procedure and its platform/size limits are documented in
+[Storage Migration](docs/08-operations/storage-migration.md).
 
 ## Separation Rule
 

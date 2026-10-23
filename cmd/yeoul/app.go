@@ -52,6 +52,8 @@ func (c cli) run(ctx context.Context, args []string) error {
 		return c.runInit(ctx, args[1:])
 	case "migrate":
 		return c.runMigrate(ctx, args[1:])
+	case "migrate-storage":
+		return c.runMigrateStorage(ctx, args[1:])
 	case "ingest":
 		return c.runIngest(ctx, args[1:])
 	case "get":
@@ -90,6 +92,7 @@ func rootUsage() string {
 Usage:
   yeoul init --db PATH [--force] [--json]
   yeoul migrate --db PATH [--json]
+  yeoul migrate-storage --source LATTICE_PATH --target NEW_RHIZA_PATH [--json]
   yeoul ingest episode --db PATH --kind KIND (--content TEXT | --content-file FILE) [flags] [--space ID]
   yeoul ingest file --db PATH --kind KIND --file FILE [flags] [--space ID]
   yeoul ingest json --db PATH --file FILE [--space ID] [--json]

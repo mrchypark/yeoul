@@ -1,6 +1,6 @@
 # Local Storage
 
-This document defines how Yeoul uses local storage in embedded mode. Daemon mode is planned and not available in current releases.
+This document defines local storage ownership for embedded use and the optional `yeould` HTTP daemon.
 
 ## Goals
 - predictable storage location
@@ -13,17 +13,78 @@ Yeoul should default to an explicit configured path.
 Example defaults:
 - embedded app: application-controlled path
 - CLI quickstart: `./yeoul.ltdb`
-- daemon mode: not available in current releases (planned user-configurable application data directory)
+- daemon mode: the operator supplies an explicit database path with `yeould --db`
+
+Released Yeoul v0.10.x and the existing user-level database remain LatticeDB.
+This source branch uses embedded local Rhiza for newly created databases on
+Linux and macOS; other platforms fall back to Lattice. Opening an existing
+LatticeDB path keeps using LatticeDB. Existing Rhiza paths on unsupported
+platforms fail closed. Do not point `--create` at an existing database or
+change the current user-level path implicitly. Use the explicit migration
+procedure in [Storage Migration](storage-migration.md) and verify the new target
+before switching an application to it.
 
 ## Storage ownership
-In embedded mode, the host process owns the database.
-Daemon mode is not available in current releases: the `yeould` service adapter is deferred, so every supported deployment uses embedded ownership.
+In embedded mode, the host process owns the database. In daemon mode, one
+`yeould` process owns the database and clients use its HTTP API; do not open the
+same writable database from other processes. The daemon creates a missing
+database only when `--create` is supplied. It defaults to the Rhiza driver in
+current releases.
+
+## Local HTTP daemon
+
+```sh
+yeould --db "$HOME/.local/share/yeoul/work-memory-rhiza.ltdb" --create
+```
+
+This example creates a separate, new database. For an existing LatticeDB user
+database, migrate to a new target first; do not run this command against that
+existing path. The installed user-level database is not migrated by this source
+change.
+
+The `.ltdb` extension remains standard for both storage backends; the directory
+contents determine the backend, not the suffix.
+
+The default listener is `127.0.0.1:8080`. Omit `--create` to require an already
+existing database. Set `YEOUL_HTTP_TOKEN` to require bearer authentication;
+non-loopback listeners are refused without it. The token is read from the
+environment, not a command-line argument. The daemon has no built-in TLS; use a
+trusted TLS boundary before exposing it beyond a local machine. There is no
+physical read-only mode, generic idempotency-key replay, raw backend endpoint,
+or checkpoint/admin route. See [Service API](../05-api/service-api.md) for the
+route set and request limits.
 
 ## Required storage artifacts
-- LatticeDB database files/directories
+- LatticeDB or Rhiza database files/directories, as selected by the database's
+  on-disk signature and Yeoul marker
 - Yeoul migration metadata
 - optional policy cache
 - logs and benchmark output outside the database path
+
+Rhiza is opened in local-only mode and is not a supported clustered or
+multi-version shared deployment. Rhiza permits only one Yeoul process owner,
+including read-only opens. Yeoul's `ReadOnly` setting rejects application
+writes, but Rhiza may still perform native recovery writes while opening a
+database; it is not a physical read-only guarantee. Ordinary Rhiza mutations
+are one atomic delta capped at 96 KiB encoded, including graph/search
+projections and metadata. A larger mutation is rejected without splitting or
+partial application; episode payloads can hit the cap earlier because their
+search projection duplicates text.
+Rhiza maintains the public node-local `YeoulRecord.key` property index used by
+record upserts and exact-key recovery reads. One public graph-stream event
+containing the changed keys is committed atomically with each record delta;
+recovery replays that catalog in 64-event pages and fetches records through
+parameterized indexed key lookups. The Yeoul catalog is canonical recovery
+metadata and must not be trimmed. Startup replay is linear in write history;
+introducing a verified snapshot is deferred until measurements justify it.
+A full-text query that exceeds Rhiza's result limit returns an error instead
+of silently truncating candidates.
+
+The pinned Rhiza v0.19.5 qlog package uses Unix-only `syscall.Flock`. Yeoul
+isolates the native dependency and disables Rhiza storage on Windows until that
+is portable. The separate migration restriction also fails closed before
+writes on Windows because directory-entry durability is unavailable through
+the current Go implementation.
 
 ## Local filesystem guidance
 - database path should be writable by the owning process
@@ -32,7 +93,7 @@ Daemon mode is not available in current releases: the `yeould` service adapter i
 
 ## Recommended config fields
 - `db_path`
-- `mode` (`embedded`; `daemon` is reserved and unavailable in current releases)
+- `mode` (`embedded` or optional `daemon`)
 - `checkpoint_policy`
 - `log_path`
 - `export_path`
@@ -45,6 +106,10 @@ Yeoul should support:
 - dry-run reporting for retention and compaction jobs
 
 ## Native backup and restore
+
+For Rhiza, quiesce the owner and copy its complete native directory and Yeoul
+storage marker. A migration target with a pending migration marker is
+incomplete and must not be opened or used.
 
 The supported full-fidelity backup is a quiesced native-directory copy:
 

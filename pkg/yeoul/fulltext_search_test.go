@@ -15,7 +15,7 @@ import (
 func TestNativeFullTextSearchPersistsAndFiltersBeforePagination(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "fulltext.ltdb")
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestNativeFullTextSearchPersistsAndFiltersBeforePagination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readOnly, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	readOnly, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, ReadOnly: true})
 	if err != nil {
 		t.Fatalf("reopen read-only: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestNativeFullTextSearchPersistsAndFiltersBeforePagination(t *testing.T) {
 func TestFullTextMissingDefinitionIsRepairedOnWritableOpen(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "missing-definition.ltdb")
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestFullTextMissingDefinitionIsRepairedOnWritableOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng, err = Open(ctx, Config{DatabasePath: dbPath})
+	eng, err = Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice})
 	if err != nil {
 		t.Fatalf("writable open repairs missing definition: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestFullTextMissingDefinitionIsRepairedOnWritableOpen(t *testing.T) {
 
 func TestNativeFullTextTracksUpdatedSearchText(t *testing.T) {
 	ctx := context.Background()
-	eng, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "updated.ltdb"), CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "updated.ltdb"), Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestNativeFullTextTracksUpdatedSearchText(t *testing.T) {
 func TestFullTextAsOfRejectsWithoutChangingKeywordHistory(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "history.ltdb")
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestFullTextAsOfRejectsWithoutChangingKeywordHistory(t *testing.T) {
 func TestFullTextReadOnlyWithoutReadyIndexIsNotSupported(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "unindexed.ltdb")
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestFullTextReadOnlyWithoutReadyIndexIsNotSupported(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	readOnly, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	readOnly, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

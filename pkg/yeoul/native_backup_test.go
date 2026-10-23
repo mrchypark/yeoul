@@ -22,7 +22,7 @@ func TestQuiescedNativeDirectoryBackupPreservesState(t *testing.T) {
 	workDir := t.TempDir()
 	dbPath := filepath.Join(workDir, "yeoul.ltdb")
 
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("open source: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestQuiescedNativeDirectoryBackupPreservesState(t *testing.T) {
 		t.Fatalf("copy native database: %v", err)
 	}
 
-	backup, err := Open(ctx, Config{DatabasePath: backupPath})
+	backup, err := Open(ctx, Config{DatabasePath: backupPath, Driver: StorageDriverLattice})
 	if err != nil {
 		t.Fatalf("open backup: %v", err)
 	}

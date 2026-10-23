@@ -440,6 +440,13 @@ func TestCLIIndexVerifyReadsLargeProjectionDocuments(t *testing.T) {
 	if err := os.WriteFile(contentPath, []byte(strings.Repeat("A", 70_000)), 0o644); err != nil {
 		t.Fatalf("write large content: %v", err)
 	}
+	legacy, err := yeoul.Open(ctx, yeoul.Config{Driver: yeoul.StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	runCLI := func(args ...string) string {
 		t.Helper()
@@ -1609,8 +1616,10 @@ func TestCLIInitForceRefusesExistingDatabase(t *testing.T) {
 	if !strings.Contains(resetErr.Error(), "not supported") {
 		t.Fatalf("expected an explicit refusal, got %v", resetErr)
 	}
-	if _, statErr := os.Stat(filepath.Join(dbPath, "state.json")); statErr != nil {
-		t.Fatalf("database must remain intact after the refused reset: %v", statErr)
+	if _, statErr := os.Stat(filepath.Join(dbPath, ".yeoul-storage-driver")); statErr != nil {
+		if _, latticeErr := os.Stat(filepath.Join(dbPath, "state.json")); latticeErr != nil {
+			t.Fatalf("database must remain intact after the refused reset: rhiza=%v lattice=%v", statErr, latticeErr)
+		}
 	}
 
 	if err := eng.Close(ctx); err != nil {

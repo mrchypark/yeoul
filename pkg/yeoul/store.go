@@ -8,6 +8,7 @@ import (
 	"time"
 
 	lstore "github.com/mrchypark/yeoul/internal/storage/lattice"
+	rhizastore "github.com/mrchypark/yeoul/internal/storage/rhiza"
 )
 
 var errFactCandidateUnavailable = errors.New("fact candidate capability unavailable")
@@ -20,6 +21,7 @@ const (
 type StorageDriver string
 
 const StorageDriverLattice StorageDriver = "lattice"
+const StorageDriverRhiza StorageDriver = "rhiza"
 
 type stateStore interface {
 	Load() (*persistedState, error)
@@ -134,6 +136,19 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 		}, err)
 	}
 	cfg.DatabasePath = databasePath
+	if !rhizastore.Supported() {
+		isExistingRhiza := rhizaDatabaseHasEvidence(databasePath) && !latticeDatabaseHasEvidence(databasePath)
+		if cfg.Driver == StorageDriverRhiza || (cfg.Driver == "" && isExistingRhiza) {
+			return nil, errorf(ErrNotSupported, "Rhiza is unavailable on this platform", map[string]any{"database_path": databasePath}, rhizastore.ErrUnsupported)
+		}
+	}
+	// Reject an explicit driver/signature conflict before creating even the
+	// sibling ownership file. The same check runs again after ownership is held
+	// to catch a path whose signature changed during acquisition.
+	cfg.Driver, err = resolveStorageDriver(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	// An explicit creation is allowed to bring its own directory into being.
 	// This happens before ownership is acquired, because the ownership file
@@ -169,6 +184,10 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 		return nil, errors.Join(errorf(ErrStorageFailed, "inspect database path", map[string]any{
 			"database_path": databasePath,
 		}, err), lock.Release())
+	}
+	cfg.Driver, err = resolveStorageDriver(cfg)
+	if err != nil {
+		return nil, errors.Join(err, lock.Release())
 	}
 	store, err := openDriverStore(cfg)
 	if err != nil {
@@ -297,13 +316,64 @@ func databaseMigrationMarkerPath(databasePath string) string {
 
 func openDriverStore(cfg Config) (stateStore, error) {
 	switch cfg.Driver {
-	case "", StorageDriverLattice:
+	case StorageDriverLattice:
 		return newLatticeStore(cfg)
+	case StorageDriverRhiza:
+		return newRhizaStore(cfg)
 	default:
 		return nil, errorf(ErrConfigInvalid, "unsupported storage driver", map[string]any{
 			"driver": cfg.Driver,
 		}, nil)
 	}
+}
+
+func resolveStorageDriver(cfg Config) (StorageDriver, error) {
+	lattice := latticeDatabaseHasEvidence(cfg.DatabasePath)
+	rhiza := rhizaDatabaseHasEvidence(cfg.DatabasePath)
+	if lattice && rhiza {
+		return "", errorf(ErrStorageFailed, "database contains conflicting storage signatures", map[string]any{"database_path": cfg.DatabasePath}, nil)
+	}
+	if cfg.Driver != "" {
+		if cfg.Driver != StorageDriverLattice && cfg.Driver != StorageDriverRhiza {
+			return "", errorf(ErrConfigInvalid, "unsupported storage driver", map[string]any{"driver": cfg.Driver}, nil)
+		}
+		if (cfg.Driver == StorageDriverRhiza && lattice) || (cfg.Driver == StorageDriverLattice && rhiza) {
+			return "", errorf(ErrStorageFailed, "requested storage driver conflicts with database signature", map[string]any{"database_path": cfg.DatabasePath, "driver": cfg.Driver}, nil)
+		}
+		if !lattice && !rhiza {
+			info, err := os.Stat(cfg.DatabasePath)
+			latticeCreationRoot := cfg.Driver == StorageDriverLattice && cfg.CreateIfMissing && latticeDatabaseUninitializedDirectory(cfg.DatabasePath)
+			if err == nil && info.IsDir() && directoryHasEntries(cfg.DatabasePath) && !latticeCreationRoot {
+				return "", errorf(ErrStorageFailed, "database has no recognized storage signature; refusing to initialize it", map[string]any{"database_path": cfg.DatabasePath}, nil)
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", errorf(ErrStorageFailed, "inspect database storage signatures", map[string]any{"database_path": cfg.DatabasePath}, err)
+			}
+		}
+		return cfg.Driver, nil
+	}
+	if lattice {
+		return StorageDriverLattice, nil
+	}
+	if rhiza {
+		return StorageDriverRhiza, nil
+	}
+	info, err := os.Stat(cfg.DatabasePath)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && info.IsDir() && cfg.CreateIfMissing && !directoryHasEntries(cfg.DatabasePath)) {
+		if rhizastore.Supported() {
+			return StorageDriverRhiza, nil
+		}
+		return StorageDriverLattice, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", errorf(ErrStorageFailed, "inspect database storage signatures", map[string]any{"database_path": cfg.DatabasePath}, err)
+	}
+	return "", errorf(ErrStorageFailed, "database has no recognized storage signature; refusing to initialize it", map[string]any{"database_path": cfg.DatabasePath}, nil)
+}
+
+func directoryHasEntries(path string) bool {
+	entries, err := os.ReadDir(path)
+	return err != nil || len(entries) != 0
 }
 
 func emptyPersistedState() persistedState {

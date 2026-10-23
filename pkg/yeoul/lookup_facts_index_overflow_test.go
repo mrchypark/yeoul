@@ -8,7 +8,7 @@ import (
 
 func TestLookupFactsFanoutOverflowFallsBackWithoutTruncation(t *testing.T) {
 	ctx := context.Background()
-	eng, err := Open(ctx, Config{DatabasePath: t.TempDir() + "/overflow.db", CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: t.TempDir() + "/overflow.db", Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("open lattice engine: %v", err)
 	}

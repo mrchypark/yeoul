@@ -139,7 +139,7 @@ func TestLatticeOpenRejectsUnsupportedStateVersion(t *testing.T) {
 			writeLatticeStateFixture(t, dbPath, test.version, test.omitVersion, unknownFieldFixtureNodes())
 			before := hashDatabaseTree(t, dbPath)
 
-			eng, err := Open(context.Background(), Config{DatabasePath: dbPath})
+			eng, err := Open(context.Background(), Config{Driver: StorageDriverLattice, DatabasePath: dbPath})
 			assertUnsupportedStateVersionError(t, err, test.found)
 			if eng != nil {
 				t.Fatal("expected no engine for an unsupported state version")
@@ -156,7 +156,7 @@ func TestLatticeReadOnlyOpenRejectsUnsupportedStateVersion(t *testing.T) {
 	writeLatticeStateFixture(t, dbPath, "2", false, unknownFieldFixtureNodes())
 	before := hashDatabaseTree(t, dbPath)
 
-	eng, err := Open(context.Background(), Config{DatabasePath: dbPath, ReadOnly: true})
+	eng, err := Open(context.Background(), Config{Driver: StorageDriverLattice, DatabasePath: dbPath, ReadOnly: true})
 	assertUnsupportedStateVersionError(t, err, "2")
 	if eng != nil {
 		t.Fatal("expected no engine for an unsupported state version")
@@ -169,7 +169,7 @@ func TestLatticeReadOnlyOpenRejectsUnsupportedStateVersion(t *testing.T) {
 func TestLatticeOpenAcceptsSupportedStateVersion(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "supported.db")
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("open supported engine: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestLatticeOpenAcceptsSupportedStateVersion(t *testing.T) {
 		t.Fatalf("close engine: %v", err)
 	}
 
-	reopened, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	reopened, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, ReadOnly: true})
 	if err != nil {
 		t.Fatalf("reopen supported engine: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestLatticeOpenAcceptsSupportedStateVersion(t *testing.T) {
 func TestLatticeSnapshotCarriesSupportedStateVersion(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "snapshot-version.db")
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
 	}

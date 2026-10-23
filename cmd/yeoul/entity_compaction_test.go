@@ -274,6 +274,13 @@ func TestCLIAdminCompactApplyOwnsTheDatabase(t *testing.T) {
 	if err := os.WriteFile(ingestPath, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write ingest payload: %v", err)
 	}
+	legacy, err := yeoul.Open(ctx, yeoul.Config{Driver: yeoul.StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	runCLI := func(args ...string) (string, error) {
 		t.Helper()

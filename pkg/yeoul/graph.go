@@ -25,6 +25,9 @@ func (e *engine) LookupFacts(ctx context.Context, req FactLookupRequest) (*FactL
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
 	// A fact stored against a merged duplicate still names the duplicate, so
@@ -182,6 +185,9 @@ func (e *engine) Neighborhood(ctx context.Context, req NeighborhoodRequest) (*Ne
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
 	anchorIDs := e.canonicalEntityIDsAtLocked(req.AnchorIDs, req.Temporal, index)
@@ -400,6 +406,9 @@ func (e *engine) Timeline(ctx context.Context, req TimelineRequest) (*TimelineRe
 	temporal.IncludeInactive = true
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
 	anchorIDs := e.canonicalEntityIDsAtLocked(req.AnchorIDs, temporal, index)
@@ -550,6 +559,9 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 	_ = ctx
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 	spaceID := normalizeSpaceID(req.Meta.SpaceID)
 	index := newTemporalIndex(e)
 	maxDepth := req.MaxDepth
@@ -906,11 +918,11 @@ func decodeCursor(cursor string) (int, error) {
 		return 0, nil
 	}
 	if !strings.HasPrefix(cursor, "offset:") {
-		return 0, errorf(ErrQueryFailed, "cursor_invalid", map[string]any{"cursor": cursor}, nil)
+		return 0, errorf(ErrInputInvalid, "page cursor is invalid", nil, nil)
 	}
 	offset, err := strconv.Atoi(strings.TrimPrefix(cursor, "offset:"))
 	if err != nil || offset < 0 {
-		return 0, errorf(ErrQueryFailed, "cursor_invalid", map[string]any{"cursor": cursor}, nil)
+		return 0, errorf(ErrInputInvalid, "page cursor is invalid", nil, nil)
 	}
 	return offset, nil
 }

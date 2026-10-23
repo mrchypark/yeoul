@@ -113,7 +113,7 @@ func TestOpenThroughASymlinkCreatesTheDatabaseAtTheRealPath(t *testing.T) {
 	ctx := context.Background()
 	realPath, linkPath := symlinkedDatabasePaths(t)
 
-	eng, err := Open(ctx, Config{DatabasePath: linkPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: linkPath, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("create through a symlinked directory: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestOpenThroughASymlinkCreatesTheDatabaseAtTheRealPath(t *testing.T) {
 		t.Fatalf("expected one ownership file for one database, found %d", ownershipFiles)
 	}
 
-	reopened, err := Open(ctx, Config{DatabasePath: realPath})
+	reopened, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: realPath})
 	if err != nil {
 		t.Fatalf("expected the real path to open the database the link created: %v", err)
 	}

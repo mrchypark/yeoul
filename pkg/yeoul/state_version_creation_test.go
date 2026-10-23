@@ -55,14 +55,16 @@ func TestPublicOpenCreatesInAnExistingEmptyDirectory(t *testing.T) {
 		driver StorageDriver
 	}{
 		{
-			name: "existing empty directory",
+			name:   "existing empty directory",
+			driver: StorageDriverLattice,
 			prep: func(t *testing.T, dbPath string) {
 				t.Helper()
 				prepareUninitializedDirectory(t, dbPath)
 			},
 		},
 		{
-			name: "directory holding only the native lock artifact",
+			name:   "directory holding only the native lock artifact",
+			driver: StorageDriverLattice,
 			prep: func(t *testing.T, dbPath string) {
 				t.Helper()
 				prepareUninitializedDirectory(t, dbPath)
@@ -117,7 +119,7 @@ func TestLatticeOpenRefusesUninitializedDirectoryWithoutCreationPolicy(t *testin
 	dbPath := filepath.Join(t.TempDir(), "provisioned.ltdb")
 	prepareUninitializedDirectory(t, dbPath)
 
-	_, err := Open(context.Background(), Config{DatabasePath: dbPath})
+	_, err := Open(context.Background(), Config{Driver: StorageDriverLattice, DatabasePath: dbPath})
 	assertUnestablishedStateVersionError(t, err)
 }
 
@@ -131,7 +133,7 @@ func TestLatticeOpenRefusesInitializedDatabaseInAnEmptyLookingDirectory(t *testi
 	writeLatticeStateFixture(t, dbPath, "2", false, unknownFieldFixtureNodes())
 	before := hashDatabaseTree(t, dbPath)
 
-	eng, err := Open(context.Background(), Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(context.Background(), Config{Driver: StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
 	if eng != nil {
 		_ = eng.Close(context.Background())
 		t.Fatal("expected no engine for an unsupported state version")
