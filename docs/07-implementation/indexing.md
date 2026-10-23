@@ -49,10 +49,19 @@ Some Yeoul queries will be dominated by graph traversals rather than scalar prop
 These should be optimized through schema shape and query design before adding excessive secondary indexes.
 
 ## Full-text search
-Where enabled, full-text search should be used for:
-- episode content
-- entity aliases or names
-- source labels
+`SearchModeFullText` is an explicit additive route over LatticeDB's persistent,
+label-scoped FTS indexes for facts, episodes, and entities. It indexes the
+canonical `RecordSearchText`, gathers all native candidates before Yeoul applies
+space, group, source, status, type, predicate, anchor, score, and pagination
+filters, and uses native frequency scores. It is token-based, not substring or
+contiguous-phrase matching. Keyword and hybrid remain unchanged.
+
+The first writable open backfills text properties and index definitions in one
+transaction; subsequent Yeoul writes maintain them with the canonical record
+projection. Read-only databases without the committed readiness marker and
+`as_of` full-text requests return `YEOUL_NOT_SUPPORTED`; there is no keyword
+fallback. Native resource-limit and storage errors also fail the request rather
+than returning a truncated candidate set.
 
 ## Vector search
 Vector search should remain optional and additive.

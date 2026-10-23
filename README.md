@@ -97,8 +97,16 @@ go vet ./...
 go test ./...
 ```
 
-Yeoul search runs fully in-process over LatticeDB and requires no external
-retrieval runtime or native retrieval library.
+Yeoul's hybrid, keyword, and semantic search modes run in-process. The opt-in
+`fulltext` mode uses LatticeDB's persistent standard-token FTS indexes; its
+token and scoring behavior is distinct from substring keyword search. Writable
+opens build the indexes transactionally from canonical record text, while a
+read-only open of an older database reports full-text search as unsupported.
+
+LatticeDB v0.12.0 warns that writing vectors converts the previous HNSW format,
+which is unreadable by v0.11.x. Yeoul does not write vectors as part of this
+upgrade or its full-text indexing path; keep a backup before any future vector
+write using v0.12.0.
 
 ## Existing Databases
 

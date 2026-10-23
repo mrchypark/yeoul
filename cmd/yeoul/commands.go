@@ -622,7 +622,7 @@ Usage:
 func (c cli) runSearch(ctx context.Context, args []string) error {
 	usage := strings.TrimSpace(`
 Usage:
-  yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--mode hybrid|keyword|semantic] [--entity ID] [--predicate PREDS] [--min-score N]
+  yeoul search --db PATH --query TEXT [--type fact,episode,entity] [--mode hybrid|keyword|semantic|fulltext] [--entity ID] [--predicate PREDS] [--min-score N]
       [--group-id IDS] [--as-of RFC3339] [--valid-at RFC3339] [--from RFC3339] [--to RFC3339] [--valid-from RFC3339] [--valid-to RFC3339] [--include-inactive] [--cursor CURSOR]
       [--policy-path PATH] [--recipe NAME] [--space ID] [--limit N] [--include-related] [--json]
 `)
@@ -654,7 +654,7 @@ Usage:
 	fs.StringVar(&dbPath, "db", "", "database path")
 	fs.StringVar(&query, "query", "", "query text")
 	fs.StringVar(&typesRaw, "type", "", "comma-separated hit types")
-	fs.StringVar(&mode, "mode", "hybrid", "search mode: hybrid, keyword, semantic")
+	fs.StringVar(&mode, "mode", "hybrid", "search mode: hybrid, keyword, semantic, fulltext")
 	fs.StringVar(&entityID, "entity", "", "entity anchor ID")
 	fs.StringVar(&predicatesRaw, "predicate", "", "comma-separated predicates")
 	fs.StringVar(&groupIDsRaw, "group-id", "", "comma-separated group IDs")
@@ -718,6 +718,11 @@ Usage:
 	}
 	if minScoreSet {
 		req.MinScore = &minScore
+	}
+	switch req.Mode {
+	case yeoul.SearchModeHybrid, yeoul.SearchModeKeyword, yeoul.SearchModeSemantic, yeoul.SearchModeFullText:
+	default:
+		return &usageError{message: usage}
 	}
 	if policyPath != "" || recipeName != "" {
 		if policyPath == "" || recipeName == "" {

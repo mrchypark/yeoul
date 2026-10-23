@@ -108,7 +108,7 @@ type SearchRecipe struct {
 var supportedRecipeFilterKeys = []string{"fact_status", "window_days", "predicate"}
 
 // supportedRecipeStrategies lists the strategies the CLI executes.
-var supportedRecipeStrategies = []string{"hybrid", "neighborhood", "predicate_subject_lookup"}
+var supportedRecipeStrategies = []string{"hybrid", "fulltext", "neighborhood", "predicate_subject_lookup"}
 
 // supportedRecipeExpandKeys lists the recipe expand settings that map to real
 // request fields. "hops" is accepted as advisory metadata for backward

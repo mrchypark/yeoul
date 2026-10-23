@@ -14,7 +14,7 @@ the agent pack and reference the file above.
 `yeoul policy validate` rejects recipe fields the query layer does not
 consume, so a pack cannot report valid while changing nothing:
 
-- `strategy`: one of `hybrid`, `neighborhood`, `predicate_subject_lookup`.
+- `strategy`: one of `hybrid`, `fulltext`, `neighborhood`, `predicate_subject_lookup`.
 - `filters`: `fact_status` (string or list of strings), `predicate` (string or
   list of strings), and `window_days` (integer). These are the only filters
   applied to a search request.

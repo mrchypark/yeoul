@@ -185,6 +185,7 @@ const (
     SearchModeHybrid   SearchMode = "hybrid"
     SearchModeKeyword  SearchMode = "keyword"
     SearchModeSemantic SearchMode = "semantic"
+    SearchModeFullText SearchMode = "fulltext"
 )
 
 type SearchRequest struct {
@@ -232,6 +233,7 @@ type IncludedRecords struct {
 
 - `mode=hybrid` is the default and may combine sparse text matching and graph-aware expansion. Yeoul runs retrieval in-process and has no backend rerank stage.
 - `mode=semantic` uses local sparse-token relevance and a dependency-free character n-gram fallback for near-text matches; it does not use pretrained or learned embeddings.
+- `mode=fulltext` uses LatticeDB's persisted standard-token FTS indexes and native frequency ranking. It is additive; keyword and hybrid matching are unchanged. It does not provide substring or historical `as_of` matching. A `fulltext` request with `as_of`, or against an unindexed read-only database, returns `YEOUL_NOT_SUPPORTED`; open that database writable once to build indexes, or use another mode.
 - `anchor_ids` bias results toward graph-local context without exposing raw traversal details.
 - `types` restrict the result set; default is `fact, episode, entity`.
 - `predicates` act as a hard exclusion when searching facts: any fact whose

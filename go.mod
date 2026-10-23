@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/goccy/go-json v0.10.6
-	github.com/mrchypark/latticedb-go v0.11.3
+	github.com/mrchypark/latticedb-go v0.12.0
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 )

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	latticedb "github.com/mrchypark/latticedb-go"
@@ -19,8 +20,28 @@ type Store struct {
 // database they could not inspect check for it instead of matching error text.
 var ErrDatabaseLocked = latticedb.ErrDatabaseLocked
 var ErrFactCandidateOverflow = errors.New("fact candidate adjacency exceeds bound")
+var ErrSearchIndexUnavailable = errors.New("native search index is unavailable")
 
 const maxFactCandidateFanout = 4096
+
+const (
+	searchIndexVersionKey = "yeoul.search.fts.version"
+	searchIndexVersion    = "1"
+	searchTextProperty    = "search_text"
+)
+
+var searchIndexes = []latticedb.FTSIndexDefinition{
+	{Name: "yeoul_fact_search_v1", Kind: latticedb.FTSIndexNode, Scope: "Fact", Property: searchTextProperty},
+	{Name: "yeoul_episode_search_v1", Kind: latticedb.FTSIndexNode, Scope: "Episode", Property: searchTextProperty},
+	{Name: "yeoul_entity_search_v1", Kind: latticedb.FTSIndexNode, Scope: "Entity", Property: searchTextProperty},
+}
+
+// SearchDocument is the current canonical search text for one projected record.
+type SearchDocument struct {
+	Label string
+	ID    string
+	Text  string
+}
 
 func Open(path string, create, readOnly bool) (*Store, error) {
 	db, err := latticedb.Open(path, latticedb.OpenOptions{
@@ -45,6 +66,119 @@ func (s *Store) View(fn func(*latticedb.Tx) error) error {
 		return latticedb.ErrDatabaseClosed
 	}
 	return s.db.View(fn)
+}
+
+// EnsureSearchIndexes creates the scoped FTS schema and backfills record text
+// in one transaction. The version marker becomes visible only with that commit.
+func (s *Store) EnsureSearchIndexes(ctx context.Context, documents []SearchDocument) error {
+	if s == nil || s.db == nil {
+		return latticedb.ErrDatabaseClosed
+	}
+	return s.db.UpdateContext(ctx, func(tx *latticedb.Tx) error {
+		for _, definition := range searchIndexes {
+			if err := tx.CreateFTSIndex(definition); err != nil && !errors.Is(err, latticedb.ErrAlreadyExists) {
+				return err
+			}
+		}
+		for _, document := range documents {
+			nodes, err := tx.FindNodesByLabelProperty(document.Label, "id", document.ID, 2)
+			if err != nil {
+				return err
+			}
+			if len(nodes) != 1 {
+				return fmt.Errorf("search document %s %q resolved to %d nodes", document.Label, document.ID, len(nodes))
+			}
+			if err := tx.SetProperty(nodes[0], searchTextProperty, document.Text); err != nil {
+				return err
+			}
+		}
+		return tx.PutAppMetadata([]byte(searchIndexVersionKey), []byte(searchIndexVersion))
+	})
+}
+
+func (s *Store) SearchIndexReady() (bool, error) {
+	if s == nil || s.db == nil {
+		return false, latticedb.ErrDatabaseClosed
+	}
+	var ready bool
+	err := s.db.View(func(tx *latticedb.Tx) error {
+		var err error
+		ready, err = searchIndexReady(tx)
+		return err
+	})
+	if err != nil || !ready {
+		return ready, err
+	}
+	for _, definition := range searchIndexes {
+		_, err := s.db.FTSSearchIndexContext(context.Background(), definition.Name, "", latticedb.FTSSearchOptions{Limit: 1})
+		if errors.Is(err, latticedb.ErrInvalidArgument) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	return ready, err
+}
+
+func searchIndexReady(tx *latticedb.Tx) (bool, error) {
+	version, ok, err := tx.GetAppMetadata([]byte(searchIndexVersionKey))
+	if err != nil || !ok || string(version) != searchIndexVersion {
+		return false, err
+	}
+	return true, nil
+}
+
+// SearchCandidates returns every current node hit; the per-label result limit
+// is the full label cardinality so later Yeoul filters cannot lose candidates.
+func (s *Store) SearchCandidates(ctx context.Context, query string, counts map[string]int) (map[string]float64, error) {
+	if s == nil || s.db == nil {
+		return nil, latticedb.ErrDatabaseClosed
+	}
+	ready, err := s.SearchIndexReady()
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		return nil, ErrSearchIndexUnavailable
+	}
+	candidates := make(map[string]float64)
+	for _, index := range searchIndexes {
+		count := counts[index.Scope]
+		if count < 0 {
+			return nil, fmt.Errorf("negative %s search candidate count", index.Scope)
+		}
+		if count == 0 {
+			continue
+		}
+		if uint64(count) > math.MaxUint32 {
+			return nil, fmt.Errorf("%s search candidate count exceeds native FTS limit", index.Scope)
+		}
+		hits, err := s.db.FTSSearchIndexContext(ctx, index.Name, query, latticedb.FTSSearchOptions{Limit: uint32(count)})
+		if err != nil {
+			return nil, err
+		}
+		if err := s.db.View(func(tx *latticedb.Tx) error {
+			for _, hit := range hits {
+				node, err := tx.GetNode(hit.EntityID)
+				if err != nil {
+					return err
+				}
+				if node == nil {
+					return fmt.Errorf("%s search hit %d has no node", index.Scope, hit.EntityID)
+				}
+				id, ok := node.Properties["id"].(string)
+				if !ok || id == "" {
+					return fmt.Errorf("%s search hit %d has malformed id", index.Scope, hit.EntityID)
+				}
+				candidates[index.Scope+"\x00"+id] = float64(hit.Score)
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return candidates, nil
 }
 
 // FactCandidates resolves indexed entity IDs, then follows incoming endpoint

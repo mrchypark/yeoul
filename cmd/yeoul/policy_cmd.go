@@ -268,6 +268,8 @@ func applySearchRecipe(pack *policy.Pack, recipeName string, req yeoul.SearchReq
 	case "hybrid":
 		req.Include.RelatedEntities = true
 		req.Include.SupportingEpisodes = true
+	case "fulltext":
+		req.Mode = yeoul.SearchModeFullText
 	case "neighborhood":
 		req.Include.RelatedEntities = true
 		req.Include.Provenance = true
