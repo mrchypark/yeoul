@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	rhizastore "github.com/mrchypark/yeoul/internal/storage/rhiza"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -219,6 +220,120 @@ func TestRhizaMigrationPreservesStateAndRefusesExistingOrPendingTargets(t *testi
 	}
 	if _, err := Open(ctx, Config{DatabasePath: pendingTarget, CreateIfMissing: true}); err == nil {
 		t.Fatal("open accepted pending migration marker")
+	}
+}
+
+func TestRhizaMigrationCancellationBeforePublishRetainsPendingMarker(t *testing.T) {
+	if !storageMigrationDurable() {
+		t.Skip("durable migration markers unavailable")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	sourcePath, targetPath := filepath.Join(root, "source"), filepath.Join(root, "target")
+	source, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: sourcePath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	previous := migrationBeforePublishBarrier
+	migrationBeforePublishBarrier = cancel
+	t.Cleanup(func() { migrationBeforePublishBarrier = previous })
+	if err := MigrateLatticeToRhiza(canceled, sourcePath, targetPath); !errors.Is(err, context.Canceled) {
+		t.Fatalf("migration error = %v", err)
+	}
+	if _, err := os.Stat(databaseMigrationMarkerPath(targetPath)); err != nil {
+		t.Fatalf("pending marker missing: %v", err)
+	}
+	writer, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: sourcePath})
+	if err != nil {
+		t.Fatalf("source ownership remained held after pre-publish cancellation: %v", err)
+	}
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRhizaMigrationPublishFailureReleasesSourceOwnership(t *testing.T) {
+	if !storageMigrationDurable() {
+		t.Skip("durable migration markers unavailable")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	sourcePath, targetPath := filepath.Join(root, "source"), filepath.Join(root, "target")
+	source, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: sourcePath, CreateIfMissing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	previous := migrationBeforePublishBarrier
+	migrationBeforePublishBarrier = func() { _ = os.Remove(databaseMigrationMarkerPath(targetPath)) }
+	t.Cleanup(func() { migrationBeforePublishBarrier = previous })
+	if err := MigrateLatticeToRhiza(ctx, sourcePath, targetPath); err == nil {
+		t.Fatal("migration unexpectedly published without its pending marker")
+	}
+	writer, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: sourcePath})
+	if err != nil {
+		t.Fatalf("source ownership remained held after publish failure: %v", err)
+	}
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublishMigratedDatabaseCloseFailuresKeepMarker(t *testing.T) {
+	for _, test := range []string{"close error", "canceled during close"} {
+		t.Run(test, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "pending")
+			if err := os.WriteFile(marker, []byte("pending"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			closeErr := error(nil)
+			closeSource := func() error {
+				if test == "close error" {
+					closeErr = errors.New("close failed")
+				} else {
+					cancel()
+				}
+				return closeErr
+			}
+			err := publishMigratedDatabase(ctx, marker, "source", closeSource)
+			if test == "close error" {
+				var structured *Error
+				if !errors.As(err, &structured) || structured.Code != ErrStorageFailed {
+					t.Fatalf("error = %T %v, want structured storage failure", err, err)
+				}
+			} else if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want context canceled", err)
+			}
+			if _, statErr := os.Stat(marker); statErr != nil {
+				t.Fatalf("pending marker missing: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestRhizaLoadValidationErrorsAreStructured(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rhiza")
+	storeValue, err := newRhizaStore(Config{Driver: StorageDriverRhiza, DatabasePath: path, CreateIfMissing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := storeValue.(*rhizaStore)
+	defer store.Close()
+	if err := store.db.Apply(context.Background(), "invalid-record", []rhizastore.Record{{Key: "Fact:YWJj", Kind: "Fact", ID: "abc", Payload: "{"}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Load()
+	var structured *Error
+	if !errors.As(err, &structured) || structured.Code != ErrStorageFailed {
+		t.Fatalf("Load error = %T %v, want structured storage failure", err, err)
 	}
 }
 

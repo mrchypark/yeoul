@@ -8,7 +8,10 @@ and verifies this migration explicitly.
 ## Requirements
 
 - Stop all Yeoul processes using the source database. The migrator also takes
-  exclusive database ownership and refuses a concurrent owner.
+  exclusive database ownership through copying and verification, and refuses a
+  concurrent owner. It closes the source and checks close errors before
+  publishing the target; stop source writers because this is a point-in-time
+  copy, not an atomic application cutover.
 - Choose a target path that does not exist. Source and target must not alias or
   contain one another.
 - On Windows, migration is not supported yet: Yeoul returns
@@ -37,7 +40,8 @@ directory contents, not the extension.
 The migrator creates and durably syncs a pending marker before creating the
 target. It copies bounded batches, writes Yeoul sequence metadata last, checks
 the full state (including revisions and lifecycle records), closes and reopens
-the target, then removes and syncs the marker to publish the result. A crash or
+the target, closes the source, checks cancellation and close errors, then removes
+and syncs the marker to publish the result. A crash or
 error before publication leaves the marker in place; the incomplete target is
 refused on open and is not resumed or overwritten automatically. Preserve the
 source and investigate or remove an incomplete target only after reviewing it.

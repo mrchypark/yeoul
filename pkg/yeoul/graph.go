@@ -718,7 +718,7 @@ func (e *engine) Provenance(ctx context.Context, req ProvenanceRequest) (*Proven
 			}
 		}
 	default:
-		return nil, errorf(ErrQueryFailed, "unsupported provenance kind", map[string]any{"kind": req.Kind}, nil)
+		return nil, errorf(ErrInputInvalid, "unsupported provenance kind", map[string]any{"kind": req.Kind}, nil)
 	}
 
 	return &ProvenanceResponse{

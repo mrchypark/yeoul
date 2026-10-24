@@ -59,12 +59,9 @@ type docRetractInput struct {
 	Body retractBody `body:""`
 }
 type docGetRecordInput struct {
-	ID                        string `path:"id"`
-	SpaceID                   string `query:"space_id"`
-	AsOf                      string `query:"as_of" format:"date-time"`
-	IncludeProvenance         bool   `query:"include_provenance"`
-	IncludeRelatedEntities    bool   `query:"include_related_entities"`
-	IncludeSupportingEpisodes bool   `query:"include_supporting_episodes"`
+	ID      string `path:"id"`
+	SpaceID string `query:"space_id"`
+	AsOf    string `query:"as_of" format:"date-time"`
 }
 type docSearchInput struct {
 	Body yeoul.SearchRequest `body:""`
@@ -109,6 +106,7 @@ func newDocsHandler(requireAuth bool) http.Handler {
 	addResponse(api, "/v1/episodes", "201", "Created")
 	registerDoc[docEntityInput, docOutput[yeoul.Entity]](api, "upsert-entity", http.MethodPut, "/v1/entities/{id}", security)
 	registerDoc[docFactInput, docOutput[yeoul.Fact]](api, "assert-fact", http.MethodPost, "/v1/facts", security)
+	setFactSupportSchema(api)
 	addResponse(api, "/v1/facts", "201", "Created")
 	delete(api.OpenAPI().Paths["/v1/facts"].Post.Responses, "200")
 	registerDoc[docSupersedeInput, docOutput[yeoul.SupersedeFactResult]](api, "supersede-fact", http.MethodPost, "/v1/facts/{id}/supersede", security)
@@ -122,6 +120,16 @@ func newDocsHandler(requireAuth bool) http.Handler {
 	registerDoc[docTimelineInput, docOutput[yeoul.TimelineResponse]](api, "get-timeline", http.MethodPost, "/v1/query/timeline", security)
 	registerDoc[docProvenanceInput, docOutput[yeoul.ProvenanceResponse]](api, "get-provenance", http.MethodPost, "/v1/query/provenance", security)
 	return mux
+}
+
+func setFactSupportSchema(api huma.API) {
+	ref := api.OpenAPI().Components.Schemas.Schema(reflect.TypeFor[yeoul.FactInput](), true, "").Ref
+	schema := api.OpenAPI().Components.Schemas.SchemaFromRef(ref)
+	minItems := 1
+	supportingEpisodes := schema.Properties["supporting_episode_ids"]
+	supportingEpisodes.Nullable = false
+	supportingEpisodes.MinItems = &minItems
+	schema.Required = append(schema.Required, "supporting_episode_ids")
 }
 
 func registerDoc[I, O any](api huma.API, id, method, path string, security []map[string][]string) {

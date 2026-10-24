@@ -64,9 +64,11 @@ func TestOpenAPIDocsAndSecurity(t *testing.T) {
 		Components struct {
 			Schemas map[string]struct {
 				Properties map[string]struct {
-					Type  json.RawMessage `json:"type"`
-					Ref   string          `json:"$ref"`
-					AnyOf []struct {
+					Type     json.RawMessage `json:"type"`
+					Ref      string          `json:"$ref"`
+					MinItems *int            `json:"minItems"`
+					Nullable bool            `json:"nullable"`
+					AnyOf    []struct {
 						Type string `json:"type"`
 						Ref  string `json:"$ref"`
 					} `json:"anyOf"`
@@ -77,6 +79,20 @@ func TestOpenAPIDocsAndSecurity(t *testing.T) {
 	}
 	if err := json.Unmarshal(got.Body.Bytes(), &spec); err != nil {
 		t.Fatal(err)
+	}
+	factSchema := spec.Components.Schemas["FactInput"]
+	requiredSupport := false
+	for _, field := range factSchema.Required {
+		requiredSupport = requiredSupport || field == "supporting_episode_ids"
+	}
+	supportingProperty := factSchema.Properties["supporting_episode_ids"]
+	if !requiredSupport || supportingProperty.MinItems == nil || *supportingProperty.MinItems != 1 || supportingProperty.Nullable {
+		t.Fatalf("FactInput supporting_episode_ids schema = %#v, required=%v", factSchema.Properties["supporting_episode_ids"], factSchema.Required)
+	}
+	for _, alternative := range supportingProperty.AnyOf {
+		if alternative.Type == "null" {
+			t.Fatal("FactInput supporting_episode_ids schema permits null")
+		}
 	}
 	if strings.Contains(got.Body.String(), `"$schema"`) || strings.Contains(got.Body.String(), "application/problem+json") {
 		t.Fatal("OpenAPI advertises Huma-only schema links or Problem Details")
@@ -241,6 +257,20 @@ func testEngine(t *testing.T) yeoul.Engine {
 	return engine
 }
 
+type poisonedEngine struct{ yeoul.Engine }
+
+func (poisonedEngine) GetRecord(context.Context, yeoul.GetRecordRequest) (*yeoul.GetRecordResponse, error) {
+	return nil, &yeoul.Error{Code: yeoul.ErrStorageFailed, Message: "poisoned"}
+}
+
+func TestHealthReportsPoisonedEngineUnavailable(t *testing.T) {
+	handler := NewHandler(poisonedEngine{testEngine(t)}, Config{})
+	response := request(handler, http.MethodGet, "http://example.test/v1/health", "")
+	if response.Code != http.StatusServiceUnavailable || decodeEnvelope(t, response).Error.Code != "storage_failure" {
+		t.Fatalf("poisoned health status/body = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func request(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {
@@ -396,6 +426,42 @@ func TestOriginHostAndBearerGuards(t *testing.T) {
 		t.Fatalf("authorized same-origin status = %d, body=%s", got.Code, got.Body.String())
 	} else if bytes.Contains(got.Body.Bytes(), []byte("secret-token")) {
 		t.Fatal("response exposed bearer token")
+	}
+	if got := newRequest("localhost:8080", "", "bEaReR secret-token"); got.Code != http.StatusOK {
+		t.Fatalf("case-insensitive scheme status = %d", got.Code)
+	}
+	if got := newRequest("localhost:8080", "", "bearer  secret-token"); got.Code != http.StatusOK {
+		t.Fatalf("multiple-space separator status = %d", got.Code)
+	}
+	if got := newRequest("localhost:8080", "", "bearer SECRET-TOKEN"); got.Code != http.StatusUnauthorized {
+		t.Fatalf("case-changed token status = %d", got.Code)
+	}
+}
+
+func TestRecordExpansionAndLifecycleReasonValidation(t *testing.T) {
+	handler := NewHandler(testEngine(t), Config{})
+	for _, key := range []string{"include_provenance", "include_related_entities", "include_supporting_episodes"} {
+		response := request(handler, http.MethodGet, "http://example.test/v1/facts/missing?"+key+"=true", "")
+		if response.Code != http.StatusNotImplemented {
+			t.Errorf("%s status = %d", key, response.Code)
+		}
+	}
+	for _, pathBody := range []struct{ path, body string }{
+		{"/v1/facts/old/retract", `{"reason":"  "}`},
+		{"/v1/facts/old/supersede", `{"reason":"  ","new_fact":{"predicate":"P","subject_id":"S","supporting_episode_ids":["E"]}}`},
+	} {
+		response := request(handler, http.MethodPost, "http://example.test"+pathBody.path, pathBody.body)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d body=%s", pathBody.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestFactInputRejectsNullSupportingEpisodes(t *testing.T) {
+	handler := NewHandler(testEngine(t), Config{})
+	response := request(handler, http.MethodPost, "http://example.test/v1/facts", `{"fact":{"predicate":"P","subject_id":"S","supporting_episode_ids":null}}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("null supporting episodes status/body = %d %s", response.Code, response.Body.String())
 	}
 }
 

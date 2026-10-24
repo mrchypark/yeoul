@@ -75,7 +75,13 @@ func MigrateLatticeToRhiza(ctx context.Context, sourcePath, targetPath string) (
 	if err != nil {
 		return err
 	}
-	defer func() { retErr = errors.Join(retErr, source.Close()) }()
+	sourceClosed := false
+	defer func() {
+		if sourceClosed {
+			return
+		}
+		retErr = errors.Join(retErr, source.Close())
+	}()
 	sourceState, loadErr := source.Load()
 	if loadErr != nil {
 		return loadErr
@@ -120,6 +126,25 @@ func MigrateLatticeToRhiza(ctx context.Context, sourcePath, targetPath string) (
 	}
 	if migrationBeforePublishBarrier != nil {
 		migrationBeforePublishBarrier()
+	}
+	if err := publishMigratedDatabase(ctx, marker, sourcePath, func() error {
+		sourceClosed = true
+		return source.Close()
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func publishMigratedDatabase(ctx context.Context, marker, sourcePath string, closeSource func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := closeSource(); err != nil {
+		return errorf(ErrStorageFailed, "close migration source before publish", map[string]any{"source": sourcePath}, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := os.Remove(marker); err != nil {
 		return errorf(ErrStorageFailed, "publish migrated database", map[string]any{"marker": marker}, err)

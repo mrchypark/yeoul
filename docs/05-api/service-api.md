@@ -73,7 +73,7 @@ backend error details.
 
 | Method and path | Engine operation | Success |
 | --- | --- | --- |
-| `GET /v1/health` | daemon readiness | 200 |
+| `GET /v1/health` | daemon readiness | 200 ready, 503 unavailable |
 | `GET /v1/schema` | API version descriptor | 200 |
 | `POST /v1/episodes` | `IngestEpisode` | 201 when created, otherwise 200 |
 | `PUT /v1/entities/{id}` | `UpsertEntity` | 200 |
@@ -89,8 +89,8 @@ backend error details.
 
 Query request bodies map to their corresponding public `yeoul` request structs.
 They include `meta.space_id` and the fields defined by the Go API. Record GETs
-accept `space_id`, `as_of`, `include_provenance`, `include_related_entities`,
-and `include_supporting_episodes` query parameters. IDs containing `/` must be
+accept `space_id` and `as_of` query parameters. Include-expansion parameters are
+not supported and are rejected when requested. IDs containing `/` must be
 percent-encoded as `%2F` in a path segment.
 
 Write bodies use the accepted v1 shapes: `{space_id, episode}`,

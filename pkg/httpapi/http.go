@@ -95,6 +95,13 @@ func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		path = "/"
 	}
 	if r.Method == http.MethodGet && path == "/v1/health" {
+		if _, err := h.engine.GetRecord(r.Context(), yeoul.GetRecordRequest{Kind: "fact", ID: "__yeoul_health_probe__"}); err != nil {
+			var coreErr *yeoul.Error
+			if !errors.As(err, &coreErr) || coreErr.Code != yeoul.ErrFactNotFound {
+				h.writeError(w, requestID, "storage_failure", "database is not ready", nil, http.StatusServiceUnavailable)
+				return
+			}
+		}
 		h.writeData(w, requestID, "", http.StatusOK, map[string]string{"status": "ok", "service": "yeould", "database": "ready"})
 		return
 	}
@@ -274,12 +281,12 @@ func (h *handler) assertFact(w http.ResponseWriter, r *http.Request, requestID s
 type supersedeBody struct {
 	SpaceID string          `json:"space_id,omitempty"`
 	NewFact yeoul.FactInput `json:"new_fact"`
-	Reason  string          `json:"reason"`
+	Reason  string          `json:"reason" minLength:"1" pattern:"\\S"`
 }
 
 type retractBody struct {
 	SpaceID string `json:"space_id,omitempty"`
-	Reason  string `json:"reason"`
+	Reason  string `json:"reason" minLength:"1" pattern:"\\S"`
 }
 
 func (h *handler) factLifecycle(w http.ResponseWriter, r *http.Request, requestID, path string) bool {
@@ -295,6 +302,10 @@ func (h *handler) factLifecycle(w http.ResponseWriter, r *http.Request, requestI
 	if parts[1] == "supersede" {
 		var body supersedeBody
 		if !h.readBody(w, r, requestID, &body) {
+			return true
+		}
+		if strings.TrimSpace(body.Reason) == "" {
+			h.writeError(w, requestID, "invalid_argument", "reason is required", nil, http.StatusBadRequest)
 			return true
 		}
 		if !bridgeSpaceID(&body.NewFact.SpaceID, body.SpaceID) {
@@ -318,6 +329,10 @@ func (h *handler) factLifecycle(w http.ResponseWriter, r *http.Request, requestI
 	}
 	var body retractBody
 	if !h.readBody(w, r, requestID, &body) {
+		return true
+	}
+	if strings.TrimSpace(body.Reason) == "" {
+		h.writeError(w, requestID, "invalid_argument", "reason is required", nil, http.StatusBadRequest)
 		return true
 	}
 	if _, err := h.engine.GetRecord(r.Context(), yeoul.GetRecordRequest{Meta: yeoul.QueryMeta{SpaceID: body.SpaceID}, Kind: "fact", ID: id}); err != nil {
@@ -349,6 +364,10 @@ func (h *handler) getRecord(w http.ResponseWriter, r *http.Request, requestID, p
 	query, err := parseGetQuery(r.URL.Query())
 	if err != nil {
 		h.writeError(w, requestID, "invalid_argument", err.Error(), nil, http.StatusBadRequest)
+		return true
+	}
+	if query.provenance || query.related || query.supporting {
+		h.writeError(w, requestID, "unsupported", "record expansions are not supported", nil, http.StatusNotImplemented)
 		return true
 	}
 	requestKind := map[string]string{"episodes": "episode", "entities": "entity", "facts": "fact", "sources": "source"}[kind]
@@ -623,11 +642,11 @@ func (h *handler) authorized(r *http.Request) bool {
 		return false
 	}
 	value := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(value, prefix) {
+	parts := strings.SplitN(value, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return false
 	}
-	provided := strings.TrimPrefix(value, prefix)
+	provided := strings.TrimLeft(parts[1], " ")
 	providedHash := sha256.Sum256([]byte(provided))
 	tokenHash := sha256.Sum256([]byte(h.cfg.BearerToken))
 	return subtle.ConstantTimeCompare(providedHash[:], tokenHash[:]) == 1

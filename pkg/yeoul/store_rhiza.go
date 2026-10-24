@@ -172,11 +172,11 @@ func (s *rhizaStore) Load() (*persistedState, error) {
 	for _, row := range rows {
 		wantKey := row.Kind + ":" + base64.RawURLEncoding.EncodeToString([]byte(row.ID))
 		if row.Key != wantKey {
-			return nil, fmt.Errorf("Rhiza record key %q does not match kind and ID", row.Key)
+			return nil, errorf(ErrStorageFailed, "validate Rhiza graph state", map[string]any{"database_path": s.cfg.DatabasePath}, fmt.Errorf("Rhiza record key %q does not match kind and ID", row.Key))
 		}
 		logicalKey := row.Kind + "\x00" + row.ID
 		if _, exists := seen[logicalKey]; exists {
-			return nil, fmt.Errorf("duplicate Rhiza record %s %q", row.Kind, row.ID)
+			return nil, errorf(ErrStorageFailed, "validate Rhiza graph state", map[string]any{"database_path": s.cfg.DatabasePath}, fmt.Errorf("duplicate Rhiza record %s %q", row.Kind, row.ID))
 		}
 		seen[logicalKey] = struct{}{}
 		if row.Deleted {
@@ -185,7 +185,7 @@ func (s *rhizaStore) Load() (*persistedState, error) {
 		if row.Kind == "YeoulMeta" && row.ID == "state" {
 			var meta rhizaMeta
 			if err := json.Unmarshal([]byte(row.Payload), &meta); err != nil {
-				return nil, fmt.Errorf("decode Rhiza application metadata: %w", err)
+				return nil, errorf(ErrStorageFailed, "validate Rhiza graph state", map[string]any{"database_path": s.cfg.DatabasePath}, fmt.Errorf("decode Rhiza application metadata: %w", err))
 			}
 			if meta.Version != currentStateVersion {
 				return nil, errorf(ErrStorageFailed, "unsupported application-state version", map[string]any{"version": meta.Version}, nil)
@@ -195,11 +195,11 @@ func (s *rhizaStore) Load() (*persistedState, error) {
 			continue
 		}
 		if err := decodeRhizaStateRecord(&state, row.Kind, row.ID, row.Payload); err != nil {
-			return nil, err
+			return nil, errorf(ErrStorageFailed, "validate Rhiza graph state", map[string]any{"database_path": s.cfg.DatabasePath}, err)
 		}
 	}
 	if len(rows) > 0 && !metaFound {
-		return nil, fmt.Errorf("Rhiza database has records but no Yeoul state metadata")
+		return nil, errorf(ErrStorageFailed, "validate Rhiza graph state", map[string]any{"database_path": s.cfg.DatabasePath}, fmt.Errorf("Rhiza database has records but no Yeoul state metadata"))
 	}
 	s.lastState = clonePersistedState(state)
 	s.loaded = true
