@@ -32,18 +32,18 @@ func TestOpenHoldsOwnershipForStoreLifetime(t *testing.T) {
 func TestConcurrentReadersShareOwnership(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "shared.ltdb")
-	created, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	created, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("create database: %v", err)
 	}
 	if err := created.Close(ctx); err != nil {
 		t.Fatalf("close created database: %v", err)
 	}
-	first, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	first, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, ReadOnly: true})
 	if err != nil {
 		t.Fatalf("open first reader: %v", err)
 	}
-	second, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	second, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, ReadOnly: true})
 	if err != nil {
 		_ = first.Close(ctx)
 		t.Fatalf("open second reader: %v", err)

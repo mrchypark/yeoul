@@ -70,6 +70,7 @@ func rawCypherFixture(path string) map[string]string {
 func TestStorageBoundaryCheckerAllowsOnlyAuthorizedAdapters(t *testing.T) {
 	for _, path := range []string{
 		"internal/storage/lattice/adapter.go",
+		"internal/storage/rhiza/rhiza.go",
 	} {
 		t.Run("allows "+path, func(t *testing.T) {
 			if out, err := runStorageBoundaryCheck(t, rawCypherFixture(path)); err != nil {
@@ -84,6 +85,7 @@ func TestStorageBoundaryCheckerRejectsOtherAdapterPaths(t *testing.T) {
 		"pkg/yeoul/adapter.go",
 		"cmd/yeoul/adapter.go",
 		"internal/storage/other/adapter.go",
+		"internal/storage/rhiza/extra.go",
 	} {
 		t.Run("rejects "+path, func(t *testing.T) {
 			out, err := runStorageBoundaryCheck(t, rawCypherFixture(path))

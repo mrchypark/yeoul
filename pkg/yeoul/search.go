@@ -41,11 +41,14 @@ func (e *engine) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 	nativeScores := map[string]float64(nil)
 	if mode == SearchModeFullText {
 		store, ok := e.store.(nativeFullTextStore)
 		if !ok {
-			return nil, errorf(ErrNotSupported, "fulltext search requires a persisted LatticeDB index", nil, nil)
+			return nil, errorf(ErrNotSupported, "fulltext search requires a native index or predicate supported by the selected storage driver", nil, nil)
 		}
 		nativeScores, err = store.SearchCandidates(ctx, query, map[string]int{
 			"Fact":    len(e.facts),

@@ -7,6 +7,7 @@ repo_root=$(CDPATH='' cd "${script_dir}/../.." && pwd)
 matches=$(
   git -C "${repo_root}" grep -n -E '"(MATCH|CREATE|MERGE|DELETE|RETURN|CALL) ' -- '*.go' \
     ':!internal/storage/lattice/**' \
+    ':!internal/storage/rhiza/rhiza.go' \
     ':!*_test.go' || true
 )
 

@@ -23,7 +23,7 @@ func (failingFactCandidatesStore) FactCandidates(context.Context, []string, []st
 func TestLatticeLookupFactsIndexedPathMatchesLegacyScan(t *testing.T) {
 	ctx := context.Background()
 	dbPath := t.TempDir() + "/lookup.db"
-	eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("open lattice engine: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestLatticeLookupFactsIndexedPathMatchesLegacyScan(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close marker test database: %v", err)
 	}
-	legacyWritable, err := Open(ctx, Config{DatabasePath: dbPath})
+	legacyWritable, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice})
 	if err != nil {
 		t.Fatalf("reopen unready database writable: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestLatticeLookupFactsIndexedPathMatchesLegacyScan(t *testing.T) {
 	if err := legacyWritable.Close(ctx); err != nil {
 		t.Fatalf("close unready database: %v", err)
 	}
-	reopened, err := Open(ctx, Config{DatabasePath: dbPath, ReadOnly: true})
+	reopened, err := Open(ctx, Config{DatabasePath: dbPath, Driver: StorageDriverLattice, ReadOnly: true})
 	if err != nil {
 		t.Fatalf("read-only reopen: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestLatticeLookupFactsIndexedPathMatchesLegacyScan(t *testing.T) {
 func benchmarkLookupFactsFixture(b *testing.B, unrelatedEntities, facts int) (*engine, []string) {
 	b.Helper()
 	ctx := context.Background()
-	eng, err := Open(ctx, Config{DatabasePath: filepath.Join(b.TempDir(), "lookup.db"), CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: filepath.Join(b.TempDir(), "lookup.db"), Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		b.Fatalf("open lattice engine: %v", err)
 	}

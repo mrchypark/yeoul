@@ -57,6 +57,7 @@ type engine struct {
 	sequence uint64
 	cfg      Config
 	store    stateStore
+	poisoned error
 
 	sources  map[string]Source
 	episodes map[string]Episode
@@ -124,8 +125,12 @@ func (e *engine) Close(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var errs []error
-	if err := e.saveLocked(); err != nil {
-		errs = append(errs, err)
+	if e.poisoned != nil {
+		errs = append(errs, e.poisoned)
+	} else {
+		if err := e.saveLocked(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if e.store != nil {
 		if err := e.store.Close(); err != nil {
@@ -141,6 +146,9 @@ func (e *engine) Snapshot(ctx context.Context) (*DatabaseSnapshot, error) {
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 	state := e.snapshotLocked()
 	return &DatabaseSnapshot{
 		Version:             state.Version,
@@ -155,7 +163,21 @@ func (e *engine) Snapshot(ctx context.Context) (*DatabaseSnapshot, error) {
 	}, nil
 }
 
+func (e *engine) poisonedErrorLocked() error {
+	if e.poisoned == nil {
+		return nil
+	}
+	return errorf(ErrStorageFailed, "storage commit outcome is unknown; reopen the database before continuing", map[string]any{
+		"database_path": e.cfg.DatabasePath,
+	}, e.poisoned)
+}
+
 func (e *engine) ensureWritableLocked() error {
+	if e.poisoned != nil {
+		return errorf(ErrStorageFailed, "storage commit outcome is unknown; reopen the database before continuing", map[string]any{
+			"database_path": e.cfg.DatabasePath,
+		}, e.poisoned)
+	}
 	if e.cfg.ReadOnly {
 		return errorf(ErrNotSupported, "write operation is not allowed in read-only mode", map[string]any{
 			"database_path": e.cfg.DatabasePath,
@@ -782,6 +804,10 @@ func (e *engine) GetRecord(ctx context.Context, req GetRecordRequest) (*GetRecor
 		return &GetRecordResponse{Meta: meta, Kind: req.Kind, Record: record}, nil
 	case "entity":
 		e.mu.RLock()
+		if err := e.poisonedErrorLocked(); err != nil {
+			e.mu.RUnlock()
+			return nil, err
+		}
 		entity, ok := e.entities[req.ID]
 		if !ok {
 			e.mu.RUnlock()
@@ -804,6 +830,10 @@ func (e *engine) GetRecord(ctx context.Context, req GetRecordRequest) (*GetRecor
 		version := record
 		if temporalFilterSet(req.Temporal) {
 			e.mu.RLock()
+			if err := e.poisonedErrorLocked(); err != nil {
+				e.mu.RUnlock()
+				return nil, err
+			}
 			version = e.factVersionAt(*record, req.Temporal, newTemporalIndex(e))
 			e.mu.RUnlock()
 		}
@@ -835,6 +865,9 @@ func (e *engine) GetEpisode(ctx context.Context, id string) (*Episode, error) {
 	_ = ctx
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 
 	episode, ok := e.episodes[id]
 	if !ok {
@@ -847,6 +880,9 @@ func (e *engine) GetEntity(ctx context.Context, id string) (*Entity, error) {
 	_ = ctx
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 
 	entity, ok := e.entities[id]
 	if !ok {
@@ -873,6 +909,9 @@ func (e *engine) ResolveEntity(ctx context.Context, req EntityResolveRequest) (*
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 
 	spaceID := normalizeSpaceID(req.SpaceID)
 	type resolution struct {
@@ -990,6 +1029,9 @@ func (e *engine) GetFact(ctx context.Context, id string) (*Fact, error) {
 	_ = ctx
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 
 	fact, ok := e.facts[id]
 	if !ok {
@@ -1002,6 +1044,9 @@ func (e *engine) GetSource(ctx context.Context, id string) (*Source, error) {
 	_ = ctx
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if err := e.poisonedErrorLocked(); err != nil {
+		return nil, err
+	}
 
 	source, ok := e.sources[id]
 	if !ok {
@@ -1134,6 +1179,13 @@ func (e *engine) mutateLocked(ctx context.Context, fn func() error) error {
 		return err
 	}
 	if err := e.saveLocked(); err != nil {
+		if errors.Is(err, errStorageOutcomeUnknown) {
+			e.restoreLocked(snapshot)
+			e.poisoned = err
+			return errorf(ErrStorageFailed, "storage commit outcome is unknown; reopen the database before continuing", map[string]any{
+				"database_path": e.cfg.DatabasePath,
+			}, err)
+		}
 		e.restoreLocked(snapshot)
 		return err
 	}

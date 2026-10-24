@@ -8,7 +8,7 @@ import (
 
 func TestMutationStateCopyOwnership(t *testing.T) {
 	ctx := context.Background()
-	eng, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "state.db"), CreateIfMissing: true})
+	eng, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "state.db"), Driver: StorageDriverLattice, CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
 	}

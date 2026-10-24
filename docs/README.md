@@ -120,4 +120,6 @@ Use [current-scope.md](./00-overview/current-scope.md) as the primary reference 
 In short:
 
 - active scope: local embedded toolkit, CLI, policy guidance, memory model, and implementation docs
-- deferred scope: daemon/service mode and broader extension surfaces
+- storage: LatticeDB is supported across platforms; Rhiza is supported on Linux and macOS, while Windows uses LatticeDB
+- optional implemented adapter: `yeould` local HTTP service, documented in [Service API](./05-api/service-api.md)
+- deferred scope: broad plugin ecosystems, hosted/remote deployment, and other extension surfaces

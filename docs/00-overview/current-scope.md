@@ -6,7 +6,9 @@ This document defines the **current working scope** of Yeoul so the repository d
 
 Yeoul is a local-first implementation toolkit for temporal agent memory inspired by the Zep and Graphiti architecture.
 
-Current releases use LatticeDB as the only embedded graph store.
+Current releases support LatticeDB on all supported platforms and Rhiza on
+Linux and macOS. Automatic driver selection preserves recognized existing
+databases; new databases use Rhiza on Linux and macOS and LatticeDB on Windows.
 It exposes developer-facing tools and interfaces for storing, retrieving, and inspecting temporal memory.
 It keeps AI extraction behavior and memory-use behavior outside the engine through instructions, skills, ontology files, episode rules, and search recipes.
 
@@ -17,7 +19,7 @@ At the current stage, this repository should primarily contain:
 - documentation for the temporal memory model
 - guidance for agent instructions and skills
 - storage and retrieval tool specifications
-- implementation-facing design docs for a Go + LatticeDB local system
+- implementation-facing design docs for a Go local system with platform-supported embedded storage
 
 It should not expand prematurely into a large runtime platform.
 
@@ -39,8 +41,14 @@ The primary implementation target is:
 
 - embedded Go library
 - local CLI
-- LatticeDB-backed graph and transaction model
+- graph and transaction models for the supported embedded storage drivers
 - replay, inspect, query, and benchmark tooling
+
+An optional `yeould` HTTP adapter is implemented for local multi-process
+clients. It maps a bounded v1 route set to existing Engine operations and does
+not change the embedded API's primary status or expand Yeoul into a hosted
+service. See [Service API](../05-api/service-api.md) and
+[Local Storage](../08-operations/local-storage.md) for its exact limits.
 
 ### 3. Externalized AI behavior
 
@@ -58,8 +66,7 @@ This repository should therefore include:
 
 The following areas may remain documented, but they are not the primary delivery target right now:
 
-- multi-process daemon mode
-- HTTP or gRPC service adapters
+- gRPC service adapters
 - broad plugin ecosystems
 - hosted or remote deployment models
 - end-user product surfaces
@@ -87,8 +94,8 @@ These directly drive the current build:
 
 These remain useful, but should not expand core scope on their own:
 
-- service API
-- daemon-specific operational guidance
+- broader service API extensions beyond the implemented `yeould` v1 routes
+- daemon features beyond the documented optional local HTTP adapter
 - plugin or extension discussions beyond policy loading and adapters
 
 ## Design rule

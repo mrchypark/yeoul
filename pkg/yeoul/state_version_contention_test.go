@@ -48,7 +48,7 @@ func TestLatticeOpenRefusesUninspectedDatabaseHeldByAWriter(t *testing.T) {
 	writer := holdWritableLatticeHandle(t, dbPath)
 	before := hashDatabaseTree(t, dbPath)
 
-	eng, err := Open(ctx, Config{DatabasePath: dbPath})
+	eng, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath})
 	if err == nil {
 		_ = eng.Close(ctx)
 		t.Fatal("expected an open of a database held by another writer to be refused")
@@ -70,7 +70,7 @@ func TestLatticeOpenRefusesUninspectedDatabaseHeldByAWriter(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close competing writer: %v", err)
 	}
-	eng, err = Open(ctx, Config{DatabasePath: dbPath})
+	eng, err = Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath})
 	if eng != nil {
 		_ = eng.Close(ctx)
 		t.Fatal("expected no engine for an unsupported state version")
@@ -115,7 +115,7 @@ func TestLatticeOpenReinspectsWhenAWriterFillsTheCreationWindow(t *testing.T) {
 		{
 			name: "empty database is filled in the window",
 			fill: func(t *testing.T, dbPath string) {
-				empty, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+				empty, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
 				if err != nil {
 					t.Fatalf("create empty database: %v", err)
 				}
@@ -154,7 +154,7 @@ func TestLatticeOpenReinspectsWhenAWriterFillsTheCreationWindow(t *testing.T) {
 			}
 			t.Cleanup(func() { writableOpenBarrier = previous })
 
-			eng, err := Open(ctx, Config{DatabasePath: dbPath, CreateIfMissing: true})
+			eng, err := Open(ctx, Config{Driver: StorageDriverLattice, DatabasePath: dbPath, CreateIfMissing: true})
 			if eng != nil {
 				_ = eng.Close(ctx)
 				t.Fatal("expected no engine for a database filled with an unsupported state version")
