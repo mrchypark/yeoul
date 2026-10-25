@@ -111,4 +111,7 @@ jobs:
           jq -e '[.manifests[].platform | select(.os == "linux" and (.architecture == "amd64" or .architecture == "arm64")) | .architecture] | unique | sort == ["amd64", "arm64"]' manifest.json
           jq -e '[.manifests[].annotations["vnd.docker.reference.type"] // empty] | any(. == "attestation-manifest")' manifest.json
           docker pull --platform linux/amd64 "$ref"
+          # Classic Docker stores cannot register two platforms under one digest locally.
+          docker image rm "$ref"
           docker pull --platform linux/arm64 "$ref"
+          docker image rm "$ref"
