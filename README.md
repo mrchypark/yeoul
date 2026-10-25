@@ -83,9 +83,12 @@ Yeoul keeps agent behavior outside the core engine, so each coding assistant nee
 
 See the full product-specific guide in [`agent-pack/integrations/README.md`](./agent-pack/integrations/README.md).
 
+For the optional `yeould` HTTP service container, see
+[`Container Image`](docs/08-operations/containers.md).
+
 ## Local Development
 
-Requirements: Go 1.27.2+.
+Requirements: Go 1.27.3+.
 
 Released Yeoul v0.10.x databases use LatticeDB. This source version defaults new
 databases to embedded Rhiza in local-only mode on Linux and macOS, and continues
