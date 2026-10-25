@@ -88,7 +88,7 @@ For the optional `yeould` HTTP service container, see
 
 ## Local Development
 
-Requirements: Go 1.27.2+.
+Requirements: Go 1.27.3+.
 
 Released Yeoul v0.10.x databases use LatticeDB. This source version defaults new
 databases to embedded Rhiza in local-only mode on Linux and macOS, and continues
