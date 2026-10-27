@@ -120,6 +120,18 @@ For S3, `Endpoint` must be `host:port` without a URL scheme; `Insecure` selects
 HTTP instead of HTTPS. Azure authentication uses either a storage account key
 or a connection string, not both.
 
+The published Yeoul v0.12.0 uses Rhiza v0.20.0; this development version uses
+Rhiza v0.21.0 and its fixed local archive format. There is no archive
+conversion tool or automatic migration/adoption. For an existing deployment,
+keep Yeoul v0.12.0 with its current database and archive, or use this
+development version with a fresh database and fresh archive location. The
+[Rhiza v0.21.0 release contract](https://github.com/mrchypark/rhiza/releases/tag/v0.21.0)
+states that unsupported or partial archives are rejected without modification.
+Yeoul has no separate archive-format validator; compatibility with other
+existing archives is not guaranteed. Do not use an existing
+database/archive location as an upgrade procedure. Existing `.ltdb` extensions
+and database paths do not need renaming.
+
 Rhiza local backup uses `BeforeAck`: a successful write acknowledgement means
 the corresponding archive durability work completed before the acknowledgement
 was returned. This is not a claim of provider parity or a guarantee against
