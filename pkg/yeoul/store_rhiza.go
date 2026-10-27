@@ -40,7 +40,7 @@ func newRhizaStore(cfg Config) (stateStore, error) {
 	}
 	info, err := os.Stat(cfg.DatabasePath)
 	if errors.Is(err, os.ErrNotExist) {
-		if !cfg.CreateIfMissing {
+		if !cfg.CreateIfMissing && !cfg.RestoreIfMissing {
 			return nil, errorf(ErrStorageFailed, "Rhiza database does not exist", map[string]any{"database_path": cfg.DatabasePath}, err)
 		}
 		if err := os.Mkdir(cfg.DatabasePath, 0o700); err != nil {
@@ -72,14 +72,27 @@ func newRhizaStore(cfg Config) (stateStore, error) {
 		if readErr != nil {
 			return nil, errorf(ErrStorageFailed, "inspect marker-only Rhiza directory", map[string]any{"database_path": cfg.DatabasePath}, readErr)
 		}
-		if !onlyRhizaMarker(entries) || !cfg.CreateIfMissing {
+		if !onlyRhizaMarker(entries) || (!cfg.CreateIfMissing && !cfg.RestoreIfMissing) {
 			return nil, errorf(ErrStorageFailed, "Rhiza marker exists without native data; refusing to initialize unless explicitly creating an empty directory", map[string]any{"database_path": cfg.DatabasePath}, nil)
 		}
 	}
-	if err := ensureRhizaDriverMarker(cfg.DatabasePath, cfg.CreateIfMissing); err != nil {
+	if err := ensureRhizaDriverMarker(cfg.DatabasePath, cfg.CreateIfMissing || cfg.RestoreIfMissing); err != nil {
 		return nil, errorf(ErrStorageFailed, "validate Rhiza database marker", map[string]any{"database_path": cfg.DatabasePath}, err)
 	}
-	db, err := rhizastore.Open(cfg.DatabasePath)
+	var backup *rhizastore.ObjectStoreConfig
+	if cfg.RhizaBackup != nil {
+		backup = &rhizastore.ObjectStoreConfig{
+			Provider: cfg.RhizaBackup.Provider, Endpoint: cfg.RhizaBackup.Endpoint,
+			Bucket: cfg.RhizaBackup.Bucket, Prefix: cfg.RhizaBackup.Prefix,
+			Region: cfg.RhizaBackup.Region, Insecure: cfg.RhizaBackup.Insecure,
+			AccessKey: cfg.RhizaBackup.AccessKey, SecretKey: cfg.RhizaBackup.SecretKey,
+			SessionToken: cfg.RhizaBackup.SessionToken, ServiceAccount: cfg.RhizaBackup.GCSServiceAccount,
+			AzureStorageAccount:    cfg.RhizaBackup.AzureStorageAccount,
+			AzureStorageAccountKey: cfg.RhizaBackup.AzureStorageAccountKey,
+			AzureConnectionString:  cfg.RhizaBackup.AzureConnectionString,
+		}
+	}
+	db, err := rhizastore.Open(cfg.DatabasePath, backup)
 	if err != nil {
 		return nil, errorf(ErrStorageFailed, "open Rhiza database", map[string]any{"database_path": cfg.DatabasePath}, err)
 	}
@@ -198,12 +211,22 @@ func (s *rhizaStore) Load() (*persistedState, error) {
 			return nil, errorf(ErrStorageFailed, "validate Rhiza graph state", map[string]any{"database_path": s.cfg.DatabasePath}, err)
 		}
 	}
+	if s.cfg.RestoreIfMissing && !metaFound {
+		return nil, errorf(ErrStorageFailed, "Rhiza restore did not recover canonical Yeoul state; refusing empty startup", map[string]any{"database_path": s.cfg.DatabasePath}, nil)
+	}
 	if len(rows) > 0 && !metaFound {
 		return nil, errorf(ErrStorageFailed, "validate Rhiza graph state", map[string]any{"database_path": s.cfg.DatabasePath}, fmt.Errorf("Rhiza database has records but no Yeoul state metadata"))
 	}
 	s.lastState = clonePersistedState(state)
 	s.loaded = true
 	return &state, nil
+}
+
+func (s *rhizaStore) completeRestore() error {
+	if !s.cfg.RestoreIfMissing {
+		return nil
+	}
+	return clearRhizaRestorePending(s.cfg.DatabasePath)
 }
 
 func decodeRhizaStateRecord(state *persistedState, kind, id, payload string) error {

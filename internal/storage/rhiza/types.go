@@ -14,6 +14,15 @@ type Record struct {
 	Deleted    bool
 }
 
+type ObjectStoreConfig struct {
+	Provider, Endpoint, Bucket, Prefix, Region  string
+	Insecure                                    bool
+	AccessKey, SecretKey, SessionToken          string
+	ServiceAccount                              string
+	AzureStorageAccount, AzureStorageAccountKey string
+	AzureConnectionString                       string
+}
+
 type MutationTooLargeError struct{ EncodedBytes, Limit int }
 
 func (e *MutationTooLargeError) Error() string {
