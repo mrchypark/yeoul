@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	lstore "github.com/mrchypark/yeoul/internal/storage/lattice"
@@ -17,6 +18,8 @@ const (
 	ownershipAcquireAttempts = 4
 	ownershipRetryDelay      = 25 * time.Millisecond
 )
+
+const restorePendingMarkerValue = "yeoul-rhiza-restore-pending-v1\n"
 
 type StorageDriver string
 
@@ -100,21 +103,25 @@ const (
 	// openStoreSharedOwnership is the lock an ordinary open holds. It is shared
 	// with every other store and only excludes a migration.
 	openStoreSharedOwnership openStoreOwnership = iota
-	// openStoreExclusiveOwnership is the writable ownership an explicit
-	// maintenance window holds. Every other open is refused for the window's
-	// whole lifetime, so the state a maintenance operation reads cannot be
-	// changed between deciding on a change and applying it.
+	// openStoreExclusiveOwnership is held by maintenance and restore operations
+	// that must keep other openers out for their full lifetime.
 	openStoreExclusiveOwnership
 )
 
 func openStateStore(cfg Config) (stateStore, error) {
+	if cfg.RestoreIfMissing {
+		return openStateStoreWithOwnership(cfg, openStoreExclusiveOwnership)
+	}
 	return openStateStoreWithOwnership(cfg, openStoreSharedOwnership)
 }
 
 // openStateStoreWithOwnership opens the store while holding ownership of the
-// requested kind. An ordinary open shares the database with every other store;
-// a maintenance window owns it exclusively for the whole operation.
+// requested kind. Ordinary opens share ownership; maintenance and restore
+// operations hold it exclusively for the whole operation.
 func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stateStore, error) {
+	if err := validateRhizaBackupConfig(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.InMemory {
 		return memoryStore{}, nil
 	}
@@ -136,6 +143,13 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 		}, err)
 	}
 	cfg.DatabasePath = databasePath
+	pendingRestore, err := rhizaRestorePending(databasePath)
+	if err != nil {
+		return nil, errorf(ErrStorageFailed, "inspect database restore marker", map[string]any{"database_path": databasePath}, err)
+	}
+	if pendingRestore && !cfg.RestoreIfMissing {
+		return nil, restorePendingError(databasePath)
+	}
 	if !rhizastore.Supported() {
 		isExistingRhiza := rhizaDatabaseHasEvidence(databasePath) && !latticeDatabaseHasEvidence(databasePath)
 		if cfg.Driver == StorageDriverRhiza || (cfg.Driver == "" && isExistingRhiza) {
@@ -149,11 +163,14 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 	if err != nil {
 		return nil, err
 	}
+	if cfg.RhizaBackup != nil && cfg.Driver != StorageDriverRhiza {
+		return nil, errorf(ErrConfigInvalid, "Rhiza backup requires the Rhiza storage driver", map[string]any{"driver": cfg.Driver}, nil)
+	}
 
 	// An explicit creation is allowed to bring its own directory into being.
 	// This happens before ownership is acquired, because the ownership file
 	// lives next to the database.
-	if cfg.CreateIfMissing {
+	if cfg.CreateIfMissing || cfg.RestoreIfMissing {
 		if err := ensureDatabaseOwnershipDirectory(databasePath); err != nil {
 			return nil, errorf(ErrStorageFailed, "create database directory", map[string]any{
 				"database_path": databasePath,
@@ -176,6 +193,13 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 			"database_path": databasePath,
 		}, nil), lock.Release())
 	}
+	pendingRestore, markerErr = rhizaRestorePending(databasePath)
+	if markerErr != nil {
+		return nil, errors.Join(errorf(ErrStorageFailed, "inspect database restore marker", map[string]any{"database_path": databasePath}, markerErr), lock.Release())
+	}
+	if pendingRestore && !cfg.RestoreIfMissing {
+		return nil, errors.Join(restorePendingError(databasePath), lock.Release())
+	}
 	if info, err := os.Stat(databasePath); err == nil && !info.IsDir() {
 		return nil, errors.Join(errorf(ErrNotSupported, "database path is a regular file; refusing to open or replace it", map[string]any{
 			"database_path": databasePath,
@@ -188,6 +212,14 @@ func openStateStoreWithOwnership(cfg Config, ownership openStoreOwnership) (stat
 	cfg.Driver, err = resolveStorageDriver(cfg)
 	if err != nil {
 		return nil, errors.Join(err, lock.Release())
+	}
+	if cfg.RhizaBackup != nil && cfg.Driver != StorageDriverRhiza {
+		return nil, errors.Join(errorf(ErrConfigInvalid, "Rhiza backup requires the Rhiza storage driver", map[string]any{"driver": cfg.Driver}, nil), lock.Release())
+	}
+	if cfg.RestoreIfMissing {
+		if err := ensureRhizaRestorePending(databasePath); err != nil {
+			return nil, errors.Join(errorf(ErrStorageFailed, "mark Rhiza restore pending", map[string]any{"database_path": databasePath}, err), lock.Release())
+		}
 	}
 	store, err := openDriverStore(cfg)
 	if err != nil {
@@ -203,6 +235,14 @@ type ownershipStore struct {
 	stateStore
 	ownership    *databaseOwnershipLock
 	databasePath string
+}
+
+func (s *ownershipStore) CompleteRestore() error {
+	store, ok := s.stateStore.(interface{ completeRestore() error })
+	if !ok {
+		return nil
+	}
+	return store.completeRestore()
 }
 
 func (s *ownershipStore) Close() error {
@@ -243,8 +283,8 @@ func (s *ownershipStore) FactCandidateReady() bool {
 }
 
 // acquireOpenOwnership takes the ownership lock that an open holds for the
-// store's lifetime: the shared lock for an ordinary open, and the exclusive
-// lock for a maintenance window.
+// store's lifetime: the shared lock for an ordinary open and the exclusive
+// lock for maintenance or recovery.
 //
 // A contended lock means a migration owns the database. A migration holds it for
 // the whole conversion, far longer than the retry window below, so the retries
@@ -264,9 +304,8 @@ func (s *ownershipStore) FactCandidateReady() bool {
 // an open without the lock could read a half-converted database or install a
 // recovery over a live one, so the failure is reported instead.
 //
-// The exclusive lock is only granted while no other store holds the database, so
-// a maintenance window that cannot take it reports the refusal instead of
-// reading state another owner may still change.
+// The exclusive lock is only granted while no other store holds the database,
+// so a maintenance or recovery operation cannot proceed beside another owner.
 func acquireOpenOwnership(cfg Config, databasePath string, ownership openStoreOwnership) (*databaseOwnershipLock, error) {
 	_ = cfg
 	exclusive := ownership == openStoreExclusiveOwnership
@@ -294,6 +333,59 @@ func migrationRecoveryPending(databasePath string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+func rhizaRestorePending(databasePath string) (bool, error) {
+	path := rhizaRestorePendingMarkerPath(databasePath)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, errors.New("restore marker is not a regular file")
+	}
+	return true, nil
+}
+
+func ensureRhizaRestorePending(databasePath string) error {
+	if pending, err := rhizaRestorePending(databasePath); err != nil || pending {
+		return err
+	}
+	path := rhizaRestorePendingMarkerPath(databasePath)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.WriteString(restorePendingMarkerValue)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	return syncStorageDirectory(filepath.Dir(path))
+}
+
+func clearRhizaRestorePending(databasePath string) error {
+	path := rhizaRestorePendingMarkerPath(databasePath)
+	pending, err := rhizaRestorePending(databasePath)
+	if err != nil || !pending {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncStorageDirectory(filepath.Dir(path))
+}
+
+func rhizaRestorePendingMarkerPath(databasePath string) string {
+	return databasePath + ".yeoul-rhiza-restore-pending"
+}
+
+func restorePendingError(databasePath string) error {
+	return errorf(ErrStorageFailed, "an interrupted Rhiza restore is pending; retry with RestoreIfMissing after verifying the backup configuration", map[string]any{"database_path": databasePath}, nil)
 }
 
 func migrationInProgressError(databasePath string) error {
@@ -359,7 +451,7 @@ func resolveStorageDriver(cfg Config) (StorageDriver, error) {
 		return StorageDriverRhiza, nil
 	}
 	info, err := os.Stat(cfg.DatabasePath)
-	if errors.Is(err, os.ErrNotExist) || (err == nil && info.IsDir() && cfg.CreateIfMissing && !directoryHasEntries(cfg.DatabasePath)) {
+	if errors.Is(err, os.ErrNotExist) || (err == nil && info.IsDir() && (cfg.CreateIfMissing || cfg.RestoreIfMissing) && !directoryHasEntries(cfg.DatabasePath)) {
 		if rhizastore.Supported() {
 			return StorageDriverRhiza, nil
 		}
@@ -369,6 +461,49 @@ func resolveStorageDriver(cfg Config) (StorageDriver, error) {
 		return "", errorf(ErrStorageFailed, "inspect database storage signatures", map[string]any{"database_path": cfg.DatabasePath}, err)
 	}
 	return "", errorf(ErrStorageFailed, "database has no recognized storage signature; refusing to initialize it", map[string]any{"database_path": cfg.DatabasePath}, nil)
+}
+
+func validateRhizaBackupConfig(cfg Config) error {
+	if cfg.ReadOnly && (cfg.RhizaBackup != nil || cfg.RestoreIfMissing) {
+		return errorf(ErrConfigInvalid, "read-only opens cannot configure Rhiza backup or restore", nil, nil)
+	}
+	if cfg.RestoreIfMissing {
+		if cfg.RhizaBackup == nil {
+			return errorf(ErrConfigInvalid, "restore_if_missing requires Rhiza backup configuration", nil, nil)
+		}
+		if cfg.CreateIfMissing {
+			return errorf(ErrConfigInvalid, "restore_if_missing and create_if_missing are mutually exclusive", nil, nil)
+		}
+	}
+	if cfg.RhizaBackup == nil {
+		return nil
+	}
+	if cfg.InMemory {
+		return errorf(ErrConfigInvalid, "Rhiza backup is unavailable for in-memory databases", nil, nil)
+	}
+	if cfg.Driver == StorageDriverLattice {
+		return errorf(ErrConfigInvalid, "Rhiza backup requires the Rhiza storage driver", map[string]any{"driver": cfg.Driver}, nil)
+	}
+	if !rhizastore.Supported() {
+		return errorf(ErrNotSupported, "Rhiza backup is unavailable on this platform", nil, rhizastore.ErrUnsupported)
+	}
+	backup := cfg.RhizaBackup
+	if backup.Provider != "s3" && backup.Provider != "gcs" && backup.Provider != "azure" {
+		return errorf(ErrConfigInvalid, "Rhiza backup provider must be s3, gcs, or azure", map[string]any{"provider": backup.Provider}, nil)
+	}
+	if backup.Bucket == "" {
+		return errorf(ErrConfigInvalid, "Rhiza backup bucket is required", nil, nil)
+	}
+	if strings.TrimSpace(backup.Prefix) == "" || backup.Prefix != strings.TrimSpace(backup.Prefix) {
+		return errorf(ErrConfigInvalid, "Rhiza backup prefix must be nonblank without surrounding whitespace", nil, nil)
+	}
+	if backup.Provider == "azure" && backup.AzureConnectionString == "" && backup.AzureStorageAccount == "" {
+		return errorf(ErrConfigInvalid, "Azure backup requires a storage account or connection string", nil, nil)
+	}
+	if backup.Provider == "azure" && backup.AzureStorageAccountKey != "" && backup.AzureConnectionString != "" {
+		return errorf(ErrConfigInvalid, "Azure backup cannot configure both a storage account key and connection string", nil, nil)
+	}
+	return nil
 }
 
 func directoryHasEntries(path string) bool {

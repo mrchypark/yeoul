@@ -10,7 +10,7 @@ type DB struct{}
 
 func Supported() bool { return false }
 
-func Open(string) (*DB, error) { return nil, ErrUnsupported }
+func Open(string, ...*ObjectStoreConfig) (*DB, error) { return nil, ErrUnsupported }
 
 func (*DB) Close() error { return ErrUnsupported }
 

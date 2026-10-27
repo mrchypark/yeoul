@@ -97,6 +97,12 @@ func Open(ctx context.Context, cfg Config) (Engine, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	if completion, ok := store.(interface{ CompleteRestore() error }); ok {
+		if err := completion.CompleteRestore(); err != nil {
+			_ = store.Close()
+			return nil, errorf(ErrStorageFailed, "complete Rhiza restore", map[string]any{"database_path": cfg.DatabasePath}, err)
+		}
+	}
 
 	eng := newEngine(cfg, store)
 	eng.applyState(*state)

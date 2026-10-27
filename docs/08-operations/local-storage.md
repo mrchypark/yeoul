@@ -80,7 +80,7 @@ introducing a verified snapshot is deferred until measurements justify it.
 A full-text query that exceeds Rhiza's result limit returns an error instead
 of silently truncating candidates.
 
-The pinned Rhiza v0.19.5 qlog package uses Unix-only `syscall.Flock`. Yeoul
+The pinned Rhiza qlog package uses Unix-only `syscall.Flock`. Yeoul
 isolates the native dependency and disables Rhiza storage on Windows until that
 is portable. The separate migration restriction also fails closed before
 writes on Windows because directory-entry durability is unavailable through
@@ -106,6 +106,53 @@ Yeoul should support:
 - dry-run reporting for retention and compaction jobs
 
 ## Native backup and restore
+
+### Remote Rhiza backup
+
+The embedded Go API can opt a Rhiza database into remote backup with
+`Config.RhizaBackup`. Supported providers are `s3`, `gcs`, and `azure`; configure
+the provider's bucket, a nonblank `Prefix`, and credentials using
+`RhizaBackupConfig`. Assign a unique prefix to each database and keep it
+unchanged when restoring. This setting
+does not affect LatticeDB, in-memory databases, the CLI, or the HTTP daemon.
+Without it, Yeoul does not configure remote backup.
+For S3, `Endpoint` must be `host:port` without a URL scheme; `Insecure` selects
+HTTP instead of HTTPS. Azure authentication uses either a storage account key
+or a connection string, not both.
+
+Rhiza local backup uses `BeforeAck`: a successful write acknowledgement means
+the corresponding archive durability work completed before the acknowledgement
+was returned. This is not a claim of provider parity or a guarantee against
+provider-side loss, misconfiguration, or credential revocation. Validate the
+selected provider and recovery process in the deployment environment.
+
+Exactly one Yeoul process may own the database and remote backup namespace,
+including while restoring. Do not run concurrent writers or restore against a
+namespace another writer is using. Rhiza's default node and cluster identity
+are not a Yeoul database identity: reusing a bucket/prefix can make unrelated
+databases share recovery material. Yeoul does not identify a valid archive
+that belongs to a different database; selecting the correct unique prefix is
+the operator's responsibility.
+
+`RestoreIfMissing` is a separate, explicit recovery opt-in. It may create a
+missing local Rhiza directory so Rhiza can recover it from the configured
+remote archive. It cannot be combined with `CreateIfMissing`. Startup fails if
+the restored Rhiza catalog does not contain Yeoul's canonical state metadata;
+an absent or empty archive must not turn into a silently initialized empty
+database. For first-time creation, use `CreateIfMissing` with
+`RhizaBackup`, then use `RestoreIfMissing` for a later missing-local-data
+recovery. Never use `CreateIfMissing` to recover an existing remote-backed
+database.
+
+Yeoul writes a sibling `.yeoul-rhiza-restore-pending` marker before opening a
+database for `RestoreIfMissing`. It removes that marker only after the restored
+catalog, canonical Yeoul state metadata, and state validation all succeed. If
+restore fails or the process stops before validation completes, ordinary opens
+(including `CreateIfMissing` and Lattice driver selection) fail closed. Preserve
+the marker and local artifacts; verify the bucket, unique prefix, credentials,
+and provider availability, then retry with the same `RhizaBackup` and
+`RestoreIfMissing` settings. Do not delete the marker or local data to force a
+fresh database.
 
 For Rhiza, quiesce the owner and copy its complete native directory and Yeoul
 storage marker. A migration target with a pending migration marker is

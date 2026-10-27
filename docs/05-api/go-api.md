@@ -1,7 +1,7 @@
 # Go API
 
 Status: Accepted  
-Last Updated: 2026-04-17
+Last Updated: 2026-10-27
 
 ## Purpose
 
@@ -32,8 +32,37 @@ func Open(ctx context.Context, cfg Config) (Engine, error)
 
 `Config` owns embedded concerns such as database path, in-memory mode, read-only mode, and create-if-missing behavior.
 
-Current releases open LatticeDB databases only; native Ladybug databases must
-be migrated with a compatible older release before upgrading.
+Remote recovery is an opt-in for the embedded Rhiza driver only. `Config.RhizaBackup`
+accepts a `*RhizaBackupConfig` with `Provider` (`s3`, `gcs`, or `azure`),
+`Endpoint`, `Bucket`, nonblank database-unique `Prefix`, `Region`, `Insecure`,
+`AccessKey`, `SecretKey`,
+`SessionToken`, `GCSServiceAccount`, `AzureStorageAccount`,
+`AzureStorageAccountKey`, and `AzureConnectionString`. Yeoul maps these values to
+Rhiza; it does not persist credentials. Configuring backup fixes Rhiza local
+backup durability to `BeforeAck`; there is no async override.
+For S3, `Endpoint` must be `host:port` without a URL scheme; `Insecure` selects
+HTTP instead of HTTPS. Azure authentication uses either
+`AzureStorageAccountKey` or `AzureConnectionString`, not both.
+
+`RestoreIfMissing` explicitly permits recovery when the local database path is
+absent, requires `RhizaBackup`, and is mutually exclusive with
+`CreateIfMissing`. Startup fails closed if canonical Yeoul state metadata is
+not recovered, rather than initializing an empty database. `CreateIfMissing`
+remains the distinct opt-in for first-time database creation. Backup settings
+are rejected for LatticeDB, in-memory databases, and unsupported platforms;
+they are not consumed by the CLI or HTTP service in this scope. Remote-backed
+Rhiza databases require a single writer/owner, including during restoration.
+Yeoul does not identify an otherwise valid archive as belonging to a particular
+database; callers must use and preserve the correct unique prefix.
+Yeoul records a sibling restore-pending marker before remote recovery. A failed
+restore leaves it in place, and ordinary opens remain blocked until an explicit
+retry successfully validates canonical state. Preserve local artifacts and
+retry with the same backup configuration; do not remove the marker to bypass
+recovery validation.
+
+Existing LatticeDB and Rhiza databases are opened by their configured or
+detected storage driver; native Ladybug databases must be migrated with a
+compatible older release before upgrading.
 
 ## Engine interface
 

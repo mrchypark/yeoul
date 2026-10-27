@@ -17,13 +17,37 @@ type DB struct{ db *engine.DB }
 
 func Supported() bool { return true }
 
-func Open(dataDir string) (*DB, error) {
-	db, err := engine.Open(context.Background(), engine.Config{
+func Open(dataDir string, backups ...*ObjectStoreConfig) (*DB, error) {
+	if len(backups) > 1 {
+		return nil, fmt.Errorf("Rhiza accepts at most one object-store configuration")
+	}
+	var backup *ObjectStoreConfig
+	if len(backups) == 1 {
+		backup = backups[0]
+	}
+	config := engine.Config{
 		Local:                         true,
 		NodeID:                        "yeoul-local",
 		DataDir:                       dataDir,
 		LocalGraphNodePropertyIndexes: []engine.GraphNodePropertyIndex{{Label: "YeoulRecord", Property: "key"}},
-	})
+	}
+	if backup != nil {
+		config.ObjStoreProvider = backup.Provider
+		config.ObjStoreEndpoint = backup.Endpoint
+		config.ObjStoreBucket = backup.Bucket
+		config.ObjStorePrefix = backup.Prefix
+		config.ObjStoreRegion = backup.Region
+		config.ObjStoreInsecure = backup.Insecure
+		config.ObjStoreAccessKey = backup.AccessKey
+		config.ObjStoreSecretKey = backup.SecretKey
+		config.ObjStoreSessionToken = backup.SessionToken
+		config.ObjStoreServiceAccount = backup.ServiceAccount
+		config.ObjStoreAzureStorageAccount = backup.AzureStorageAccount
+		config.ObjStoreAzureStorageAccountKey = backup.AzureStorageAccountKey
+		config.ObjStoreAzureConnectionString = backup.AzureConnectionString
+		config.ObjStoreDurability = engine.ObjectStoreDurabilityBeforeAck
+	}
+	db, err := engine.Open(context.Background(), config)
 	if err != nil {
 		return nil, err
 	}
