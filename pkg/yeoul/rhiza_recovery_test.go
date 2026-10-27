@@ -124,7 +124,7 @@ func TestRhizaObjectStoreFullLossRecovery(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "source")
-	backup.Prefix = recoveryPrefix(backup.Prefix, "recovery-"+filepath.Base(root))
+	backup.Prefix = recoveryPrefix(backup.Prefix, "recovery-"+recoveryUniqueSuffix())
 
 	source, err := Open(ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, CreateIfMissing: true, RhizaBackup: backup})
 	if err != nil {

@@ -60,6 +60,16 @@ retry successfully validates canonical state. Preserve local artifacts and
 retry with the same backup configuration; do not remove the marker to bypass
 recovery validation.
 
+The published Yeoul v0.12.0 uses Rhiza v0.20.0. This development version uses
+Rhiza v0.21.0 for newly created archives. There is no archive conversion tool
+or automatic migration/adoption. Keep the existing Yeoul version with its
+current archive, or use this development version with a fresh database and
+fresh archive location. The [Rhiza v0.21.0 release contract](https://github.com/mrchypark/rhiza/releases/tag/v0.21.0)
+states that unsupported or partial archives are rejected without modification;
+Yeoul has no separate archive-format validator, and compatibility with other
+existing archives is not guaranteed.
+Upgrading the dependency does not convert existing databases or archives.
+
 Existing LatticeDB and Rhiza databases are opened by their configured or
 detected storage driver; native Ladybug databases must be migrated with a
 compatible older release before upgrading.

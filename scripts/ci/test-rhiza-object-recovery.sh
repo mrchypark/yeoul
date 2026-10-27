@@ -10,6 +10,12 @@ cleanup() {
 	status=$?
 	trap - EXIT HUP INT TERM
 	failed=0
+	if [ "$status" -ne 0 ]; then
+		for id in $created_ids; do
+			name=$(docker inspect --format '{{.Name}}' "$id" 2>/dev/null | sed 's#^/##' || true)
+			if [ -n "$name" ]; then docker logs "$id" >"$run_dir/container-$name.log" 2>&1 || true; fi
+		done
+	fi
 	for id in $created_ids; do
 		owner=$(docker inspect --format '{{index .Config.Labels "io.yeoul.recovery-run"}}' "$id" 2>/dev/null || true)
 		if [ "$owner" != "$run_id" ]; then
@@ -29,10 +35,7 @@ cleanup() {
 		echo "could not verify cleanup of task-owned containers for run $run_id" >&2
 		failed=1
 	fi
-	if ! rmdir "$run_dir" 2>/dev/null; then
-		echo "failed to remove temporary run directory $run_dir" >&2
-		failed=1
-	fi
+	echo "preserving provider baseline/legacy logs in $run_dir" >&2
 	if [ "$failed" -ne 0 ]; then
 		exit 1
 	fi
@@ -49,6 +52,11 @@ command -v go >/dev/null 2>&1 || { echo "go is required" >&2; exit 1; }
 
 if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
 	echo "Docker API is unavailable; no provider tests were run" >&2
+	exit 2
+fi
+docker_context=$(docker context show)
+if [ "$docker_context" != socktainer ]; then
+	echo "refusing to run provider tests with Docker context $docker_context; expected socktainer" >&2
 	exit 2
 fi
 
@@ -124,16 +132,27 @@ run_provider() {
 	endpoint=$2
 	bucket=yeoul-test
 	if [ "$provider" = s3 ]; then
-		YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_S3_ENDPOINT=$endpoint YEOUL_RECOVERY_S3_BUCKET=$bucket go test ./pkg/yeoul -run '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' -count=1 -v
-		result=$?
+		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_S3_ENDPOINT=$endpoint YEOUL_RECOVERY_S3_BUCKET=$bucket"
 	elif [ "$provider" = gcs ]; then
-		YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_GCS_ENDPOINT=$endpoint YEOUL_RECOVERY_GCS_BUCKET=$bucket go test ./pkg/yeoul -run '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' -count=1 -v
-		result=$?
+		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_GCS_ENDPOINT=$endpoint YEOUL_RECOVERY_GCS_BUCKET=$bucket"
 	else
-		YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_AZURE_ENDPOINT=$endpoint YEOUL_RECOVERY_AZURE_BUCKET=$bucket go test ./pkg/yeoul -run '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' -count=1 -v
-		result=$?
+		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_AZURE_ENDPOINT=$endpoint YEOUL_RECOVERY_AZURE_BUCKET=$bucket"
 	fi
-	results="$results $provider=$result"
+	run_case baseline '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' "${provider_env}"
+	run_case legacy '^TestRhiza020ArchiveCompatibility$' "${provider_env} YEOUL_RECOVERY_LEGACY=1 YEOUL_LEGACY_FIXTURE_HELPER=$repo_root/scripts/rhiza-legacy-fixture"
+}
+
+run_case() {
+	phase=$1
+	pattern=$2
+	env_values=$3
+	log="$run_dir/$provider-$phase.log"
+	# Values are fixed harness assignments above; word splitting passes them as env tokens.
+	set -- $env_values
+	env "$@" go test ./pkg/yeoul -run "$pattern" -count=1 -v >"$log" 2>&1
+	result=$?
+	cat "$log"
+	results="$results $provider-$phase=$result"
 	if [ "$result" -ne 0 ]; then failed=1; fi
 }
 
