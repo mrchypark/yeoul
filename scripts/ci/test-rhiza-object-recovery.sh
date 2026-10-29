@@ -55,7 +55,7 @@ if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
 	exit 2
 fi
 docker_context=$(docker context show)
-expected_docker_context=${YEOUL_RECOVERY_TEST_DOCKER_CONTEXT:-socktainer}
+expected_docker_context=${YEOUL_RECOVERY_EXPECTED_DOCKER_CONTEXT:-socktainer}
 if [ "$docker_context" != "$expected_docker_context" ]; then
 	echo "refusing to run provider tests with Docker context $docker_context; expected $expected_docker_context" >&2
 	exit 2

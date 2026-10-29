@@ -35,7 +35,8 @@ jobs:
 
       - name: Test Rhiza object-store recovery across providers
         env:
-          YEOUL_RECOVERY_TEST_DOCKER_CONTEXT: default
+          DOCKER_CONTEXT: default
+          YEOUL_RECOVERY_EXPECTED_DOCKER_CONTEXT: default
         run: GOWORK=off timeout 600 scripts/ci/test-rhiza-object-recovery.sh
 
       - name: Build and smoke-test container
