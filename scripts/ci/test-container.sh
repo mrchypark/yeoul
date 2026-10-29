@@ -5,10 +5,12 @@ image=${YEOUL_CONTAINER_IMAGE:-yeoul:ci}
 platform=${YEOUL_CONTAINER_PLATFORM:-linux/amd64}
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/yeoul-smoke.XXXXXX")
 name=${tmpdir##*/}
+ca_container=$name-ca
 volume=$name
 port=
 volume_created=0
 container_created=0
+ca_container_created=0
 backup_config=$tmpdir/rhiza-backup.json
 
 cleanup() {
@@ -20,11 +22,17 @@ cleanup() {
 		fi
 		docker rm "$name" >/dev/null || { printf '%s\n' 'failed to remove smoke container during cleanup' >&2; status=1; }
 	fi
+	if [ "$ca_container_created" -eq 1 ] && docker container inspect "$ca_container" >/dev/null 2>&1; then
+		docker rm "$ca_container" >/dev/null || { printf '%s\n' 'failed to remove CA smoke container during cleanup' >&2; status=1; }
+	fi
 	if [ "$volume_created" -eq 1 ]; then
 		docker volume rm "$volume" >/dev/null || { printf '%s\n' 'failed to remove smoke volume during cleanup' >&2; status=1; }
 	fi
 	if [ -f "$backup_config" ]; then
 		rm "$backup_config" || { printf '%s\n' 'failed to remove smoke backup config during cleanup' >&2; status=1; }
+	fi
+	if [ -f "$tmpdir/ca-certificates.crt" ]; then
+		rm "$tmpdir/ca-certificates.crt" || { printf '%s\n' 'failed to remove CA bundle during cleanup' >&2; status=1; }
 	fi
 	rmdir "$tmpdir" || { printf '%s\n' 'failed to remove smoke temporary directory' >&2; status=1; }
 	exit "$status"
@@ -53,6 +61,25 @@ case "$user" in
 		exit 1
 		;;
 esac
+if docker container inspect "$ca_container" >/dev/null 2>&1; then
+	printf 'refusing to use pre-existing Docker resource named %s\n' "$ca_container" >&2
+	exit 1
+fi
+docker create --name "$ca_container" "$image" >/dev/null
+ca_container_created=1
+docker cp "$ca_container:/etc/ssl/certs/ca-certificates.crt" "$tmpdir/ca-certificates.crt" >/dev/null
+command -v openssl >/dev/null 2>&1 || {
+	printf '%s\n' 'openssl is required to validate the container CA bundle' >&2
+	exit 1
+}
+[ -s "$tmpdir/ca-certificates.crt" ] && \
+	grep -q -- '-----BEGIN CERTIFICATE-----' "$tmpdir/ca-certificates.crt" && \
+	openssl crl2pkcs7 -nocrl -certfile "$tmpdir/ca-certificates.crt" -out /dev/null || {
+	printf '%s\n' 'container image is missing a usable system CA bundle' >&2
+	exit 1
+}
+docker rm "$ca_container" >/dev/null
+ca_container_created=0
 printf '%s\n' '{"Provider":"s3","Endpoint":"127.0.0.1:9000","Bucket":"yeoul-smoke","Prefix":"preflight","Region":"us-east-1","Insecure":true,"AccessKey":"test-access","SecretKey":"test-secret"}' >"$backup_config"
 docker run --rm --read-only --mount "type=bind,src=$backup_config,dst=/run/secrets/backup.json,readonly" \
 	"$image" --check-config --db /data/preflight.ltdb --listen 127.0.0.1:0 \
@@ -90,7 +117,7 @@ assert_restore_only_rejected() {
 assert_restore_only_rejected '--restore-if-missing requires --rhiza-backup-config' \
 	--restore-if-missing --restore-only
 assert_restore_only_rejected '--restore-only requires --restore-if-missing' \
-	--db /data/preflight.ltdb --rhiza-backup-config /run/secrets/backup.json --restore-only --check-config
+	--db /data/preflight.ltdb --rhiza-backup-config /run/secrets/backup.json --restore-only
 assert_restore_only_rejected '--db is required' \
 	--rhiza-backup-config /run/secrets/backup.json --restore-if-missing --restore-only
 assert_restore_only_rejected '--restore-if-missing and --create are mutually exclusive' \
