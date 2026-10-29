@@ -16,14 +16,14 @@ shared `data` `emptyDir`, the backup Secret read-only at
 the main container; any open or close error blocks it.
 
 This is the application-owned init-container pattern documented for Rhiza
-v0.21.1, not a Rhiza-provided CLI or image. The main process opens the same
+v0.21.2, not a Rhiza-provided CLI or image. The main process opens the same
 `DataDir` with the same Rhiza configuration and object-store access, but
 without `--restore-if-missing` or `--create`. The second `Open` validates the
 binding and reconciles history; it is not guaranteed to be read-only. Keep the
 same ClusterID, NodeID, bucket, prefix, credentials, and other identity
 settings across both opens. Do not switch to `Async`, and do not start another
 process against this database or archive namespace. See the upstream
-[Local recovery with an init container guide](https://github.com/mrchypark/rhiza/blob/v0.21.1/docs/local-init-container-recovery.md).
+[Local recovery with an init container guide](https://github.com/mrchypark/rhiza/blob/v0.21.2/docs/local-init-container-recovery.md).
 
 The current Yeoul Rhiza adapter fixes `NodeID` to `yeoul-local` and leaves
 `ClusterID` at the Rhiza SDK default. Run the same Yeoul build in init and main
@@ -144,12 +144,15 @@ RBAC.
 
 The standard Deployment expects a compatible, initialized Rhiza Local archive
 at the configured remote namespace. A valid, quiesced archive created with
-Rhiza `v0.21.0` can be reopened by `v0.21.1` with the same identity and backup
-configuration because the v0.21.1 release does not change the runtime or
-archive format. This handoff is not a conversion and does not require a fresh
-archive. Preserve single-writer ownership throughout. Pre-v0.21.0 formats are
-not automatically migrated; keep their matching Yeoul release and archive
-unless a separately validated migration is available. The Deployment never
+Rhiza `v0.21.0` can be reopened by `v0.21.2` with the same identity and backup
+configuration because v0.21.2 does not change the public API, identity,
+receipt, or archive format. Its runtime change narrowly reconciles a lost
+local-maintenance release acknowledgement when stable remote readback proves
+the expected free control at a changed object version; it does not force-unlock
+an orphaned held token. This handoff is not a conversion and does not require
+a fresh archive. Preserve single-writer ownership throughout. Pre-v0.21.0
+formats are not automatically migrated; keep their matching Yeoul release and
+archive unless a separately validated migration is available. The Deployment never
 uses `--create` or
 `--restore-if-missing` in the recurring main container. The init container
 restores into the shared local `DataDir` and closes it before main starts. If
@@ -189,12 +192,14 @@ if the whole Pod-local `DataDir` is lost before those writes reach the archive.
 `BeforeAck` does not protect against provider-side loss, revoked credentials,
 or a misconfigured namespace. Upstream
 [`TestEmbeddedObjectStorageCheckpointAndTailTotalLoss`](https://github.com/mrchypark/rhiza/blob/v0.21.1/embedded_object_storage_checkpoint_test.go#L116)
-failed once in the [S3 provider job](https://github.com/mrchypark/rhiza/actions/runs/40697711614/job/122848820051)
+failed in the historical [S3 provider job](https://github.com/mrchypark/rhiza/actions/runs/40697711614/job/122848820051)
 with `Local maintenance control changed during read`; the same test passed for
-GCS and Azure in that job. The later [upstream provider run](https://github.com/mrchypark/rhiza/actions/runs/40700300657/job/122857983882)
-passed, so this is an intermittent unresolved S3 qualification issue, not
-proof that every S3 restore fails. Yeoul's separate three-provider recovery
-tests do not clear that upstream failure or establish production-cloud parity.
+GCS and Azure in that job, and a later [upstream provider run](https://github.com/mrchypark/rhiza/actions/runs/40700300657/job/122857983882)
+passed. Rhiza v0.21.2 adds the narrowly scoped maintenance-release ACK
+reconciliation described above. The historical failed run remains relevant
+evidence; this fix is not a blanket S3 recovery guarantee or a new live-cloud
+qualification. Yeoul's separate three-provider recovery tests do not establish
+production-cloud parity.
 
 The startup probe applies only to the main daemon and allows up to 30 minutes
 for it to open the database and start listening before Kubernetes begins
@@ -212,7 +217,7 @@ Pre-v0.21.0 archive formats are not automatically migrated; keep those
 installations on their matching Yeoul/Rhiza release and archive until a
 separately verified migration is available. For this NoPVC deployment, a valid
 and quiesced Rhiza v0.21.0 archive can restore into a new Pod's empty `DataDir`
-under v0.21.1 when the same ClusterID, NodeID, bucket, prefix, credentials, and
+under v0.21.2 when the same ClusterID, NodeID, bucket, prefix, credentials, and
 other identity settings are used and single-writer ownership is maintained.
 No new archive is required for that handoff. Create a fresh archive only for a
 genuinely new database or a separately verified migration. If restore fails,

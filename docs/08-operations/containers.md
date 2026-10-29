@@ -1,16 +1,18 @@
 # Container Image
 
 Yeoul publishes the `yeould` HTTP service as a multi-platform image for Linux
-amd64 and arm64. Pull an explicit release tag; floating `latest` tags are not
-published:
+amd64 and arm64. These examples target Yeoul `v0.14.0`; use that tag only after
+its release image is published, and prefer pinning the verified registry
+digest. Floating `latest` tags are not published:
 
 ```sh
-docker pull ghcr.io/mrchypark/yeoul:v0.11.1
+docker pull ghcr.io/mrchypark/yeoul:v0.14.0
 ```
 
-Use the alternate explicit tag `0.11.1` if that convention fits your deploy
-system. The image contains only the `yeould` binary, runs as UID/GID 65532, and
-uses a read-only-root-compatible scratch filesystem.
+Use the alternate explicit tag `0.14.0` if that convention fits your deploy
+system. The image runs as UID/GID 65532 and uses a read-only-root-compatible
+scratch filesystem. It contains the `yeould` binary and trusted CA roots needed
+for Rhiza object-store HTTPS requests.
 
 ## Run
 
@@ -38,7 +40,7 @@ docker run --rm --name yeould-init \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --cap-drop=ALL \
   --security-opt=no-new-privileges:true \
-  ghcr.io/mrchypark/yeoul:v0.11.1 \
+  ghcr.io/mrchypark/yeoul:v0.14.0 \
   --db /data/yeoul.ltdb --listen 0.0.0.0:8080 --create
 
 docker run -d --name yeould \
@@ -49,7 +51,7 @@ docker run -d --name yeould \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --cap-drop=ALL \
   --security-opt=no-new-privileges:true \
-  ghcr.io/mrchypark/yeoul:v0.11.1
+  ghcr.io/mrchypark/yeoul:v0.14.0
 ```
 
 For a bind mount, make its host directory writable by UID/GID 65532 before

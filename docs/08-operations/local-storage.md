@@ -124,15 +124,18 @@ HTTP instead of HTTPS. Azure authentication uses either a storage account key
 or a connection string, not both.
 
 Published Yeoul v0.12.0 uses Rhiza v0.20.0; Yeoul v0.13.0 uses Rhiza v0.21.0.
-Yeoul v0.14.0 is planned to use Rhiza v0.21.1, whose release adds operating
-guidance without changing the v0.21.0 runtime or local archive format. A valid,
-quiesced v0.21.0 binding can therefore be reopened with v0.21.1 using the same
-database path, identity, and archive configuration; this is not a conversion
-and does not require a fresh archive. Preserve single-writer ownership during
-the handoff. There is no automatic migration/adoption from pre-v0.21.0 archive
-formats. Keep Yeoul v0.12.0 with its matching database and archive unless a
-separately validated migration is available. The
-[Rhiza v0.21.1 release contract](https://github.com/mrchypark/rhiza/releases/tag/v0.21.1)
+Yeoul v0.14.0 is planned to use Rhiza v0.21.2. Rhiza v0.21.2 does not change
+the public API, identity, receipt, or local archive format from v0.21.0/v0.21.1.
+It narrowly reconciles an ambiguous local-maintenance release acknowledgement
+only when stable remote readback proves the exact expected free control at a
+changed object version; it does not force-unlock an already orphaned held token.
+A valid, quiesced v0.21.0 binding can therefore be reopened with v0.21.2 using
+the same database path, identity, and archive configuration; this is not a
+conversion and does not require a fresh archive. Preserve single-writer
+ownership during the handoff. There is no automatic migration/adoption from
+pre-v0.21.0 archive formats. Keep Yeoul v0.12.0 with its matching database and
+archive unless a separately validated migration is available. The
+[Rhiza v0.21.2 release contract](https://github.com/mrchypark/rhiza/releases/tag/v0.21.2)
 states that unsupported or partial archives are rejected without modification.
 Yeoul has no separate archive-format validator; compatibility with other
 existing archives is not guaranteed. Existing `.ltdb` extensions and database
@@ -143,14 +146,16 @@ the corresponding archive durability work completed before the acknowledgement
 was returned. This is not a claim of provider parity or a guarantee against
 provider-side loss, misconfiguration, or credential revocation. Validate the
 selected provider and recovery process in the deployment environment. In
-particular, upstream
+particular, the upstream
 [`TestEmbeddedObjectStorageCheckpointAndTailTotalLoss`](https://github.com/mrchypark/rhiza/blob/v0.21.1/embedded_object_storage_checkpoint_test.go#L116)
-failed once in the [S3 provider job](https://github.com/mrchypark/rhiza/actions/runs/40697711614/job/122848820051)
+failed in the historical [S3 provider job](https://github.com/mrchypark/rhiza/actions/runs/40697711614/job/122848820051)
 with `Local maintenance control changed during read`; the same test passed for
-GCS and Azure in that job. The later [upstream provider run](https://github.com/mrchypark/rhiza/actions/runs/40700300657/job/122857983882)
-passed, so this is an intermittent unresolved S3 qualification issue, not
-proof that every S3 restore fails. Yeoul's separate three-provider recovery
-tests do not clear that upstream failure or establish production-cloud parity.
+GCS and Azure in that job, and a later [upstream provider run](https://github.com/mrchypark/rhiza/actions/runs/40700300657/job/122857983882)
+passed. Rhiza v0.21.2 adds the narrowly scoped maintenance-release ACK
+reconciliation described above. The historical failed run remains relevant
+evidence; this fix is not a blanket S3 recovery guarantee or a new live-cloud
+qualification. Yeoul's separate three-provider recovery tests do not establish
+production-cloud parity.
 
 Exactly one Yeoul process may own the database and remote backup namespace,
 including while restoring. Do not run concurrent writers or restore against a

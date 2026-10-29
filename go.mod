@@ -10,7 +10,7 @@ require (
 	github.com/goccy/go-json v0.10.6
 	github.com/minio/minio-go/v7 v7.0.95
 	github.com/mrchypark/latticedb-go v0.12.0
-	github.com/mrchypark/rhiza v0.21.1
+	github.com/mrchypark/rhiza v0.21.2
 	golang.org/x/sys v0.48.0
 	google.golang.org/api v0.264.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -53,7 +53,7 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-kit/log v0.2.1 // indirect
 	github.com/go-logfmt/logfmt v0.5.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
