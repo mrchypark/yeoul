@@ -196,11 +196,14 @@ passed, so this is an intermittent unresolved S3 qualification issue, not
 proof that every S3 restore fails. Yeoul's separate three-provider recovery
 tests do not clear that upstream failure or establish production-cloud parity.
 
-The startup probe allows up to 30 minutes for the process to open or recover
-the database before Kubernetes begins liveness checks. Adjust it for measured
-restore times. `terminationGracePeriodSeconds` is also an operational default;
-increase it if measured graceful shutdown takes longer. Readiness and liveness
-use TCP because the HTTP `/v1/health`
+The startup probe applies only to the main daemon and allows up to 30 minutes
+for it to open the database and start listening before Kubernetes begins
+liveness checks. It does not apply to init containers and does not bound init
+restore time; this Deployment sets no separate init or Pod-level timeout.
+Measure recovery duration and configure an appropriate Pod-level deadline if
+init recovery must be bounded. `terminationGracePeriodSeconds` is also an
+operational default; increase it if measured graceful shutdown takes longer.
+Readiness and liveness use TCP because the HTTP `/v1/health`
 route is protected by bearer authentication and a Kubernetes HTTP probe cannot
 read the Secret environment variable into its header. The TCP readiness probe
 passes once the daemon has opened its database and started listening.

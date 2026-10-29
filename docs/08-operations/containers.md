@@ -69,11 +69,15 @@ HTTP, not TLS; terminate TLS at a trusted reverse proxy or platform ingress
 before exposing traffic beyond a trusted local network. Do not treat the bearer
 token as transport encryption.
 
-The service makes no outbound network requests, so the scratch image needs no
-CA bundle. SQLite's embedded WASM runtime may create temporary files; keep
-`/tmp` writable as in the examples. No shell or utilities are included in the
-image, so use container logs and HTTP health requests rather than `docker exec`
-shell commands for routine inspection.
+When Rhiza object-store backup is configured, the service makes outbound HTTPS
+requests to the selected provider. Permit egress to the configured object-store
+endpoint and ensure the image contains trusted CA roots for TLS verification;
+the scratch base image does not provide a CA bundle by itself. Without remote
+backup, the service has no other outbound network dependency. SQLite's
+embedded WASM runtime may create temporary files; keep `/tmp` writable as in
+the examples. No shell or utilities are included in the image, so use container
+logs and HTTP health requests rather than `docker exec` shell commands for
+routine inspection.
 
 The examples use Docker's read-only root filesystem, tmpfs, dropped Linux
 capabilities, and `no-new-privileges` options. See Docker's documentation for
