@@ -125,6 +125,7 @@ wait_http "yeoul-rhiza-recovery-gcs-$run_id" 4588
 wait_http "yeoul-rhiza-recovery-azure-$run_id" 4577
 
 cd "$repo_root"
+GOWORK=off go build -o "$run_dir/yeould" ./cmd/yeould
 results=
 failed=0
 run_provider() {
@@ -138,7 +139,7 @@ run_provider() {
 	else
 		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_AZURE_ENDPOINT=$endpoint YEOUL_RECOVERY_AZURE_BUCKET=$bucket"
 	fi
-	run_case baseline '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' "${provider_env}"
+	run_case baseline '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' "${provider_env} YEOULD_TEST_BINARY=$run_dir/yeould"
 	run_case legacy '^TestRhiza020ArchiveCompatibility$' "${provider_env} YEOUL_RECOVERY_LEGACY=1 YEOUL_LEGACY_FIXTURE_HELPER=$repo_root/scripts/rhiza-legacy-fixture"
 }
 
@@ -149,7 +150,7 @@ run_case() {
 	log="$run_dir/$provider-$phase.log"
 	# Values are fixed harness assignments above; word splitting passes them as env tokens.
 	set -- $env_values
-	env "$@" go test ./pkg/yeoul -run "$pattern" -count=1 -v >"$log" 2>&1
+	env GOWORK=off "$@" go test ./pkg/yeoul -run "$pattern" -count=1 -v >"$log" 2>&1
 	result=$?
 	cat "$log"
 	results="$results $provider-$phase=$result"

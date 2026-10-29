@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: yeoul
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yeoul
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

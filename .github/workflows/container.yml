@@ -22,6 +22,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Go for offline Kubernetes manifest validation
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate single-node Kubernetes manifest contract
+        run: |
+          kubectl kustomize deploy/kubernetes > "$RUNNER_TEMP/yeoul-kubernetes-rendered.yaml"
+          YEOUL_K8S_MANIFEST="$RUNNER_TEMP/yeoul-kubernetes-rendered.yaml" GOWORK=off go test ./scripts/ci -count=1
+
       - name: Build and smoke-test container
         run: sh scripts/ci/test-container.sh
 

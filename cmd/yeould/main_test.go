@@ -6,6 +6,7 @@ import (
 	"flag"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,6 +55,147 @@ func TestParseOptions(t *testing.T) {
 	if opts.loopback || !opts.create || opts.token != "test-token" {
 		t.Fatalf("remote options = %+v", opts)
 	}
+}
+
+func TestParseOptionsRhizaBackupConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rhiza.json")
+	content := `{"Provider":"s3","Endpoint":"127.0.0.1:9000","Bucket":"backup","Prefix":"yeoul/main","Region":"us-east-1","Insecure":true,"AccessKey":"access","SecretKey":"secret","SessionToken":"session","GCSServiceAccount":"{}","AzureStorageAccount":"account","AzureStorageAccountKey":"key","AzureConnectionString":"connection"}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := parseOptions([]string{"--db", "/tmp/unused", "--rhiza-backup-config", path, "--restore-if-missing"}, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.rhizaBackup == nil || opts.rhizaBackup.Provider != "s3" || opts.rhizaBackup.Prefix != "yeoul/main" || !opts.rhizaBackup.Insecure || !opts.restoreIfMissing {
+		t.Fatalf("parsed Rhiza options = %+v", opts)
+	}
+	cfg := daemonConfig(opts)
+	if cfg.Driver != yeoul.StorageDriverRhiza || cfg.RhizaBackup != opts.rhizaBackup || !cfg.RestoreIfMissing {
+		t.Fatalf("daemon config = %+v", cfg)
+	}
+}
+
+func TestRhizaBackupConfigRejectsNonCanonicalOrTrailingJSON(t *testing.T) {
+	for name, content := range map[string]string{
+		"noncanonical field": `{"provider":"s3"}`,
+		"unknown field":      `{"Provider":"s3","Unexpected":"value"}`,
+		"second value":       `{"Provider":"s3"} {}`,
+		"non-object":         `[]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rhiza.json")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readRhizaBackupConfig(path); err == nil {
+				t.Fatal("invalid Rhiza config was accepted")
+			}
+		})
+	}
+}
+
+func TestParseOptionsRejectsInvalidRestoreCombinations(t *testing.T) {
+	for name, args := range map[string][]string{
+		"restore without config": {"--restore-if-missing"},
+		"create and restore":     {"--create", "--restore-if-missing", "--rhiza-backup-config", writeRhizaConfig(t)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseOptions(args, func(string) string { return "" }); err == nil {
+				t.Fatal("invalid restore options were accepted")
+			}
+		})
+	}
+}
+
+func TestParseRestoreOnlyOptions(t *testing.T) {
+	configPath := writeRhizaConfig(t)
+	base := []string{
+		"--db", "/tmp/restore-target",
+		"--rhiza-backup-config", configPath,
+		"--restore-if-missing",
+		"--restore-only",
+		"--listen", "not-an-address",
+	}
+	opts, err := parseOptions(base, func(string) string {
+		t.Fatal("restore-only requested HTTP authentication")
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.restoreOnly || !opts.restoreIfMissing || opts.token != "" {
+		t.Fatalf("restore-only options = %+v", opts)
+	}
+	if cfg := daemonConfig(opts); cfg.DatabasePath != "/tmp/restore-target" || !cfg.RestoreIfMissing || cfg.RhizaBackup == nil {
+		t.Fatalf("restore-only daemon config = %+v", cfg)
+	}
+
+	for name, extra := range map[string][]string{
+		"missing db":         {"--db", ""},
+		"missing restore":    {"--restore-if-missing=false"},
+		"create conflict":    {"--create"},
+		"check config clash": {"--check-config"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := append(append([]string(nil), base...), extra...)
+			if _, err := parseOptions(args, func(string) string { return "" }); err == nil {
+				t.Fatal("invalid restore-only options were accepted")
+			}
+		})
+	}
+}
+
+func TestRestoreOnlyDoesNotRequireAuthOrListen(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "restore-target")
+	configPath := filepath.Join(root, "unsupported-provider.json")
+	if err := os.WriteFile(configPath, []byte(`{"Provider":"unsupported","Bucket":"backup","Prefix":"yeoul"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := run(context.Background(), []string{
+		"--db", databasePath,
+		"--rhiza-backup-config", configPath,
+		"--restore-if-missing", "--restore-only",
+		"--listen", "not-an-address",
+	}, func(string) string {
+		t.Fatal("restore-only requested HTTP authentication")
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "restore database:") {
+		t.Fatalf("restore-only run error = %v, want storage-open failure", err)
+	}
+	if strings.Contains(err.Error(), "listen:") || strings.Contains(err.Error(), "YEOUL_HTTP_TOKEN") {
+		t.Fatalf("restore-only reached HTTP listener/auth path: %v", err)
+	}
+}
+
+func TestCheckConfigDoesNotOpenDatabaseOrListen(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "not-created", "memory")
+	configPath := writeRhizaConfig(t)
+
+	if err := run(context.Background(), []string{
+		"--check-config", "--db", databasePath,
+		"--listen", "127.0.0.1:0",
+		"--rhiza-backup-config", configPath,
+		"--restore-if-missing",
+	}, func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(databasePath)); !os.IsNotExist(err) {
+		t.Fatalf("check-config touched database directory: stat error = %v", err)
+	}
+}
+
+func writeRhizaConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rhiza.json")
+	if err := os.WriteFile(path, []byte(`{"Provider":"s3","Bucket":"backup","Prefix":"yeoul/main"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestHelpPrintsDaemonUsageWithoutStarting(t *testing.T) {

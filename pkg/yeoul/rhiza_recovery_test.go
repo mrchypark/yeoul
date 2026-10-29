@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
@@ -26,6 +27,7 @@ import (
 )
 
 const rhizaCrashChildEnv = "YEOUL_RHIZA_CRASH_CHILD"
+const yeouldTestBinaryEnv = "YEOULD_TEST_BINARY"
 
 func TestRecoveryErrorCausesTraversesJoinedErrors(t *testing.T) {
 	backup := &RhizaBackupConfig{SecretKey: "local-test-secret"}
@@ -162,6 +164,32 @@ func TestRhizaObjectStoreFullLossRecovery(t *testing.T) {
 	}
 	if err := os.RemoveAll(dbPath); err != nil {
 		t.Fatalf("remove test-owned source database for total-loss simulation: %v", err)
+	}
+	if binary := os.Getenv(yeouldTestBinaryEnv); binary != "" {
+		configPath := filepath.Join(root, "rhiza-backup.json")
+		configData, err := json.Marshal(backup)
+		if err != nil {
+			t.Fatalf("encode Rhiza backup config for yeould: %v", err)
+		}
+		if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+			t.Fatalf("write test-owned Rhiza backup config: %v", err)
+		}
+		cmdCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		cmd := exec.CommandContext(cmdCtx, binary, "--db", dbPath, "--rhiza-backup-config", configPath, "--restore-if-missing", "--restore-only")
+		output, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			t.Fatalf("yeould restore-only handoff for %s: %v\n%s", provider, err, output)
+		}
+
+		handedOff, err := Open(ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, RhizaBackup: backup})
+		if err != nil {
+			t.Fatalf("open %s database after yeould restore-only handoff without restore: %v", provider, err)
+		}
+		assertRecoveryOracle(t, ctx, handedOff, expected)
+		if err := handedOff.Close(ctx); err != nil {
+			t.Fatalf("close database after yeould restore-only handoff: %v", err)
+		}
 	}
 
 	restored, err := Open(ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, RhizaBackup: backup, RestoreIfMissing: true})

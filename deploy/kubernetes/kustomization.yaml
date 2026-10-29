@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml
+images:
+  - name: yeoul
+    newName: registry.example.invalid/yeoul
+    digest: sha256:REPLACE_WITH_PUSHED_IMAGE_DIGEST
