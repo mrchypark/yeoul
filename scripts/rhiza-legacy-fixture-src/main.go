@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -163,8 +168,12 @@ func backupConfig() (*yeoul.RhizaBackupConfig, error) {
 		cfg.Region, cfg.Insecure = "us-east-1", true
 		cfg.AccessKey, cfg.SecretKey = "yeoul-local-test-access", "yeoul-local-test-secret"
 	case "gcs":
-		if os.Getenv("STORAGE_EMULATOR_HOST") != endpoint || os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
-			return nil, errors.New("GCS legacy fixture requires the explicit unauthenticated Floci emulator environment")
+		if os.Getenv("STORAGE_EMULATOR_HOST") != endpoint {
+			return nil, errors.New("GCS legacy fixture requires STORAGE_EMULATOR_HOST to match its loopback endpoint")
+		}
+		cfg.GCSServiceAccount, err = gcsEmulatorServiceAccount(endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("create GCS emulator service account: %w", err)
 		}
 	case "azure":
 		account := "yeoul-local-test"
@@ -175,4 +184,29 @@ func backupConfig() (*yeoul.RhizaBackupConfig, error) {
 		return nil, fmt.Errorf("unsupported legacy fixture provider %q", provider)
 	}
 	return cfg, nil
+}
+
+func gcsEmulatorServiceAccount(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Hostname() == "" || parsed.Port() == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("GCS token endpoint must be an explicit loopback HTTP URL")
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	if !strings.EqualFold(parsed.Hostname(), "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return "", errors.New("GCS token endpoint must use a loopback host")
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	account, err := json.Marshal(map[string]string{
+		"type": "service_account", "project_id": "yeoul-local-test",
+		"private_key_id": "yeoul-local-test", "client_email": "yeoul@yeoul-local-test.iam.gserviceaccount.com",
+		"private_key": string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})),
+		"token_uri":   endpoint + "/token",
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(account), nil
 }

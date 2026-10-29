@@ -136,7 +136,7 @@ run_provider() {
 	if [ "$provider" = s3 ]; then
 		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_S3_ENDPOINT=$endpoint YEOUL_RECOVERY_S3_BUCKET=$bucket"
 	elif [ "$provider" = gcs ]; then
-		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_GCS_ENDPOINT=$endpoint YEOUL_RECOVERY_GCS_BUCKET=$bucket"
+		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_GCS_ENDPOINT=$endpoint YEOUL_RECOVERY_GCS_BUCKET=$bucket GOOGLE_APPLICATION_CREDENTIALS=$run_dir/host-adc-must-not-exist.json"
 	else
 		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_AZURE_ENDPOINT=$endpoint YEOUL_RECOVERY_AZURE_BUCKET=$bucket"
 	fi

@@ -5,9 +5,13 @@ package yeoul
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -25,6 +29,37 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"google.golang.org/api/option"
 )
+
+func TestGCSEmulatorServiceAccountUsesLocalTokenURI(t *testing.T) {
+	account, err := gcsEmulatorServiceAccount("http://127.0.0.1:4588")
+	if err != nil {
+		t.Fatal("generate emulator credentials")
+	}
+	var credentials struct {
+		Type       string `json:"type"`
+		PrivateKey string `json:"private_key"`
+		TokenURI   string `json:"token_uri"`
+	}
+	if err := json.Unmarshal([]byte(account), &credentials); err != nil {
+		t.Fatal("generated credentials are not valid JSON")
+	}
+	if credentials.Type != "service_account" || credentials.TokenURI != "http://127.0.0.1:4588/token" {
+		t.Fatal("generated credentials have unexpected type or token URI")
+	}
+	block, _ := pem.Decode([]byte(credentials.PrivateKey))
+	if block == nil || block.Type != "RSA PRIVATE KEY" {
+		t.Fatal("generated credentials contain no RSA private key")
+	}
+	if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err != nil {
+		t.Fatal("generated credentials contain an invalid RSA private key")
+	}
+}
+
+func TestGCSEmulatorServiceAccountRejectsNonlocalEndpoint(t *testing.T) {
+	if _, err := gcsEmulatorServiceAccount("http://example.com:4588"); err == nil {
+		t.Fatal("accepted a nonlocal token endpoint")
+	}
+}
 
 const rhizaCrashChildEnv = "YEOUL_RHIZA_CRASH_CHILD"
 const yeouldTestBinaryEnv = "YEOULD_TEST_BINARY"
@@ -286,12 +321,14 @@ func rhizaBackupConfigFromEnv(t *testing.T, provider string) *RhizaBackupConfig 
 		backup.AccessKey = "yeoul-local-test-access"
 		backup.SecretKey = "yeoul-local-test-secret"
 	case "gcs":
-		if get("SERVICE_ACCOUNT") != "" {
-			t.Fatal("GCS recovery tests must use unauthenticated loopback emulator mode, not service-account credentials")
+		credentials, err := gcsEmulatorServiceAccount(endpoint)
+		if err != nil {
+			t.Fatalf("create GCS emulator service account: %v", err)
 		}
+		backup.GCSServiceAccount = credentials
 		backup.Endpoint = ""
 		t.Setenv("STORAGE_EMULATOR_HOST", endpoint)
-		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "must-not-use-host-adc.json"))
 		t.Setenv("GOOGLE_CLOUD_PROJECT", "yeoul-local-test")
 	case "azure":
 		backup.Endpoint = endpoint
@@ -304,6 +341,26 @@ func rhizaBackupConfigFromEnv(t *testing.T, provider string) *RhizaBackupConfig 
 		}
 	}
 	return backup
+}
+
+func gcsEmulatorServiceAccount(endpoint string) (string, error) {
+	if err := requireLoopbackHTTP(endpoint); err != nil {
+		return "", fmt.Errorf("token endpoint must be a loopback emulator URL: %w", err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	account, err := json.Marshal(map[string]string{
+		"type": "service_account", "project_id": "yeoul-local-test",
+		"private_key_id": "yeoul-local-test", "client_email": "yeoul@yeoul-local-test.iam.gserviceaccount.com",
+		"private_key": string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})),
+		"token_uri":   endpoint + "/token",
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(account), nil
 }
 
 func bootstrapRecoveryBucket(t *testing.T, backup *RhizaBackupConfig) {
