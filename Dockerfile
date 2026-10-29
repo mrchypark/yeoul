@@ -22,6 +22,7 @@ LABEL org.opencontainers.image.title="Yeoul" \
       org.opencontainers.image.licenses="NOASSERTION"
 COPY --from=build --chown=65532:65532 /out/yeould /yeould
 COPY --from=build --chown=65532:65532 /out/data /data
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 USER 65532:65532
 WORKDIR /data
 EXPOSE 8080

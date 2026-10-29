@@ -55,8 +55,9 @@ if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
 	exit 2
 fi
 docker_context=$(docker context show)
-if [ "$docker_context" != socktainer ]; then
-	echo "refusing to run provider tests with Docker context $docker_context; expected socktainer" >&2
+expected_docker_context=${YEOUL_RECOVERY_EXPECTED_DOCKER_CONTEXT:-socktainer}
+if [ "$docker_context" != "$expected_docker_context" ]; then
+	echo "refusing to run provider tests with Docker context $docker_context; expected $expected_docker_context" >&2
 	exit 2
 fi
 
@@ -125,6 +126,7 @@ wait_http "yeoul-rhiza-recovery-gcs-$run_id" 4588
 wait_http "yeoul-rhiza-recovery-azure-$run_id" 4577
 
 cd "$repo_root"
+GOWORK=off go build -o "$run_dir/yeould" ./cmd/yeould
 results=
 failed=0
 run_provider() {
@@ -134,11 +136,11 @@ run_provider() {
 	if [ "$provider" = s3 ]; then
 		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_S3_ENDPOINT=$endpoint YEOUL_RECOVERY_S3_BUCKET=$bucket"
 	elif [ "$provider" = gcs ]; then
-		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_GCS_ENDPOINT=$endpoint YEOUL_RECOVERY_GCS_BUCKET=$bucket"
+		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_GCS_ENDPOINT=$endpoint YEOUL_RECOVERY_GCS_BUCKET=$bucket GOOGLE_APPLICATION_CREDENTIALS=$run_dir/host-adc-must-not-exist.json"
 	else
 		provider_env="YEOUL_RECOVERY_PROVIDER=$provider YEOUL_RECOVERY_AZURE_ENDPOINT=$endpoint YEOUL_RECOVERY_AZURE_BUCKET=$bucket"
 	fi
-	run_case baseline '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' "${provider_env}"
+	run_case baseline '^TestRhiza(ObjectStoreFullLossRecovery|RestoreIfMissingRejectsMissingRemoteArchive|BackupAndRestoreRejectReadOnlyBeforeOpeningPath)$' "${provider_env} YEOULD_TEST_BINARY=$run_dir/yeould"
 	run_case legacy '^TestRhiza020ArchiveCompatibility$' "${provider_env} YEOUL_RECOVERY_LEGACY=1 YEOUL_LEGACY_FIXTURE_HELPER=$repo_root/scripts/rhiza-legacy-fixture"
 }
 
@@ -149,7 +151,7 @@ run_case() {
 	log="$run_dir/$provider-$phase.log"
 	# Values are fixed harness assignments above; word splitting passes them as env tokens.
 	set -- $env_values
-	env "$@" go test ./pkg/yeoul -run "$pattern" -count=1 -v >"$log" 2>&1
+	env GOWORK=off "$@" go test ./pkg/yeoul -run "$pattern" -count=1 -v >"$log" 2>&1
 	result=$?
 	cat "$log"
 	results="$results $provider-$phase=$result"

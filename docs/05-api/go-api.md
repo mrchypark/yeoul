@@ -60,15 +60,23 @@ retry successfully validates canonical state. Preserve local artifacts and
 retry with the same backup configuration; do not remove the marker to bypass
 recovery validation.
 
-The published Yeoul v0.12.0 uses Rhiza v0.20.0. This development version uses
-Rhiza v0.21.0 for newly created archives. There is no archive conversion tool
-or automatic migration/adoption. Keep the existing Yeoul version with its
-current archive, or use this development version with a fresh database and
-fresh archive location. The [Rhiza v0.21.0 release contract](https://github.com/mrchypark/rhiza/releases/tag/v0.21.0)
+Published Yeoul v0.12.0 uses Rhiza v0.20.0; Yeoul v0.13.0 uses Rhiza v0.21.0.
+Yeoul v0.14.0 is planned to use Rhiza v0.21.2. Rhiza v0.21.2 does not change
+the public API, identity, receipt, or local archive format from v0.21.0/v0.21.1.
+It narrowly reconciles an ambiguous local-maintenance release acknowledgement
+only when stable remote readback proves the exact expected free control at a
+changed object version. This is not an API for force-unlocking an already
+orphaned held token. A valid, quiesced v0.21.0 binding can be reopened with
+v0.21.2 using the same database path, identity, and archive configuration;
+no archive conversion or fresh archive is required. Preserve single-writer
+ownership during the handoff. There is no automatic migration/adoption from
+pre-v0.21.0 archive formats. Keep Yeoul v0.12.0 with its matching database and
+archive unless a separately validated migration is available. The
+[Rhiza v0.21.2 release contract](https://github.com/mrchypark/rhiza/releases/tag/v0.21.2)
 states that unsupported or partial archives are rejected without modification;
 Yeoul has no separate archive-format validator, and compatibility with other
 existing archives is not guaranteed.
-Upgrading the dependency does not convert existing databases or archives.
+Upgrading the dependency does not convert pre-v0.21.0 archives.
 
 Existing LatticeDB and Rhiza databases are opened by their configured or
 detected storage driver; native Ladybug databases must be migrated with a

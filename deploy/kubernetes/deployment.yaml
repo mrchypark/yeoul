@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yeoul
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yeoul
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yeoul
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: restore
+          image: yeoul:rhiza-single-node-restore
+          imagePullPolicy: IfNotPresent
+          command: ["/yeould"]
+          args:
+            - --db
+            - /data/yeoul.ltdb
+            - --rhiza-backup-config
+            - /tmp/config/backup.json
+            - --restore-if-missing
+            - --restore-only
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: rhiza-backup-config
+              mountPath: /tmp/config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: yeould
+          image: yeoul:rhiza-single-node-restore
+          imagePullPolicy: IfNotPresent
+          args:
+            - --db
+            - /data/yeoul.ltdb
+            - --listen
+            - 0.0.0.0:8080
+            - --rhiza-backup-config
+            - /tmp/config/backup.json
+          env:
+            - name: YEOUL_HTTP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: yeoul-http-auth
+                  key: YEOUL_HTTP_TOKEN
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 180
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: rhiza-backup-config
+              mountPath: /tmp/config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: rhiza-backup-config
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: yeoul-rhiza-backup
+                  items:
+                    - key: backup.json
+                      path: backup.json
+                      mode: 0440
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
