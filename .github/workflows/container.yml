@@ -33,6 +33,9 @@ jobs:
           kubectl kustomize deploy/kubernetes > "$RUNNER_TEMP/yeoul-kubernetes-rendered.yaml"
           YEOUL_K8S_MANIFEST="$RUNNER_TEMP/yeoul-kubernetes-rendered.yaml" GOWORK=off go test ./scripts/ci -count=1
 
+      - name: Test Rhiza object-store recovery across providers
+        run: GOWORK=off timeout 600 scripts/ci/test-rhiza-object-recovery.sh
+
       - name: Build and smoke-test container
         run: sh scripts/ci/test-container.sh
 
