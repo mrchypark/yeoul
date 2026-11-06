@@ -60,23 +60,36 @@ retry successfully validates canonical state. Preserve local artifacts and
 retry with the same backup configuration; do not remove the marker to bypass
 recovery validation.
 
-Published Yeoul v0.12.0 uses Rhiza v0.20.0; Yeoul v0.13.0 uses Rhiza v0.21.0.
-Yeoul v0.14.0 is planned to use Rhiza v0.21.2. Rhiza v0.21.2 does not change
-the public API, identity, receipt, or local archive format from v0.21.0/v0.21.1.
-It narrowly reconciles an ambiguous local-maintenance release acknowledgement
-only when stable remote readback proves the exact expected free control at a
-changed object version. This is not an API for force-unlocking an already
-orphaned held token. A valid, quiesced v0.21.0 binding can be reopened with
-v0.21.2 using the same database path, identity, and archive configuration;
-no archive conversion or fresh archive is required. Preserve single-writer
-ownership during the handoff. There is no automatic migration/adoption from
-pre-v0.21.0 archive formats. Keep Yeoul v0.12.0 with its matching database and
-archive unless a separately validated migration is available. The
+Historical release mapping: Yeoul v0.12.0 used Rhiza v0.20.0 and Yeoul v0.13.0
+used Rhiza v0.21.0. The prior Yeoul v0.14.0 controlled-DR and compatibility
+baseline used Rhiza v0.21.2; these v0.21.2 notes are historical, not the
+current source dependency. Rhiza v0.21.2 does not change the public API,
+identity, receipt, or local archive format from v0.21.0/v0.21.1. It narrowly
+reconciles an ambiguous local-maintenance release acknowledgement only when
+stable remote readback proves the exact expected free control at a changed
+object version. This is not an API for force-unlocking an already orphaned held
+token. A valid, quiesced v0.21.0 binding can be reopened with v0.21.2 using the
+same database path, identity, and archive configuration; no archive conversion
+or fresh archive is required. Preserve single-writer ownership during the
+handoff. There is no automatic migration/adoption from pre-v0.21.0 archive
+formats. Keep Yeoul v0.12.0 with its matching database and archive unless a
+separately validated migration is available. The
 [Rhiza v0.21.2 release contract](https://github.com/mrchypark/rhiza/releases/tag/v0.21.2)
 states that unsupported or partial archives are rejected without modification;
 Yeoul has no separate archive-format validator, and compatibility with other
-existing archives is not guaranteed.
-Upgrading the dependency does not convert pre-v0.21.0 archives.
+existing archives is not guaranteed. Upgrading the dependency does not convert
+pre-v0.21.0 archives.
+
+The current source dependency is Rhiza v0.23.0. Its Local backup reconciliation
+reads existing WAL state through a read-only Local inspection view before
+comparing local and remote history. If pending recorder state exists, it uses
+the local recovery path before any archive replacement, preserving uncertain
+local work. See the tagged
+[Local backup reconciliation](https://github.com/mrchypark/rhiza/blob/v0.23.0/pkg/node/local_backup.go#L291-L348)
+and [read-only Local inspection](https://github.com/mrchypark/rhiza/blob/v0.23.0/pkg/quepaxa/local_inspection.go).
+The Rhiza Local checkpoint policy and archive format markers remain v1 and v2;
+this change does not introduce a Local archive conversion. Local mode remains
+single-writer and does not require managed HA or its Kubernetes operator.
 
 Existing LatticeDB and Rhiza databases are opened by their configured or
 detected storage driver; native Ladybug databases must be migrated with a

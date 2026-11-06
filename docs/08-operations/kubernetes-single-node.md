@@ -143,14 +143,21 @@ Kubernetes Secret storage should be encrypted at rest and access restricted by
 RBAC.
 
 The standard Deployment expects a compatible, initialized Rhiza Local archive
-at the configured remote namespace. A valid, quiesced archive created with
-Rhiza `v0.21.0` can be reopened by `v0.21.2` with the same identity and backup
-configuration because v0.21.2 does not change the public API, identity,
-receipt, or archive format. Its runtime change narrowly reconciles a lost
-local-maintenance release acknowledgement when stable remote readback proves
-the expected free control at a changed object version; it does not force-unlock
-an orphaned held token. This handoff is not a conversion and does not require
-a fresh archive. Preserve single-writer ownership throughout. Pre-v0.21.0
+at the configured remote namespace. Historical v0.21.2 qualification is
+limited to the evidence recorded in
+[`kubernetes-dr-validation-2026-11-02.md`](kubernetes-dr-validation-2026-11-02.md):
+that report used the published Yeoul v0.14.0 image and Rhiza v0.21.2. Separately,
+the Rhiza v0.23.0 host test
+[`TestRhiza0212DatabaseOpensWithCurrentSDK`](../../pkg/yeoul/rhiza_recovery_test.go)
+reopens a local database created by Yeoul v0.14.0/Rhiza v0.21.2 and checks
+history and provenance. That host test does not qualify a v0.23.0 Kubernetes
+deployment, remote provider recovery, or live init-to-main handoff. Do not
+infer those results from the historical Kubernetes run.
+
+A valid, quiesced archive created with Rhiza `v0.21.0` was previously validated
+to reopen with `v0.21.2` using the same identity and backup configuration.
+That maintenance-release handoff is not a conversion and does not require a
+fresh archive. Preserve single-writer ownership throughout. Pre-v0.21.0
 formats are not automatically migrated; keep their matching Yeoul release and
 archive unless a separately validated migration is available. The Deployment never
 uses `--create` or
@@ -174,10 +181,12 @@ The bearer token is required on the non-loopback listener.
 
 The Deployment is fixed at one replica and uses `Recreate` so a normal rollout
 does not intentionally overlap old and new Pods. `Recreate` is not fencing.
-Before starting a replacement after an unreachable node, prove the old process
-is stopped or fence the old node at the infrastructure layer. A deleted or
-terminating Pod object alone does not prove that its process can no longer
-write. Never let two processes recover or write the same archive namespace.
+This workload cannot safely automate recovery through a node partition. Before
+starting a replacement after an unreachable node, manually prove the old
+process is stopped or fence the old node out of band at the infrastructure
+layer. A deleted or terminating Pod object alone does not prove that its
+process can no longer write. Never let two processes recover or write the same
+archive namespace.
 
 The init process and main process share ownership sequentially: init must
 successfully close `/data/yeoul.ltdb` before main opens that path. `emptyDir`
