@@ -14,12 +14,15 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,10 +193,17 @@ func TestRhizaObjectStoreFullLossRecovery(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("assert active fact: %v", err)
 	}
+	marker := recoveryUniqueSuffix()
+	ownerMarkerID := "ep:recovery-owner-marker:" + marker
+	ownerMarkerContent := "owned recovery root marker " + marker
+	if _, err := source.IngestEpisode(ctx, EpisodeInput{ID: ownerMarkerID, Kind: "note", Content: ownerMarkerContent}); err != nil {
+		t.Fatalf("ingest test-owned daemon marker: %v", err)
+	}
 	expected, err := Snapshot(ctx, source)
 	if err != nil {
 		t.Fatalf("snapshot before backup completion: %v", err)
 	}
+	originalExpected := expected
 	if err := source.Close(ctx); err != nil {
 		t.Fatalf("close source and finish pending backup work: %v", err)
 	}
@@ -216,15 +226,36 @@ func TestRhizaObjectStoreFullLossRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("yeould restore-only handoff for %s: %v\n%s", provider, err, output)
 		}
+		assertRecoveryOracleAtPath(t, ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, RhizaBackup: backup}, originalExpected)
 
-		handedOff, err := Open(ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, RhizaBackup: backup})
+		server := startRecoveryDaemon(t, binary, dbPath, configPath, ownerMarkerID, ownerMarkerContent)
+		recoveryHTTP(t, http.MethodPost, server, "/v1/episodes", `{"space_id":"default","episode":{"id":"ep:http-before-restart","kind":"note","content":"written by restored HTTP daemon"}}`, http.StatusCreated)
+		assertRecoveryOwnerRefused(t, binary, dbPath, configPath)
+		recoveryHTTP(t, http.MethodGet, server, "/v1/episodes/ep:http-before-restart?space_id=default", "", http.StatusOK)
+		stopRecoveryDaemon(t, server)
+		updatedExpected := snapshotRecoveryAtPath(t, ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, RhizaBackup: backup})
+		assertRecoverySnapshotPreservesOriginal(t, originalExpected, updatedExpected)
+		expected = updatedExpected
+
+		server = startRecoveryDaemon(t, binary, dbPath, configPath, ownerMarkerID, ownerMarkerContent)
+		recoveryHTTP(t, http.MethodGet, server, "/v1/episodes/ep:http-before-restart?space_id=default", "", http.StatusOK)
+		stopRecoveryDaemon(t, server)
+
+		if err := os.RemoveAll(dbPath); err != nil {
+			t.Fatalf("remove test-owned local root before full-loss restore: %v", err)
+		}
+		cmdCtx, cancel = context.WithTimeout(ctx, 90*time.Second)
+		cmd = exec.CommandContext(cmdCtx, binary, "--db", dbPath, "--rhiza-backup-config", configPath, "--restore-if-missing", "--restore-only")
+		output, err = cmd.CombinedOutput()
+		cancel()
 		if err != nil {
-			t.Fatalf("open %s database after yeould restore-only handoff without restore: %v", provider, err)
+			t.Fatalf("yeould restore-only after full local-root loss for %s: %v\n%s", provider, err, output)
 		}
-		assertRecoveryOracle(t, ctx, handedOff, expected)
-		if err := handedOff.Close(ctx); err != nil {
-			t.Fatalf("close database after yeould restore-only handoff: %v", err)
-		}
+		server = startRecoveryDaemon(t, binary, dbPath, configPath, ownerMarkerID, ownerMarkerContent)
+		recoveryHTTP(t, http.MethodGet, server, "/v1/episodes/ep:http-before-restart?space_id=default", "", http.StatusOK)
+		stopRecoveryDaemon(t, server)
+
+		assertRecoveryOracleAtPath(t, ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, RhizaBackup: backup}, expected)
 	}
 
 	restored, err := Open(ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath, RhizaBackup: backup, RestoreIfMissing: true})
@@ -253,6 +284,304 @@ func TestRhizaObjectStoreFullLossRecovery(t *testing.T) {
 	if _, ok := state.Episodes["ep:after-restore"]; !ok {
 		t.Fatal("post-recovery write was not present after second total-loss restore")
 	}
+}
+
+func TestRhiza0212DatabaseOpensWithCurrentSDK(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "rhiza-v0212")
+	fixtureCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(fixtureCtx, "../../scripts/rhiza-v0212-fixture")
+	cmd.Env = recoverySubprocessEnv("YEOUL_RHIZA_FIXTURE_DB=" + dbPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("create v0.21.2 database: %v\n%s", err, output)
+	}
+	t.Log(strings.TrimSpace(string(output)))
+
+	ctx := context.Background()
+	eng, err := Open(ctx, Config{Driver: StorageDriverRhiza, DatabasePath: dbPath})
+	if err != nil {
+		t.Fatalf("open v0.21.2 database with selected Rhiza SDK: %v", err)
+	}
+	defer func() {
+		if err := eng.Close(ctx); err != nil {
+			t.Errorf("close cross-version database: %v", err)
+		}
+	}()
+	state, err := Snapshot(ctx, eng)
+	if err != nil {
+		t.Fatalf("snapshot cross-version database: %v", err)
+	}
+	if episode, ok := state.Episodes["ep:rhiza-v0212-fixture"]; !ok || episode.Content != "cross-version archive observatory marker" {
+		t.Fatalf("cross-version episode missing: %#v", episode)
+	}
+	if entity, ok := state.Entities["entity:rhiza-v0212-fixture"]; !ok || entity.CanonicalName != "Revised Archive" {
+		t.Fatalf("cross-version entity revision missing: %#v", entity)
+	}
+	if fact, ok := state.Facts["fact:rhiza-v0212-old"]; !ok || fact.Status != factStatusSuperseded {
+		t.Fatalf("cross-version superseded fact missing: %#v", fact)
+	}
+	if fact, ok := state.Facts["fact:rhiza-v0212-current"]; !ok || fact.ValueText != "current value" || fact.Status != factStatusActive {
+		t.Fatalf("cross-version active fact missing: %#v", fact)
+	}
+	if len(state.FactRevisions) < 2 || len(state.EntityRevisions) < 2 {
+		t.Fatalf("cross-version history missing: fact revisions=%d entity revisions=%d", len(state.FactRevisions), len(state.EntityRevisions))
+	}
+	oldFact := state.Facts["fact:rhiza-v0212-old"]
+	asOf := oldFact.CreatedAt
+	historical, err := eng.LookupFacts(ctx, FactLookupRequest{
+		SubjectIDs: []string{oldFact.SubjectID},
+		Temporal:   TemporalFilter{AsOf: &asOf, IncludeInactive: true},
+	})
+	if err != nil || !recoveryFactHas(historical.Facts, oldFact.ID) || recoveryFactHas(historical.Facts, "fact:rhiza-v0212-current") {
+		t.Fatalf("cross-version as-of fact history missing: facts=%#v err=%v", historical.Facts, err)
+	}
+	timeline, err := eng.Timeline(ctx, TimelineRequest{
+		AnchorIDs: []string{oldFact.SubjectID}, Temporal: TemporalFilter{AsOf: &asOf},
+	})
+	if err != nil || !recoveryTimelineHas(timeline.Events, "evt:fact:rhiza-v0212-old:created") || recoveryTimelineHas(timeline.Events, "evt:fact:rhiza-v0212-current:created") {
+		t.Fatalf("cross-version as-of timeline missing: events=%#v err=%v", timeline.Events, err)
+	}
+	provenance, err := eng.Provenance(ctx, ProvenanceRequest{Kind: "fact", ID: "fact:rhiza-v0212-current"})
+	if err != nil || !recoveryProvenanceHas(provenance.Nodes, "ep:rhiza-v0212-fixture") {
+		t.Fatalf("cross-version provenance missing: provenance=%#v err=%v", provenance, err)
+	}
+}
+
+func assertRecoveryOwnerRefused(t *testing.T, binary, dbPath, configPath string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "--db", dbPath, "--rhiza-backup-config", configPath, "--restore-if-missing", "--restore-only")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("second yeould process opened an already-owned database root: %s", output)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("second yeould process did not promptly refuse the owned root: %v\n%s", ctx.Err(), output)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 ||
+		!bytes.Contains(output, []byte("YEOUL_STORAGE_FAILED")) ||
+		!bytes.Contains(output, []byte("database is owned by another process")) {
+		t.Fatalf("second yeould process failed for a reason other than database ownership refusal: %v\n%s", err, output)
+	}
+}
+
+func assertRecoverySnapshotPreservesOriginal(t *testing.T, original, updated *DatabaseSnapshot) {
+	t.Helper()
+	if original.Version != updated.Version {
+		t.Fatalf("database version changed after HTTP write: %d -> %d", original.Version, updated.Version)
+	}
+	assertRecoveryEntriesEqual(t, "sources", original.Sources, updated.Sources)
+	assertRecoveryEntriesEqual(t, "episodes", original.Episodes, updated.Episodes)
+	assertRecoveryEntriesEqual(t, "entities", original.Entities, updated.Entities)
+	assertRecoveryEntriesEqual(t, "facts", original.Facts, updated.Facts)
+	assertRecoveryEntriesEqual(t, "fact revisions", original.FactRevisions, updated.FactRevisions)
+	assertRecoveryEntriesEqual(t, "entity revisions", original.EntityRevisions, updated.EntityRevisions)
+	assertRecoveryEntriesEqual(t, "migration watermarks", original.MigrationWatermarks, updated.MigrationWatermarks)
+}
+
+func assertRecoveryOracleAtPath(t *testing.T, ctx context.Context, cfg Config, expected *DatabaseSnapshot) {
+	t.Helper()
+	eng, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatalf("open database for recovery oracle: %v", err)
+	}
+	defer func() {
+		if err := eng.Close(ctx); err != nil {
+			t.Errorf("close database after recovery oracle: %v", err)
+		}
+	}()
+	assertRecoveryOracle(t, ctx, eng, expected)
+}
+
+func snapshotRecoveryAtPath(t *testing.T, ctx context.Context, cfg Config) *DatabaseSnapshot {
+	t.Helper()
+	eng, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatalf("open database for post-write snapshot: %v", err)
+	}
+	defer func() {
+		if err := eng.Close(ctx); err != nil {
+			t.Errorf("close database after post-write snapshot: %v", err)
+		}
+	}()
+	snapshot, err := Snapshot(ctx, eng)
+	if err != nil {
+		t.Fatalf("snapshot database after HTTP daemon write: %v", err)
+	}
+	return snapshot
+}
+
+func assertRecoveryEntriesEqual[T any](t *testing.T, label string, original, updated map[string]T) {
+	t.Helper()
+	for id, want := range original {
+		got, ok := updated[id]
+		if !ok {
+			t.Fatalf("original %s record %q is missing after HTTP write", label, id)
+		}
+		wantBytes, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("marshal original %s record %q: %v", label, id, err)
+		}
+		gotBytes, err := json.Marshal(got)
+		if err != nil {
+			t.Fatalf("marshal updated %s record %q: %v", label, id, err)
+		}
+		if !bytes.Equal(wantBytes, gotBytes) {
+			t.Fatalf("original %s record %q changed after HTTP write: want=%s got=%s", label, id, wantBytes, gotBytes)
+		}
+	}
+}
+
+type recoveryDaemon struct {
+	cmd      *exec.Cmd
+	endpoint string
+	markerID string
+	marker   string
+	client   *http.Client
+	waitDone chan struct{}
+	waitErr  error
+	stopOnce sync.Once
+	stopErr  error
+}
+
+func startRecoveryDaemon(t *testing.T, binary, dbPath, configPath, markerID, marker string) *recoveryDaemon {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve HTTP test port: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release HTTP test port: %v", err)
+	}
+	cmd := exec.Command(binary, "--db", dbPath, "--rhiza-backup-config", configPath, "--listen", address)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start yeould HTTP daemon: %v", err)
+	}
+	server := &recoveryDaemon{cmd: cmd, endpoint: "http://" + address, markerID: markerID, marker: marker, client: &http.Client{Timeout: 2 * time.Second}}
+	server.waitDone = make(chan struct{})
+	go func() {
+		server.waitErr = cmd.Wait()
+		close(server.waitDone)
+	}()
+	t.Cleanup(func() {
+		if err := server.stop(); err != nil {
+			t.Errorf("clean up yeould HTTP daemon: %v", err)
+		}
+	})
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := httpRecoveryRequest(http.MethodGet, server, "/v1/health", "", http.StatusOK); err == nil {
+			markerPath := "/v1/episodes/" + url.PathEscape(server.markerID) + "?space_id=default"
+			if err := httpRecoveryRequest(http.MethodGet, server, markerPath, "", http.StatusOK); err == nil {
+				select {
+				case <-server.waitDone:
+					t.Fatalf("yeould HTTP daemon exited after marker readiness (%v): %s", server.waitErr, output.String())
+				default:
+					return server
+				}
+			}
+		}
+		select {
+		case <-server.waitDone:
+			t.Fatalf("yeould HTTP daemon exited during startup (%v): %s", server.waitErr, output.String())
+		default:
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	stopErr := server.stop()
+	select {
+	case <-server.waitDone:
+		t.Fatalf("yeould HTTP daemon did not become ready: stop=%v; %s", stopErr, output.String())
+	default:
+		t.Fatalf("yeould HTTP daemon did not become ready and could not be reaped: stop=%v pid=%d; output withheld while process is live", stopErr, cmd.Process.Pid)
+	}
+	return nil
+}
+
+func stopRecoveryDaemon(t *testing.T, server *recoveryDaemon) {
+	t.Helper()
+	if err := server.stop(); err != nil {
+		t.Fatalf("stop yeould HTTP daemon: %v", err)
+	}
+}
+
+func (server *recoveryDaemon) stop() error {
+	server.stopOnce.Do(func() {
+		select {
+		case <-server.waitDone:
+			server.stopErr = server.waitErr
+			return
+		default:
+		}
+		if err := server.cmd.Process.Signal(os.Interrupt); err != nil {
+			server.stopErr = fmt.Errorf("signal graceful shutdown: %w", err)
+		}
+		select {
+		case <-server.waitDone:
+			if server.stopErr == nil {
+				server.stopErr = server.waitErr
+			}
+		case <-time.After(10 * time.Second):
+			_ = server.cmd.Process.Kill()
+			select {
+			case <-server.waitDone:
+				server.stopErr = errors.Join(server.stopErr, errors.New("graceful shutdown timed out; process was killed"))
+			case <-time.After(5 * time.Second):
+				server.stopErr = errors.Join(server.stopErr, errors.New("process did not exit after kill"))
+			}
+		}
+	})
+	return server.stopErr
+}
+
+func recoveryHTTP(t *testing.T, method string, server *recoveryDaemon, path, body string, status int) {
+	t.Helper()
+	if err := httpRecoveryRequest(method, server, path, body, status); err != nil {
+		t.Fatalf("yeould HTTP %s %s: %v", method, path, err)
+	}
+}
+
+func httpRecoveryRequest(method string, server *recoveryDaemon, path, body string, status int) error {
+	request, err := http.NewRequest(method, server.endpoint+path, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	if method == http.MethodPost {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	requestCtx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	request = request.WithContext(requestCtx)
+	response, err := server.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != status {
+		data, _ := io.ReadAll(response.Body)
+		return fmt.Errorf("status %d, expected %d: %s", response.StatusCode, status, data)
+	}
+	if method == http.MethodGet && (strings.Contains(path, "ep:http-before-restart") || strings.Contains(path, server.markerID)) {
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			return err
+		}
+		want := server.marker
+		if strings.Contains(path, "ep:http-before-restart") {
+			want = "written by restored HTTP daemon"
+		}
+		if !bytes.Contains(data, []byte(want)) {
+			return fmt.Errorf("episode content %q missing from response: %s", want, data)
+		}
+	}
+	return nil
 }
 
 func TestRhizaRestoreIfMissingRejectsMissingRemoteArchive(t *testing.T) {
