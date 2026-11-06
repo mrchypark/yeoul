@@ -44,26 +44,41 @@ does not qualify v0.23.0.
 
 ## Provider Recovery
 
-The pinned Floci harness was invoked with
-`scripts/ci/test-rhiza-object-recovery.sh`. It exited before starting any
-provider or creating containers: Docker API unavailable. The active `dory`
-context points to the missing `~/.dory/dory.sock`; `default` points to the
-missing `/var/run/docker.sock`. Inventory showed no reachable local Docker
-runtime. The empty temporary harness directory was inspected and removed; no
-containers or other harness resources remain.
+### Local Runtime
 
-| Provider | v0.23.0 contract status |
-| --- | --- |
-| S3 / Floci | Not run: harness stopped before provider setup |
-| GCS / Floci-GCP | Not run: harness stopped before provider setup |
-| Azure / Floci-AZ | Not run: harness stopped before provider setup |
+The local attempt invoked `scripts/ci/test-rhiza-object-recovery.sh`, which
+exited before provider setup because the Docker API was unavailable. The active
+`dory` context points to the missing `~/.dory/dory.sock`; `default` points to
+the missing `/var/run/docker.sock`. The empty temporary harness directory was
+inspected and removed. No local provider tests or containers ran.
 
-Therefore actual SDK-adapter remote full-loss recovery, restored HTTP writes,
-revision/provenance oracle over remote recovery, and all-provider qualification
-remain unverified for v0.23.0. No provider pass is claimed. Kubernetes
-runtime qualification was not run. Provider qualification is required in the
-arm64 CI job before merge; append its run link and provider evidence here after
-that job passes.
+### ARM64 CI Qualification
+
+The pinned Floci provider-recovery job passed on PR merge commit
+`c3a2862e83f43c847ec568ce70827ff623f29adb`, whose tree matches PR head
+`9736661236ac5cef22460b6dd676c60ae0181193`, using an Ubuntu 24.04 ARM64 runner
+and Go 1.27.3. [Run 42136940380, provider-recovery job 127627377777](https://github.com/mrchypark/yeoul/actions/runs/42136940380/job/127627377777)
+ran `GOWORK=off timeout 600 scripts/ci/test-rhiza-object-recovery.sh` with
+`DOCKER_CONTEXT=default`.
+
+The harness summary was:
+
+```text
+s3-baseline=0 s3-legacy=0 gcs-baseline=0 gcs-legacy=0 azure-baseline=0 azure-legacy=0
+```
+
+For each provider, `TestRhizaObjectStoreFullLossRecovery` passed against its
+pinned Floci service through the provider SDK adapter, along with
+`TestRhiza020ArchiveCompatibility`. The full-loss test restored after local
+root loss, verified the stored Yeoul snapshot including lifecycle revisions
+and provenance, performed and read back an HTTP write, and verified it again
+after recovery. The harness also passed the missing-archive and read-only
+guard tests for each provider. The job log showed no skipped test results.
+S3, GCS, and Azure provider recovery are qualified by this CI run for this
+exact head.
+
+This CI evidence does not qualify a live v0.23.0 Kubernetes deployment or
+init-to-main runtime handoff.
 
 `TestKubernetesDRProvisionBucket` is an opt-in provisioning helper, not a
 cleanup test. It creates a new bucket and intentionally leaves it available to
