@@ -2,14 +2,18 @@
 
 Date: 2026-11-06
 
+This is a historical validation record for the v0.23.0 upgrade. It does not
+describe the versions selected by the current source tree.
+
 ## Version and Cross-Version Data
 
-The root module selects `github.com/mrchypark/rhiza v0.23.0`; `go.sum`
-records `h1:RFLhLytoi2Q84MD4WkA9Z8T7wvUp7LPj4nxIMFBSaNw=`.
+At the time of this validation, the root module selected
+`github.com/mrchypark/rhiza v0.23.0`; `go.sum` recorded
+`h1:RFLhLytoi2Q84MD4WkA9Z8T7wvUp7LPj4nxIMFBSaNw=`.
 
 `TestRhiza0212DatabaseOpensWithCurrentSDK` passed. Its isolated fixture is
 created with Yeoul v0.14.0 and Rhiza v0.21.2, closed, then opened by the
-current checkout. It verifies episode and entity data, entity and fact
+then-current checkout. It verifies episode and entity data, entity and fact
 revisions, active/superseded fact state, and provenance. The fixture helper
 checks its selected Rhiza version and refuses a non-absent target path.
 

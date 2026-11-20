@@ -147,10 +147,10 @@ at the configured remote namespace. Historical v0.21.2 qualification is
 limited to the evidence recorded in
 [`kubernetes-dr-validation-2026-11-02.md`](kubernetes-dr-validation-2026-11-02.md):
 that report used the published Yeoul v0.14.0 image and Rhiza v0.21.2. Separately,
-the Rhiza v0.23.0 host test
+the current-SDK host test
 [`TestRhiza0212DatabaseOpensWithCurrentSDK`](../../pkg/yeoul/rhiza_recovery_test.go)
 reopens a local database created by Yeoul v0.14.0/Rhiza v0.21.2 and checks
-history and provenance. That host test does not qualify a v0.23.0 Kubernetes
+history and provenance. That host test does not qualify a Kubernetes
 deployment, remote provider recovery, or live init-to-main handoff. Do not
 infer those results from the historical Kubernetes run.
 
