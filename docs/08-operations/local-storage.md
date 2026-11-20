@@ -145,23 +145,20 @@ Yeoul has no separate archive-format validator; compatibility with other
 existing archives is not guaranteed. Existing `.ltdb` extensions and database
 paths do not need renaming.
 
-### Current Rhiza v0.23.0 SDK
+### Current source dependencies
 
-The current source dependency is Rhiza v0.23.0. Local mode remains a standalone,
-deployment-owned single-writer configuration and does not require the HA
-operator. During Local object-store archive reconciliation, v0.23.0 inspects
-the existing WAL through a read-only Local view before comparing local and
-remote history. If a pending recorder is found, it switches to local recovery
-before archive replacement rather than allowing a remote snapshot to erase
-uncertain local work. See the tagged
-[Local backup reconciliation](https://github.com/mrchypark/rhiza/blob/v0.23.0/pkg/node/local_backup.go#L291-L348)
-and [read-only Local inspection](https://github.com/mrchypark/rhiza/blob/v0.23.0/pkg/quepaxa/local_inspection.go).
-The Local checkpoint policy and archive format markers remain v1 and v2,
-respectively; this inspection change does not introduce a Local archive
-conversion.
+The current source dependencies are Rhiza v0.27.2 and `latticedb-go` v0.13.0;
+Rhiza requires Go 1.27.4. The read-only Local WAL inspection and pending
+recorder recovery behavior documented for Rhiza v0.23.0 remains part of the
+Local path. The
+[v0.27.2 release](https://github.com/mrchypark/rhiza/releases/tag/v0.27.2)
+includes checkpoint and recovery hardening and leaves local emptyDir WAL
+compaction open. This dependency update does not by itself establish Yeoul
+Local object-store recovery under v0.27.2, and it does not claim a Local
+archive-format conversion.
 
 The following provider-run evidence is historical and applies to the Rhiza
-v0.21.1/v0.21.2 baseline, not v0.23.0. Rhiza local backup uses `BeforeAck`: a
+v0.21.1/v0.21.2 baseline, not v0.27.2. Rhiza local backup uses `BeforeAck`: a
 successful write acknowledgement means the corresponding archive durability
 work completed before the acknowledgement was returned. This is not a claim of
 provider parity or a guarantee against
