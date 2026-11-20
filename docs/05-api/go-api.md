@@ -80,16 +80,15 @@ Yeoul has no separate archive-format validator, and compatibility with other
 existing archives is not guaranteed. Upgrading the dependency does not convert
 pre-v0.21.0 archives.
 
-The current source dependency is Rhiza v0.23.0. Its Local backup reconciliation
-reads existing WAL state through a read-only Local inspection view before
-comparing local and remote history. If pending recorder state exists, it uses
-the local recovery path before any archive replacement, preserving uncertain
-local work. See the tagged
-[Local backup reconciliation](https://github.com/mrchypark/rhiza/blob/v0.23.0/pkg/node/local_backup.go#L291-L348)
-and [read-only Local inspection](https://github.com/mrchypark/rhiza/blob/v0.23.0/pkg/quepaxa/local_inspection.go).
-The Rhiza Local checkpoint policy and archive format markers remain v1 and v2;
-this change does not introduce a Local archive conversion. Local mode remains
-single-writer and does not require managed HA or its Kubernetes operator.
+The current source dependencies are Rhiza v0.27.2 and `latticedb-go` v0.13.0;
+Rhiza requires Go 1.27.4. The read-only Local WAL inspection and pending
+recorder recovery behavior documented for Rhiza v0.23.0 remains part of the
+Local path. The
+[v0.27.2 release](https://github.com/mrchypark/rhiza/releases/tag/v0.27.2)
+includes checkpoint and recovery hardening and leaves local emptyDir WAL
+compaction open. This dependency update does not by itself establish Yeoul
+Local object-store recovery under v0.27.2, and it does not claim a Local
+archive-format conversion.
 
 Existing LatticeDB and Rhiza databases are opened by their configured or
 detected storage driver; native Ladybug databases must be migrated with a
