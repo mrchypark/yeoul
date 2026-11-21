@@ -147,18 +147,18 @@ paths do not need renaming.
 
 ### Current source dependencies
 
-The current source dependencies are Rhiza v0.27.2 and `latticedb-go` v0.13.0;
+The current source dependencies are Rhiza v0.27.3 and `latticedb-go` v0.13.0;
 Rhiza requires Go 1.27.4. The read-only Local WAL inspection and pending
 recorder recovery behavior documented for Rhiza v0.23.0 remains part of the
 Local path. The
-[v0.27.2 release](https://github.com/mrchypark/rhiza/releases/tag/v0.27.2)
-includes checkpoint and recovery hardening and leaves local emptyDir WAL
-compaction open. This dependency update does not by itself establish Yeoul
-Local object-store recovery under v0.27.2, and it does not claim a Local
-archive-format conversion.
+[v0.27.3 release](https://github.com/mrchypark/rhiza/releases/tag/v0.27.3)
+includes HA, Operator, and quorum changes; they do not establish Yeoul Local
+emptyDir WAL compaction or managed HA qualification. This dependency update
+does not by itself establish Yeoul Local object-store recovery under v0.27.3,
+and it does not claim a Local archive-format conversion.
 
 The following provider-run evidence is historical and applies to the Rhiza
-v0.21.1/v0.21.2 baseline, not v0.27.2. Rhiza local backup uses `BeforeAck`: a
+v0.21.1/v0.21.2 baseline, not v0.27.3. Rhiza local backup uses `BeforeAck`: a
 successful write acknowledgement means the corresponding archive durability
 work completed before the acknowledgement was returned. This is not a claim of
 provider parity or a guarantee against
