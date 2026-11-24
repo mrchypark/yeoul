@@ -80,15 +80,17 @@ Yeoul has no separate archive-format validator, and compatibility with other
 existing archives is not guaranteed. Upgrading the dependency does not convert
 pre-v0.21.0 archives.
 
-The current source dependencies are Rhiza v0.27.3 and `latticedb-go` v0.13.0;
+The current source dependencies are Rhiza v0.27.4 and `latticedb-go` v0.13.0;
 Rhiza requires Go 1.27.4. The read-only Local WAL inspection and pending
 recorder recovery behavior documented for Rhiza v0.23.0 remains part of the
 Local path. The
-[v0.27.3 release](https://github.com/mrchypark/rhiza/releases/tag/v0.27.3)
-includes HA, Operator, and quorum changes; they do not establish Yeoul Local
-emptyDir WAL compaction or managed HA qualification. This dependency update
-does not by itself establish Yeoul Local object-store recovery under v0.27.3,
-and it does not claim a Local archive-format conversion.
+[v0.27.4 release](https://github.com/mrchypark/rhiza/releases/tag/v0.27.4)
+adds an optional HTTP service client with bounded read failover, QuePaxa phase
+diagnostics, and repeated service-failover evidence. The client requires
+explicit Yeoul adoption; this update does not intercept embedded DB calls or
+automatically resubmit uncertain writes. It does not establish Yeoul Local
+object-store recovery under v0.27.4, Local emptyDir WAL compaction, managed HA
+qualification, or a Local archive-format conversion.
 
 Existing LatticeDB and Rhiza databases are opened by their configured or
 detected storage driver; native Ladybug databases must be migrated with a
