@@ -10,7 +10,7 @@ require (
 	github.com/goccy/go-json v0.10.6
 	github.com/minio/minio-go/v7 v7.0.95
 	github.com/mrchypark/latticedb-go v0.13.0
-	github.com/mrchypark/rhiza v0.27.3
+	github.com/mrchypark/rhiza v0.27.4
 	golang.org/x/sys v0.49.0
 	google.golang.org/api v0.264.0
 	gopkg.in/yaml.v3 v3.0.1
